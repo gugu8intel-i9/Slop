@@ -1013,7 +1013,7 @@ int main(int argc, char** argv) {
                 slop_array_push(local_arena, &{arr_var}, sub);
             }}
         }} else {{
-            for (size_t i = 0; i <= s.length - sep.length; ) {{
+            for (size_t i = 0; s.length >= sep.length && i <= s.length - sep.length; ) {{
                 if (memcmp(s.data + i, sep.data, sep.length) == 0) {{
                     SlopString* sub = (SlopString*)slop_arena_alloc(local_arena, sizeof(SlopString));
                     *sub = slop_string_create_len(local_arena, s.data + start, i - start);

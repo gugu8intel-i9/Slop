@@ -6,6 +6,10 @@ test_program
 complex_syntax
 hardware_access
 storage_savings
+benchmark_slop
+benchmark_cpp
+benchmark_cpp_unopt
+benchmark_slop_unopt
 
 # Generated C files
 hello.c
@@ -14,6 +18,7 @@ test_program.c
 complex_syntax.c
 hardware_access.c
 storage_savings.c
+benchmark_slop.c
 
 # Pycache / compilation artifacts
 __pycache__/

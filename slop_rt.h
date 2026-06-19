@@ -1,11 +1,13 @@
 #ifndef SLOP_RT_H
 #define SLOP_RT_H
 
+#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <time.h>
 
 // Slop Arena / Bucket Structure
 typedef struct SlopArena {
@@ -330,9 +332,25 @@ static inline SlopString slop_read_file(SlopArena* arena, SlopString path_str) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size < 0) {
+    if (size <= 0) {
+        // Fallback for virtual files (like /proc and /sys) which report size 0
+        size_t cap = 4096;
+        char* data = (char*)slop_arena_alloc(arena, cap);
+        size_t total_read = 0;
+        while (1) {
+            size_t read_bytes = fread(data + total_read, 1, 4096, f);
+            total_read += read_bytes;
+            if (read_bytes < 4096) {
+                break; // EOF or error
+            }
+            cap += 4096;
+            char* new_data = (char*)slop_arena_alloc(arena, cap);
+            memcpy(new_data, data, total_read);
+            data = new_data;
+        }
+        data[total_read] = '\0';
         fclose(f);
-        return (SlopString){ .data = "", .length = 0 };
+        return (SlopString){ .data = data, .length = total_read };
     }
 
     char* data = (char*)slop_arena_alloc(arena, size + 1);
