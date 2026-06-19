@@ -22,20 +22,24 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
    - **Python-style List Comprehensions**: Highly concise, inline data mappings (e.g. `[x * 2 for x in array]`) compiled directly into optimized, zero-allocation C loops.
    - Modern, elegant, Python/Go-like syntax with static safety and pipeline operators (`|>`).
 
-3. **Self-Hosting (Slop Made in Slop)**:
+3. **Low-Level Bare-Metal Hardware Access**:
+   - **Volatile MMIO Operations**: Exposes physical hardware register peek/poke operations (`peek_byte`, `poke_byte`, `peek_int`, `poke_int`, `get_address`) to read and write raw machine memory addresses.
+   - **`raw` Inline Assembly & C**: Injects inline Assembly (`__asm__ volatile`) and raw optimized C blocks directly into your Slop program with zero overhead!
+
+4. **Self-Hosting (Slop Made in Slop)**:
    - The Slop compiler/lexer (`compiler.slop`) is written entirely in Slop.
    - It is bootstrapped by a Python-based transpiler (`slop_boot.py`) that outputs optimized, native C.
    - Once compiled, the native binary can compile and lex other Slop files!
 
-4. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
+5. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
    - A zero-copy header-only C++ library that lets you run C++ code inside Slop memory buckets.
    - Share strings and vectors between C++ and Slop without copying a single byte!
 
-5. **High-Performance Rust Native Bridge (`rust_bridge/`)**:
+6. **High-Performance Rust Native Bridge (`rust_bridge/`)**:
    - A fully functional Cargo-crate library implementing Rust FFI bindings directly to the Slop SEAA engine.
    - Provides safe, idiomatic Rust wrappers with RAII `SlopScope` lifetimes and zero-copy string and array structures.
 
-6. **Auto-Slop Python Transpiler (`slop_translate.py`)**:
+7. **Auto-Slop Python Transpiler (`slop_translate.py`)**:
    - Write standard Python code and automatically convert it to native `.slop` files!
    - Compiles your Python code into native machine code with **100x+ speedup**.
 
@@ -48,6 +52,7 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
 - `compiler.slop` - **The self-hosting Slop compiler/lexer written in Slop itself!**
 - `hello.slop` - An example Slop script demonstrating pipeline operations and arrays.
 - `complex_syntax.slop` - Demonstrating C++ methods, Rust matches, and Python list comprehensions in Slop!
+- `hardware_access.slop` - Demonstrating direct volatile hardware, pointer register peeks, and inline assembly in Slop!
 - `slop_bridge.hpp` - The C++ native bridge library.
 - `cpp_library_test.cpp` - Example C++ code running on the high-performance Slop bridge.
 - `rust_bridge/` - Cargo library for the high-performance Rust FFI bridge.
@@ -59,7 +64,36 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
 
 ## Quick Start
 
-### 1. Run the Multi-Paradigm Syntax Demo
+### 1. Run the Bare-Metal Hardware & Assembly Demo
+
+```bash
+# Transpile Slop to C
+python3 slop_boot.py hardware_access.slop
+
+# Compile with maximum optimizations
+gcc -O3 -ffast-math -flto -march=native hardware_access.c -o hardware_access
+
+# Run the native executable
+./hardware_access
+```
+
+**Expected Output:**
+```
+--- [Slop High-Level & Low-Level Hardware Integration] ---
+Original high-level variable value:
+42
+Variable physical memory address (Hex-like raw pointer):
+140734507674456
+Peeked value from raw physical address:
+1337
+High-level variable x has changed natively to:
+1337
+Executing native assembly NOPs and direct raw buffer writes:
+-> Hello from inside raw Assembly / C block!
+--- [Hardware Access Demonstration Completed Successfully] ---
+```
+
+### 2. Run the Multi-Paradigm Syntax Demo
 
 Compile and run `complex_syntax.slop` showcasing C++ methods, Rust matches, and Python comprehensions:
 
@@ -74,26 +108,7 @@ gcc -O3 -ffast-math -flto -march=native complex_syntax.c -o complex_syntax
 ./complex_syntax
 ```
 
-**Expected Output:**
-```
---- [Testing C++ Struct Methods] ---
-Sum of fields (10 + 20):
-30
-Scaled sum (30 + 60):
-90
---- [Testing Rust Match Statement] ---
-Matched 1: Low
-Matched 5: Medium
-Matched other value
---- [Testing Python List Comprehension] ---
-2
-4
-6
-8
-10
-```
-
-### 2. Run the Self-Hosting Compiler
+### 3. Run the Self-Hosting Compiler
 
 You can compile the Slop compiler (written in Slop) using the bootstrap tool to get a native binary:
 
@@ -108,13 +123,13 @@ gcc -O3 -ffast-math -flto -march=native compiler.c -o slop-compiler
 ./slop-compiler complex_syntax.slop
 ```
 
-### 3. Run the C++ Native Bridge Test
+### 4. Run the C++ Native Bridge Test
 
 ```bash
 g++ -O3 -march=native cpp_library_test.cpp -o cpp_library_test && ./cpp_library_test
 ```
 
-### 4. Automatically Convert Python Code to Slop & Run Natively
+### 5. Automatically Convert Python Code to Slop & Run Natively
 
 ```bash
 # Translate Python script to native Slop
@@ -127,7 +142,7 @@ python3 slop_boot.py test_program.slop test_program.c
 gcc -O3 -march=native test_program.c -o test_program && ./test_program
 ```
 
-### 5. High-Performance Rust Bridge Compilation
+### 6. High-Performance Rust Bridge Compilation
 
 The Rust library is organized as a Cargo package located in `rust_bridge/`. To build and use it on any machine with Cargo installed:
 

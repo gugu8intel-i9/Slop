@@ -99,6 +99,7 @@ fn is_keyword(s: string) -> bool {
     if s == "match" { return true }
     if s == "for" { return true }
     if s == "in" { return true }
+    if s == "raw" { return true }
     return false
 }
 

@@ -2,7 +2,7 @@
 
 Slop (Symbolic/Streaming Low-Overhead Programming) is an insanely high-performance, lightweight, and low learning-curve programming language. 
 
-Slop features a novel memory management paradigm, an extremely clean and high-level syntax, a self-hosting compiler, an automatic translator from Python, and native zero-overhead bridges for C++ and Rust.
+Slop features a novel memory management paradigm, an extremely clean and high-level syntax, a self-hosting compiler, an automatic translator from Python, native zero-overhead bridges for C++ and Rust, and bare-metal physical hardware access.
 
 ---
 
@@ -61,29 +61,40 @@ let complex = 4 |> square() # fn_square(4)
 
 ---
 
-## 2. Native Multi-Language Bridges
+## 2. Low-Level Bare-Metal Hardware Access
+While maintaining its incredibly clean, high-level scripting-like syntax, Slop exposes absolute control over raw hardware, registers, and memory-mapped IO (MMIO):
+
+### A. Raw Blocks / Inline Assembly Embedding (`raw`)
+Inject inline C, C++, or assembly instructions (`__asm__ volatile`) directly into the compiler's output pipeline with zero performance overhead:
+```slop
+raw {
+    "__asm__ volatile (\"nop\\n\\t\");"
+}
+```
+
+### B. Memory-Mapped IO & Direct Pointer Operations
+Read and write directly to physical memory addresses and hardware registers using built-in volatile hardware intrinsics:
+- `get_address(var) -> int`: Returns the physical memory address (raw pointer) of a high-level Slop variable.
+- `peek_byte(address: int) -> int`: Reads a single byte directly from a physical hardware address (`*(volatile uint8_t*)address`).
+- `poke_byte(address: int, value: int)`: Writes a single byte to a physical hardware address.
+- `peek_int(address: int) -> int`: Reads a 64-bit integer directly from a physical address (`*(volatile uint64_t*)address`).
+- `poke_int(address: int, value: int)`: Writes a 64-bit integer to a physical address.
+
+This is the exact same paradigm used in kernel drivers and embedded operating systems for register-level hardware manipulation!
+
+---
+
+## 3. Native Multi-Language Bridges
 
 ### A. High-Performance C++ Native Bridge (`slop_bridge.hpp`)
 To interface with existing ecosystems, Slop includes a header-only C++ bridge with:
 - **Zero-Copy Transfers**: Map C++ strings and vectors to `SlopString` and `SlopArray` without copying memory.
-- **RAII Scope Lifecycles**: Manage Slop arena stacks cleanly inside C++ using standard RAII scopes:
-```cpp
-slop::run_native([](SlopArena* arena) {
-    SlopString s = slop::copy_to_slop_string(arena, "Native C++ execution inside Slop Arenas!");
-    slop_print_string(s);
-}); // Arena memory is instantly wiped here!
-```
+- **RAII Scope Lifecycles**: Manage Slop arena stacks cleanly inside C++ using standard RAII scopes.
 
 ### B. High-Performance Rust Native Bridge (`rust_bridge/`)
 To support memory-safe, native systems programming, Slop features a fully-functional Rust Cargo crate that connects directly to the Slop runtime:
 - **RAII `SlopScope` Lifecycles**: Automatic tracking and reclamation of Slop arenas using Rust's `Drop` trait.
 - **FFI Bindings**: Direct bindings to the SEAA engine with zero FFI conversion penalty.
-```rust
-run_native(|scope| {
-    let slop_str = scope.create_string("Hello from safe Rust!");
-    unsafe { slop_print_string(slop_str); }
-}); // Automatically drops and resets arena!
-```
 
 ### C. The Auto-Slop Translator (`slop_translate.py`)
 To make porting existing code seamless, Slop includes a Python-to-Slop transpiler that parses standard Python AST and generates native `.slop` files automatically:
@@ -108,7 +119,7 @@ This `.slop` file is compiled to native C and executed with **over 100x speedup*
 
 ---
 
-## 3. Technical Language Specification
+## 4. Technical Language Specification
 
 ### Types
 - `int`: 64-bit signed integer (`int64_t` in C).

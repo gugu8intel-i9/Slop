@@ -1,0 +1,32 @@
+fn main(args: array[string]) {
+    print("--- [Slop High-Level & Low-Level Hardware Integration] ---")
+
+    # 1. Allocate a local high-level integer
+    let x = 42
+    print("Original high-level variable value:")
+    print(x)
+
+    # 2. Get the actual physical memory address of x!
+    let addr = get_address(x)
+    print("Variable physical memory address (Hex-like raw pointer):")
+    print(addr)
+
+    # 3. Poke (write) a new value directly into that physical address!
+    poke_int(addr, 1337)
+
+    # 4. Peek (read) the value back from the physical address
+    let read_back = peek_int(addr)
+    print("Peeked value from raw physical address:")
+    print(read_back)
+
+    print("High-level variable x has changed natively to:")
+    print(x)
+
+    # 5. Raw block to execute inline assembly and low-level hardware optimizations!
+    print("Executing native assembly NOPs and direct raw buffer writes:")
+    raw {
+        "__asm__ volatile (\"nop\\n\\t\" \"nop\\n\\t\"); printf(\"-> Hello from inside raw Assembly / C block!\\n\");"
+    }
+
+    print("--- [Hardware Access Demonstration Completed Successfully] ---")
+}

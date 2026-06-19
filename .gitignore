@@ -4,12 +4,14 @@ slop-compiler
 cpp_library_test
 test_program
 complex_syntax
+hardware_access
 
 # Generated C files
 hello.c
 compiler.c
 test_program.c
 complex_syntax.c
+hardware_access.c
 
 # Pycache / compilation artifacts
 __pycache__/
