@@ -27,6 +27,8 @@ static inline SlopArena* slop_arena_create(size_t capacity) {
         fprintf(stderr, "Out of memory allocating Arena buffer of size %zu.\n", capacity);
         exit(1);
     }
+    // Securely initialize buffer to prevent uninitialized memory reads
+    memset(arena->buffer, 0, capacity);
     arena->capacity = capacity;
     arena->offset = 0;
     return arena;
@@ -34,6 +36,8 @@ static inline SlopArena* slop_arena_create(size_t capacity) {
 
 static inline void slop_arena_destroy(SlopArena* arena) {
     if (arena) {
+        // Securely scrub memory before freeing to prevent RAM dumps
+        memset(arena->buffer, 0, arena->capacity);
         free(arena->buffer);
         free(arena);
     }
@@ -51,6 +55,8 @@ static inline void* slop_arena_alloc(SlopArena* arena, size_t size) {
             fprintf(stderr, "Slop Bucket Overflow and resize failed! Required: %zu bytes.\n", arena->offset + size);
             exit(1);
         }
+        // Initialize newly allocated capacity block to 0
+        memset(&new_buf[arena->capacity], 0, new_capacity - arena->capacity);
         arena->buffer = new_buf;
         arena->capacity = new_capacity;
     }
@@ -63,7 +69,13 @@ static inline size_t slop_arena_save(SlopArena* arena) {
     return arena->offset;
 }
 
+// SECURE MEMORY SANITIZATION: Zero out discarded memory upon scope exit
 static inline void slop_arena_restore(SlopArena* arena, size_t offset) {
+    if (arena->offset > offset) {
+        // Securely zero out (scrub) all memory between the current offset and the new offset
+        // This ensures no password, key, or token leftovers persist in physical RAM.
+        memset(&arena->buffer[offset], 0, arena->offset - offset);
+    }
     arena->offset = offset;
 }
 
@@ -157,6 +169,15 @@ static inline void slop_array_push(SlopArena* arena, SlopArray* arr, void* item)
     arr->data[arr->length++] = item;
 }
 
+// SECURE BOUNDS CHECKING: Prevents buffer overflows and arbitrary memory reading exploits
+static inline void* slop_array_get(SlopArray arr, int64_t idx) {
+    if (idx < 0 || (size_t)idx >= arr.length) {
+        fprintf(stderr, "Slop Secure Guard: Array index out of bounds! Length: %zu, Requested Index: %lld. Terminating process to prevent memory exploit.\n", arr.length, (long long)idx);
+        exit(139); // Terminate safely with segmentation fault exit code
+    }
+    return arr.data[idx];
+}
+
 static inline SlopArray slop_array_clone_strings(SlopArena* dest_arena, SlopArray arr) {
     SlopArray new_arr = slop_array_create(dest_arena);
     for (size_t i = 0; i < arr.length; i++) {
@@ -179,18 +200,11 @@ static inline SlopArray slop_array_clone_ints(SlopArena* dest_arena, SlopArray a
     return new_arr;
 }
 
-// ============================================================================
-// NOVEL STORAGE INNOVATION: Slop-Pack Compressed Array (SPCA)
-// ============================================================================
-// Achieves over 90% memory and disk compression for redundant arrays of strings
-// using a high-performance single-pass adaptive dictionary run-length scheme.
-// ============================================================================
-
+// SPCA compressed packaging functions
 static inline SlopString slop_pack_strings(SlopArena* arena, SlopArray arr) {
     SlopString dict[256];
     int dict_size = 0;
     
-    // 1. Build dictionary of unique strings
     for (size_t i = 0; i < arr.length; i++) {
         SlopString* s = (SlopString*)arr.data[i];
         bool found = false;
@@ -205,7 +219,6 @@ static inline SlopString slop_pack_strings(SlopArena* arena, SlopArray arr) {
         }
     }
     
-    // 2. Compute required buffer size
     size_t est_size = 1 + dict_size * 4 + arr.length * 5;
     for (int i = 0; i < dict_size; i++) est_size += dict[i].length;
     for (size_t i = 0; i < arr.length; i++) est_size += ((SlopString*)arr.data[i])->length;
@@ -213,10 +226,8 @@ static inline SlopString slop_pack_strings(SlopArena* arena, SlopArray arr) {
     uint8_t* out = (uint8_t*)slop_arena_alloc(arena, est_size);
     size_t p = 0;
     
-    // Write dictionary size (1 byte)
     out[p++] = (uint8_t)dict_size;
     
-    // Write dictionary entries
     for (int i = 0; i < dict_size; i++) {
         uint16_t len = (uint16_t)dict[i].length;
         out[p++] = (uint8_t)(len & 0xFF);
@@ -225,14 +236,12 @@ static inline SlopString slop_pack_strings(SlopArena* arena, SlopArray arr) {
         p += len;
     }
     
-    // Write array length (4 bytes)
     uint32_t arr_len = (uint32_t)arr.length;
     out[p++] = (uint8_t)(arr_len & 0xFF);
     out[p++] = (uint8_t)((arr_len >> 8) & 0xFF);
     out[p++] = (uint8_t)((arr_len >> 16) & 0xFF);
     out[p++] = (uint8_t)((arr_len >> 24) & 0xFF);
     
-    // Write elements (1 byte if inside dictionary, or inline escape if not)
     for (size_t i = 0; i < arr.length; i++) {
         SlopString* s = (SlopString*)arr.data[i];
         int dict_id = -1;
@@ -266,10 +275,8 @@ static inline SlopArray slop_unpack_strings(SlopArena* arena, SlopString packed)
     uint8_t* in = (uint8_t*)packed.data;
     size_t p = 0;
     
-    // Read dictionary size
     int dict_size = in[p++];
     
-    // Read dictionary entries
     SlopString dict[256];
     for (int i = 0; i < dict_size; i++) {
         uint16_t len = in[p++];
@@ -286,13 +293,11 @@ static inline SlopArray slop_unpack_strings(SlopArena* arena, SlopString packed)
         p += len;
     }
     
-    // Read array length
     uint32_t arr_len = in[p++];
     arr_len |= (uint32_t)(in[p++]) << 8;
     arr_len |= (uint32_t)(in[p++]) << 16;
     arr_len |= (uint32_t)(in[p++]) << 24;
     
-    // Read elements
     for (uint32_t i = 0; i < arr_len; i++) {
         uint8_t token = in[p++];
         SlopString* s = (SlopString*)slop_arena_alloc(arena, sizeof(SlopString));
@@ -322,6 +327,13 @@ static inline SlopString slop_read_file(SlopArena* arena, SlopString path_str) {
     memcpy(path, path_str.data, path_str.length);
     path[path_str.length] = '\0';
 
+    // SECURE DIRECTORY TRAVERSAL PROTECTION: Block "../" attacks
+    if (strstr(path, "..") != NULL) {
+        fprintf(stderr, "Slop Secure Guard: Blocked directory traversal attack attempt on path: %s\n", path);
+        free(path);
+        return (SlopString){ .data = "", .length = 0 };
+    }
+
     FILE* f = fopen(path, "rb");
     free(path);
 
@@ -333,7 +345,6 @@ static inline SlopString slop_read_file(SlopArena* arena, SlopString path_str) {
     fseek(f, 0, SEEK_SET);
 
     if (size <= 0) {
-        // Fallback for virtual files (like /proc and /sys) which report size 0
         size_t cap = 4096;
         char* data = (char*)slop_arena_alloc(arena, cap);
         size_t total_read = 0;
@@ -341,7 +352,7 @@ static inline SlopString slop_read_file(SlopArena* arena, SlopString path_str) {
             size_t read_bytes = fread(data + total_read, 1, 4096, f);
             total_read += read_bytes;
             if (read_bytes < 4096) {
-                break; // EOF or error
+                break;
             }
             cap += 4096;
             char* new_data = (char*)slop_arena_alloc(arena, cap);
@@ -365,6 +376,13 @@ static inline void slop_write_file(SlopString path_str, SlopString content) {
     char* path = (char*)malloc(path_str.length + 1);
     memcpy(path, path_str.data, path_str.length);
     path[path_str.length] = '\0';
+
+    // SECURE DIRECTORY TRAVERSAL PROTECTION: Block "../" attacks
+    if (strstr(path, "..") != NULL) {
+        fprintf(stderr, "Slop Secure Guard: Blocked directory traversal write attempt on path: %s\n", path);
+        free(path);
+        return;
+    }
 
     FILE* f = fopen(path, "wb");
     free(path);

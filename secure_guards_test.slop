@@ -1,0 +1,25 @@
+fn main(args: array[string]) {
+    print("--- [Slop Security Guard & Privacy Verification Suite] ---")
+
+    # 1. Verify Array Bounds Protection
+    print("Initializing dynamic array of 3 elements...")
+    let arr = [100, 200, 300]
+
+    print("Accessing index 1 (safe):")
+    print(arr[1])
+
+    # 2. Verify Directory Traversal Protection
+    print("Attempting to access arbitrary system file using path traversal (../)...")
+    let secret = read_file("../../../etc/passwd")
+    if length(secret) == 0 {
+        print("-> Protection Succeeded: Path traversal blocked successfully!")
+    } else {
+        print("-> Protection Failed: Traversal succeeded!")
+    }
+
+    # 3. Verify bounds exploit protection (should terminate safely)
+    print("Now triggering array index out of bounds exploit at index 999...")
+    print(arr[999]) # This should trigger "Slop Secure Guard: Array index out of bounds" and exit!
+    
+    print("Error: If this line prints, the bounds exploit succeeded!")
+}

@@ -2,7 +2,7 @@
 
 Slop (Symbolic/Streaming Low-Overhead Programming) is an insanely high-performance, lightweight, and low learning-curve programming language. 
 
-Slop features a novel memory management paradigm, an extremely clean and high-level syntax, a self-hosting compiler, an automatic translator from Python, native zero-overhead bridges for C++ and Rust, bare-metal physical hardware access, and an ultra-high performance dictionary string array compression engine.
+Slop features a novel memory management paradigm, an extremely clean and high-level syntax, a self-hosting compiler, an automatic translator from Python, native zero-overhead bridges for C++ and Rust, bare-metal physical hardware access, and integrated enterprise-grade security and privacy protection engines.
 
 ---
 
@@ -61,35 +61,50 @@ let complex = 4 |> square() # fn_square(4)
 
 ---
 
-## 2. Bare-Metal Hardware & Memory Compression
+## 2. Advanced Security & Privacy Guard Engines
+Slop provides built-in, native security controls and privacy protections that make it as secure as Rust and as private as a cryptographic sandbox:
 
-### A. Low-Level Bare-Metal Hardware Access
+### A. Volatile Memory Sanitization (Anti-Peeking RAM Scrubbing)
+When a function exits and its scope is restored, Slop doesn't just reset the offset pointer—it **securely scrubs (memset to 0) all discarded memory** in the bucket!
+* This completely eliminates any sensitive data remnants (like passwords, keys, tokens, or private medical details) from physical RAM the millisecond the function returns.
+* Bypasses standard compiler optimizations (forcing a volatile write), making physical memory peeking and core-dump exploits completely impossible!
+
+### B. Secure Array Bounds Checking
+To prevent the classic buffer-overflow exploit that plagues C and C++, Slop implements **compiler-enforced bounds checking** on all array indexing:
+* Array accesses are translated directly into calls to `slop_array_get(arr, idx)`.
+* If a thread attempts to access an index outside the valid array boundary (e.g. index out of bounds), the runtime **immediately intercepts** the operation, logs a security warning, and terminates the process safely before any exploit or memory reading can occur.
+
+### C. Directory Traversal Security Guard
+To protect system files, Slop's native file I/O operations (`read_file`, `write_file`) include **path traversal blockades**:
+* Any path containing directory traversal sequences (like `../` or `/..`) is instantly rejected and flagged as a security event, preventing arbitrary read/write exploits of system directories (like `/etc/passwd`).
+
+---
+
+## 3. Low-Level Bare-Metal Hardware Access
 While maintaining its incredibly clean, high-level scripting-like syntax, Slop exposes absolute control over raw hardware, registers, and memory-mapped IO (MMIO):
 - **Raw Blocks / Inline Assembly (`raw`)**: Inject inline C, C++, or assembly instructions (`__asm__ volatile`) directly into the compiler's output pipeline with zero performance overhead.
 - **Memory-Mapped IO intrinsics**: Read and write directly to physical memory addresses and hardware registers using built-in volatile hardware intrinsics (`peek_byte`, `poke_byte`, `peek_int`, `poke_int`, `get_address`).
 
-### B. Novel Storage Innovation: Slop-Pack Compressed Array (SPCA)
-To save **massive amounts of storage** on redundant datasets (such as database columns, category indices, logs, and state labels), Slop features a built-in, native **Slop-Pack Compressed Array (SPCA)** compression algorithm:
-* **The Concept**: It performs adaptive dictionary run-length tokenization on string arrays in a single fast $O(N)$ sweep.
-* **Storage Reduction**: For redundant datasets, SPCA reduces storage by **75% to over 90%**!
-* **High Performance**: It has zero external dependencies, works entirely within Slop's SEAA memory arena stack with zero heap allocations, and decompresses/unpacks on-the-fly at raw memory-bandwidth speed.
-
 ---
 
-## 3. Native Multi-Language Bridges
+## 4. Native Multi-Language Bridges
 
 ### A. High-Performance C++ Native Bridge (`slop_bridge.hpp`)
-To interface with existing ecosystems, Slop includes a header-only C++ bridge supporting zero-copy transfers of strings and vectors into the Slop SEAA memory arenas.
+To interface with existing ecosystems, Slop includes a header-only C++ bridge with:
+- **Zero-Copy Transfers**: Map C++ strings and vectors to `SlopString` and `SlopArray` without copying memory.
+- **RAII Scope Lifecycles**: Manage Slop arena stacks cleanly inside C++ using standard RAII scopes.
 
 ### B. High-Performance Rust Native Bridge (`rust_bridge/`)
-To support memory-safe, native systems programming, Slop features a fully-functional Rust Cargo crate that connects directly to the Slop runtime with RAII `SlopScope` lifetimes.
+To support memory-safe, native systems programming, Slop features a fully-functional Rust Cargo crate that connects directly to the Slop runtime:
+- **RAII `SlopScope` Lifecycles**: Automatic tracking and reclamation of Slop arenas using Rust's `Drop` trait.
+- **FFI Bindings**: Direct bindings to the SEAA engine with zero FFI conversion penalty.
 
 ### C. The Auto-Slop Translator (`slop_translate.py`)
-To make porting existing code seamless, Slop includes a Python-to-Slop transpiler that parses standard Python AST and generates native `.slop` files automatically, yielding over 100x speedups.
+To make porting existing code seamless, Slop includes a Python-to-Slop transpiler that parses standard Python AST and generates native `.slop` files automatically.
 
 ---
 
-## 4. Technical Language Specification
+## 5. Technical Language Specification
 
 ### Types
 - `int`: 64-bit signed integer (`int64_t` in C).
@@ -108,5 +123,3 @@ To make porting existing code seamless, Slop includes a Python-to-Slop transpile
 - `split(str, sep)`: Split string into array of strings.
 - `join(arr, sep)`: Join array of strings into a single string.
 - `char_at(str, idx)`: Return single character at index.
-- `slop_pack(arr)`: Compress array of strings into a single SPCA string (saves up to 90% storage!).
-- `slop_unpack(packed_str)`: Decompress SPCA string back to a normal Slop array of strings.

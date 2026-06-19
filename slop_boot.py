@@ -888,7 +888,7 @@ int main(int argc, char** argv) {
                 elem_type = arr_type[6:-1]
                 
             c_elem_type = self.get_c_type(elem_type)
-            return f"(*({c_elem_type}*)({arr_code}.data[{idx_code}]))", elem_type
+            return f"(*({c_elem_type}*)(slop_array_get({arr_code}, {idx_code})))", elem_type
             
         elif isinstance(expr, ArrayLiteralNode):
             elem_type = "int"

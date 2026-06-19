@@ -10,6 +10,7 @@ benchmark_slop
 benchmark_cpp
 benchmark_cpp_unopt
 benchmark_slop_unopt
+secure_guards_test
 
 # Generated C files
 hello.c
@@ -19,6 +20,7 @@ complex_syntax.c
 hardware_access.c
 storage_savings.c
 benchmark_slop.c
+secure_guards_test.c
 
 # Pycache / compilation artifacts
 __pycache__/
