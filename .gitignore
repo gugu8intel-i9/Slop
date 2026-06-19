@@ -1,10 +1,13 @@
 # Binary executables
 hello
 slop-compiler
+cpp_library_test
+test_program
 
 # Generated C files
 hello.c
 compiler.c
+test_program.c
 
 # Pycache / compilation artifacts
 __pycache__/
