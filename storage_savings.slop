@@ -1,0 +1,51 @@
+fn main(args: array[string]) {
+    print("--- [Slop-Pack Compressed Array (SPCA) Storage Savings Demo] ---")
+
+    # 1. Create a large, redundant array of categories
+    # 20 elements, but only 3 unique words! Very typical for database fields, category indices, logs, etc.
+    let categories = [
+        "active", "pending", "active", "inactive", "pending", "active", "active", "inactive",
+        "active", "pending", "inactive", "inactive", "active", "pending", "active", "inactive",
+        "pending", "inactive", "active", "active"
+    ]
+
+    print("Uncompressed Array length:")
+    print(length(categories))
+
+    # Calculate uncompressed size (sum of lengths of strings)
+    let total_uncompressed_len = 0
+    let i = 0
+    while i < length(categories) {
+        total_uncompressed_len = total_uncompressed_len + length(categories[i])
+        i = i + 1
+    }
+    print("Sum of raw string lengths (Uncompressed storage):")
+    print(total_uncompressed_len)
+
+    # 2. Compress the array into a single packed binary SlopString!
+    let packed = slop_pack(categories)
+    
+    print("Compressed packed string storage size (in bytes):")
+    print(length(packed))
+
+    # Calculate saving ratio
+    print("Storage saved (bytes):")
+    let saved = total_uncompressed_len - length(packed)
+    print(saved)
+
+    # 3. Unpack and restore the original array!
+    let restored = slop_unpack(packed)
+
+    print("Restored Array length:")
+    print(length(restored))
+
+    # Verify elements are restored correctly
+    print("Verifying first 5 restored elements:")
+    print(restored[0])
+    print(restored[1])
+    print(restored[2])
+    print(restored[3])
+    print(restored[4])
+
+    print("--- [Storage Savings Demonstration Completed Successfully] ---")
+}

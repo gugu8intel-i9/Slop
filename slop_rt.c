@@ -1,9 +1,8 @@
-#define SLOP_IMPLEMENTATION
 #include "slop_rt.h"
 
 int slop_arena_depth = 0;
 
-// Export linkable versions of the runtime functions for Rust and other FFI users
+// Export all runtime functions with standard external linkage for FFI
 SlopArena* ext_slop_arena_create(size_t capacity) {
     return slop_arena_create(capacity);
 }
@@ -54,4 +53,13 @@ void ext_slop_print_string(SlopString s) {
 
 void ext_slop_print_int(int64_t val) {
     slop_print_int(val);
+}
+
+// SPCA compressed packaging functions exported for FFI
+SlopString ext_slop_pack_strings(SlopArena* arena, SlopArray arr) {
+    return slop_pack_strings(arena, arr);
+}
+
+SlopArray ext_slop_unpack_strings(SlopArena* arena, SlopString packed) {
+    return slop_unpack_strings(arena, packed);
 }

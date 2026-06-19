@@ -622,6 +622,8 @@ class CodeGenerator:
             "peek_int": ("int", ["int"]),
             "poke_int": ("void", ["int", "int"]),
             "get_address": ("int", ["int"]),
+            "slop_pack": ("string", ["array[string]"]),
+            "slop_unpack": ("array[string]", ["string"]),
         }
         self.structs = {}
 
@@ -772,7 +774,6 @@ int main(int argc, char** argv) {
                 self.output.append("    return;\n")
 
         elif isinstance(stmt, RawBlockNode):
-            # Safe and powerful inline code embedding!
             self.output.append(f"    {stmt.code}\n")
                 
         elif isinstance(stmt, IfNode):
@@ -933,7 +934,14 @@ int main(int argc, char** argv) {
             return arr_var, f"array[{elt_type}]"
             
         elif isinstance(expr, CallNode):
-            if expr.name == "peek_byte":
+            if expr.name == "slop_pack":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_pack_strings(local_arena, {arg_code})", "string"
+            elif expr.name == "slop_unpack":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_unpack_strings(local_arena, {arg_code})", "array[string]"
+                
+            elif expr.name == "peek_byte":
                 addr_code, _ = self.generate_expression(expr.args[0])
                 return f"(*(volatile uint8_t*)({addr_code}))", "int"
             elif expr.name == "poke_byte":
@@ -948,7 +956,6 @@ int main(int argc, char** argv) {
                 val_code, _ = self.generate_expression(expr.args[1])
                 return f"(*(volatile uint64_t*)({addr_code}) = (uint64_t)({val_code}))", "void"
             elif expr.name == "get_address":
-                # Get address of variable
                 arg_code, _ = self.generate_expression(expr.args[0])
                 return f"((int64_t)&({arg_code}))", "int"
                 
@@ -1070,6 +1077,7 @@ int main(int argc, char** argv) {
             for arg in expr.args:
                 code, _ = self.generate_expression(arg)
                 args_code.append(code)
+            args_str = ", ".join(args_code)
             return f"fn_{expr.name}({', '.join(args_code)})", ret_type
             
         print(f"Error: Unknown expression node: {type(expr)}", file=sys.stderr)

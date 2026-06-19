@@ -5,6 +5,7 @@ cpp_library_test
 test_program
 complex_syntax
 hardware_access
+storage_savings
 
 # Generated C files
 hello.c
@@ -12,6 +13,7 @@ compiler.c
 test_program.c
 complex_syntax.c
 hardware_access.c
+storage_savings.c
 
 # Pycache / compilation artifacts
 __pycache__/
