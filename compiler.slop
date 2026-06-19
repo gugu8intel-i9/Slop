@@ -1,0 +1,328 @@
+# The Slop Lexer & Compiler Foundation
+# Written entirely in Slop itself!
+
+fn is_digit(ch: string) -> bool {
+    if ch == "0" { return true }
+    if ch == "1" { return true }
+    if ch == "2" { return true }
+    if ch == "3" { return true }
+    if ch == "4" { return true }
+    if ch == "5" { return true }
+    if ch == "6" { return true }
+    if ch == "7" { return true }
+    if ch == "8" { return true }
+    if ch == "9" { return true }
+    return false
+}
+
+fn is_alpha(ch: string) -> bool {
+    # Check lowercase letters
+    if ch == "a" { return true }
+    if ch == "b" { return true }
+    if ch == "c" { return true }
+    if ch == "d" { return true }
+    if ch == "e" { return true }
+    if ch == "f" { return true }
+    if ch == "g" { return true }
+    if ch == "h" { return true }
+    if ch == "i" { return true }
+    if ch == "j" { return true }
+    if ch == "k" { return true }
+    if ch == "l" { return true }
+    if ch == "m" { return true }
+    if ch == "n" { return true }
+    if ch == "o" { return true }
+    if ch == "p" { return true }
+    if ch == "q" { return true }
+    if ch == "r" { return true }
+    if ch == "s" { return true }
+    if ch == "t" { return true }
+    if ch == "u" { return true }
+    if ch == "v" { return true }
+    if ch == "w" { return true }
+    if ch == "x" { return true }
+    if ch == "y" { return true }
+    if ch == "z" { return true }
+    
+    # Check uppercase letters
+    if ch == "A" { return true }
+    if ch == "B" { return true }
+    if ch == "C" { return true }
+    if ch == "D" { return true }
+    if ch == "E" { return true }
+    if ch == "F" { return true }
+    if ch == "G" { return true }
+    if ch == "H" { return true }
+    if ch == "I" { return true }
+    if ch == "J" { return true }
+    if ch == "K" { return true }
+    if ch == "L" { return true }
+    if ch == "M" { return true }
+    if ch == "N" { return true }
+    if ch == "O" { return true }
+    if ch == "P" { return true }
+    if ch == "Q" { return true }
+    if ch == "R" { return true }
+    if ch == "S" { return true }
+    if ch == "T" { return true }
+    if ch == "U" { return true }
+    if ch == "V" { return true }
+    if ch == "W" { return true }
+    if ch == "X" { return true }
+    if ch == "Y" { return true }
+    if ch == "Z" { return true }
+    
+    # Check underscore
+    if ch == "_" { return true }
+    
+    return false
+}
+
+fn is_space(ch: string) -> bool {
+    if ch == " " { return true }
+    if ch == "\n" { return true }
+    if ch == "\t" { return true }
+    if ch == "\r" { return true }
+    return false
+}
+
+fn is_keyword(s: string) -> bool {
+    if s == "fn" { return true }
+    if s == "let" { return true }
+    if s == "if" { return true }
+    if s == "else" { return true }
+    if s == "while" { return true }
+    if s == "return" { return true }
+    if s == "struct" { return true }
+    if s == "true" { return true }
+    if s == "false" { return true }
+    return false
+}
+
+fn main(args: array[string]) {
+    if length(args) < 2 {
+        print("Slop Compiler: No input file specified.")
+        print("Usage: slop-compiler <file.slop>")
+        return
+    }
+
+    # Reading input source file via high-level built-in
+    let filename = args[1]
+    let source = read_file(filename)
+    let len = length(source)
+
+    if len == 0 {
+        print("File is empty or could not be read: " + filename)
+        return
+    }
+
+    print("--- [Slop Compiler: Scanning " + filename + "] ---")
+
+    let pos = 0
+    let line = 1
+    let col = 1
+
+    while pos < len {
+        let ch = char_at(source, pos)
+
+        # Skip whitespaces and track lines/cols
+        if is_space(ch) {
+            if ch == "\n" {
+                line = line + 1
+                col = 1
+            } else {
+                col = col + 1
+            }
+            pos = pos + 1
+        } else {
+            # Skip comments
+            if ch == "#" {
+                # Let's handle comments elegantly:
+                # We can write a loop that advances until \n
+                let comment_active = true
+                while comment_active {
+                    if pos >= len {
+                        comment_active = false
+                    } else {
+                        let c_ch = char_at(source, pos)
+                        if c_ch == "\n" {
+                            comment_active = false
+                        } else {
+                            pos = pos + 1
+                        }
+                    }
+                }
+            } else {
+                # Scan multi-character operators
+                let next_ch = ""
+                if pos + 1 < len {
+                    next_ch = char_at(source, pos + 1)
+                }
+
+                let processed_op = false
+                if ch == "-" {
+                    if next_ch == ">" {
+                        print("Token(ARROW, \"->\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
+                        pos = pos + 2
+                        col = col + 2
+                        processed_op = true
+                    }
+                }
+                if ch == "|" {
+                    if next_ch == ">" {
+                        print("Token(PIPE, \"|>\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
+                        pos = pos + 2
+                        col = col + 2
+                        processed_op = true
+                    }
+                }
+                if ch == "=" {
+                    if next_ch == "=" {
+                        print("Token(EQ, \"==\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
+                        pos = pos + 2
+                        col = col + 2
+                        processed_op = true
+                    }
+                }
+                if ch == "!" {
+                    if next_ch == "=" {
+                        print("Token(NEQ, \"!=\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
+                        pos = pos + 2
+                        col = col + 2
+                        processed_op = true
+                    }
+                }
+                if ch == "<" {
+                    if next_ch == "=" {
+                        print("Token(LEQ, \"<=\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
+                        pos = pos + 2
+                        col = col + 2
+                        processed_op = true
+                    }
+                }
+                if ch == ">" {
+                    if next_ch == "=" {
+                        print("Token(GEQ, \">=\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
+                        pos = pos + 2
+                        col = col + 2
+                        processed_op = true
+                    }
+                }
+
+                if processed_op == false {
+                    # Scan single character symbol
+                    # Symbol checks: ( ) { } [ ] : , + - * / % = < >
+                    let is_symbol = false
+                    if ch == "(" { is_symbol = true }
+                    if ch == ")" { is_symbol = true }
+                    if ch == "{" { is_symbol = true }
+                    if ch == "}" { is_symbol = true }
+                    if ch == "[" { is_symbol = true }
+                    if ch == "]" { is_symbol = true }
+                    if ch == ":" { is_symbol = true }
+                    if ch == "," { is_symbol = true }
+                    if ch == "+" { is_symbol = true }
+                    if ch == "-" { is_symbol = true }
+                    if ch == "*" { is_symbol = true }
+                    if ch == "/" { is_symbol = true }
+                    if ch == "%" { is_symbol = true }
+                    if ch == "=" { is_symbol = true }
+                    if ch == "<" { is_symbol = true }
+                    if ch == ">" { is_symbol = true }
+
+                    if is_symbol {
+                        print("Token(SYMBOL, \"" + ch + "\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
+                        pos = pos + 1
+                        col = col + 1
+                    } else {
+                        # Scan string literal
+                        if ch == "\"" {
+                            let str_val = ""
+                            let str_col = col
+                            pos = pos + 1
+                            col = col + 1
+                            let string_active = true
+                            while string_active {
+                                if pos >= len {
+                                    print("Error: Unterminated string literal starting at " + int_to_string(line) + ":" + int_to_string(str_col))
+                                    string_active = false
+                                } else {
+                                    let s_ch = char_at(source, pos)
+                                    if s_ch == "\"" {
+                                        string_active = false
+                                        pos = pos + 1
+                                        col = col + 1
+                                    } else {
+                                        # Handle simple escape or regular char
+                                        str_val = str_val + s_ch
+                                        pos = pos + 1
+                                        col = col + 1
+                                    }
+                                }
+                            }
+                            print("Token(STRING, \"" + str_val + "\", " + int_to_string(line) + ":" + int_to_string(str_col) + ")")
+                        } else {
+                            # Scan number literal
+                            if is_digit(ch) {
+                                let num_val = ""
+                                let num_col = col
+                                let num_active = true
+                                while num_active {
+                                    if pos >= len {
+                                        num_active = false
+                                    } else {
+                                        let n_ch = char_at(source, pos)
+                                        if is_digit(n_ch) {
+                                            num_val = num_val + n_ch
+                                            pos = pos + 1
+                                            col = col + 1
+                                        } else {
+                                            num_active = false
+                                        }
+                                    }
+                                }
+                                print("Token(NUMBER, \"" + num_val + "\", " + int_to_string(line) + ":" + int_to_string(num_col) + ")")
+                            } else {
+                                # Scan identifier or keyword
+                                if is_alpha(ch) {
+                                    let id_val = ""
+                                    let id_col = col
+                                    let id_active = true
+                                    while id_active {
+                                        if pos >= len {
+                                            id_active = false
+                                        } else {
+                                            let i_ch = char_at(source, pos)
+                                            let is_id_part = false
+                                            if is_alpha(i_ch) { is_id_part = true }
+                                            if is_digit(i_ch) { is_id_part = true }
+                                            
+                                            if is_id_part {
+                                                id_val = id_val + i_ch
+                                                pos = pos + 1
+                                                col = col + 1
+                                            } else {
+                                                id_active = false
+                                            }
+                                        }
+                                    }
+                                    
+                                    if is_keyword(id_val) {
+                                        print("Token(KEYWORD, \"" + id_val + "\", " + int_to_string(line) + ":" + int_to_string(id_col) + ")")
+                                    } else {
+                                        print("Token(IDENTIFIER, \"" + id_val + "\", " + int_to_string(line) + ":" + int_to_string(id_col) + ")")
+                                    }
+                                } else {
+                                    print("Error: Unknown character '" + ch + "' at " + int_to_string(line) + ":" + int_to_string(col))
+                                    pos = pos + 1
+                                    col = col + 1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    print("--- [Scan Completed Successfully] ---")
+}

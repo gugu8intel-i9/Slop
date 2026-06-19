@@ -1,0 +1,34 @@
+fn hello(name: string) -> string {
+    return "Hello, " + name + "!"
+}
+
+fn square(x: int) -> int {
+    return x * x
+}
+
+fn main(args: array[string]) {
+    let name = "World"
+    let greeting = hello(name)
+    print(greeting)
+
+    let val = 5
+    let sq = square(val)
+    print("Square of 5 is:")
+    print(sq)
+
+    # Testing pipeline operator
+    let complex_calculation = 4 |> square()
+    print("Pipeline result (4^2):")
+    print(complex_calculation)
+
+    # Testing array creation and iteration
+    let numbers = [1, 2, 3]
+    let total = 0
+    let i = 0
+    while i < length(numbers) {
+        total = total + numbers[i]
+        i = i + 1
+    }
+    print("Sum of array elements:")
+    print(total)
+}

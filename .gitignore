@@ -1,0 +1,11 @@
+# Binary executables
+hello
+slop-compiler
+
+# Generated C files
+hello.c
+compiler.c
+
+# Pycache / compilation artifacts
+__pycache__/
+*.pyc
