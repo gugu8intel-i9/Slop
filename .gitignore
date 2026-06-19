@@ -3,11 +3,13 @@ hello
 slop-compiler
 cpp_library_test
 test_program
+complex_syntax
 
 # Generated C files
 hello.c
 compiler.c
 test_program.c
+complex_syntax.c
 
 # Pycache / compilation artifacts
 __pycache__/

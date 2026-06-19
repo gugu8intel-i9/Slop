@@ -96,6 +96,9 @@ fn is_keyword(s: string) -> bool {
     if s == "struct" { return true }
     if s == "true" { return true }
     if s == "false" { return true }
+    if s == "match" { return true }
+    if s == "for" { return true }
+    if s == "in" { return true }
     return false
 }
 
@@ -168,6 +171,14 @@ fn main(args: array[string]) {
                         processed_op = true
                     }
                 }
+                if ch == "=" {
+                    if next_ch == ">" {
+                        print("Token(FAT_ARROW, \"=>\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
+                        pos = pos + 2
+                        col = col + 2
+                        processed_op = true
+                    }
+                }
                 if ch == "|" {
                     if next_ch == ">" {
                         print("Token(PIPE, \"|>\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
@@ -229,6 +240,7 @@ fn main(args: array[string]) {
                     if ch == "=" { is_symbol = true }
                     if ch == "<" { is_symbol = true }
                     if ch == ">" { is_symbol = true }
+                    if ch == "." { is_symbol = true }
 
                     if is_symbol {
                         print("Token(SYMBOL, \"" + ch + "\", " + int_to_string(line) + ":" + int_to_string(col) + ")")

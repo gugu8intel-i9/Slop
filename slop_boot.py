@@ -61,6 +61,13 @@ class Lexer:
                 tokens.append(Token("ARROW", "->", l, c))
                 continue
 
+            if char == '=' and self.peek(1) == '>':
+                l, c = self.line, self.col
+                self.advance()
+                self.advance()
+                tokens.append(Token("FAT_ARROW", "=>", l, c))
+                continue
+
             if char == '|' and self.peek(1) == '>':
                 l, c = self.line, self.col
                 self.advance()
@@ -97,7 +104,13 @@ class Lexer:
                 continue
 
             # Single-character symbols
-            if char in "()[]{}:,;+-%*/=<>":
+            if char in "()[]{}:,;+-%*/=.":
+                l, c = self.line, self.col
+                self.advance()
+                tokens.append(Token("SYMBOL", char, l, c))
+                continue
+
+            if char in "<>":
                 l, c = self.line, self.col
                 self.advance()
                 tokens.append(Token("SYMBOL", char, l, c))
@@ -147,7 +160,7 @@ class Lexer:
                 while self.peek().isalnum() or self.peek() == '_':
                     val.append(self.advance())
                 name = "".join(val)
-                if name in ["fn", "let", "if", "else", "while", "return", "struct", "true", "false"]:
+                if name in ["fn", "let", "if", "else", "while", "return", "struct", "true", "false", "match", "for", "in"]:
                     tokens.append(Token("KEYWORD", name, l, c))
                 else:
                     tokens.append(Token("IDENTIFIER", name, l, c))
@@ -170,16 +183,18 @@ class ProgramNode(ASTNode):
         self.declarations = declarations
 
 class StructNode(ASTNode):
-    def __init__(self, name, fields):
+    def __init__(self, name, fields, methods):
         self.name = name
         self.fields = fields # list of (name, type)
+        self.methods = methods # list of FuncNode
 
 class FuncNode(ASTNode):
-    def __init__(self, name, params, return_type, body):
+    def __init__(self, name, params, return_type, body, struct_context=None):
         self.name = name
         self.params = params # list of (name, type)
         self.return_type = return_type
         self.body = body # list of statements
+        self.struct_context = struct_context # Name of struct if it's a method
 
 class VarDeclNode(ASTNode):
     def __init__(self, name, type_, expr):
@@ -189,7 +204,7 @@ class VarDeclNode(ASTNode):
 
 class AssignNode(ASTNode):
     def __init__(self, name, expr):
-        self.name = name
+        self.name = name # name of variable or FieldAccessNode
         self.expr = expr
 
 class ReturnNode(ASTNode):
@@ -206,6 +221,11 @@ class WhileNode(ASTNode):
     def __init__(self, cond, body):
         self.cond = cond
         self.body = body
+
+class MatchNode(ASTNode):
+    def __init__(self, expr, cases):
+        self.expr = expr
+        self.cases = cases # list of (pattern_expr_or_None_for_else, body_stmt_list)
 
 class ExprNode(ASTNode):
     pass
@@ -230,6 +250,17 @@ class CallNode(ExprNode):
         self.name = name
         self.args = args
 
+class MemberCallNode(ExprNode):
+    def __init__(self, object_expr, method_name, args):
+        self.object_expr = object_expr
+        self.method_name = method_name
+        self.args = args
+
+class FieldAccessNode(ExprNode):
+    def __init__(self, object_expr, field_name):
+        self.object_expr = object_expr
+        self.field_name = field_name
+
 class ArrayIndexNode(ExprNode):
     def __init__(self, array_expr, index_expr):
         self.array_expr = array_expr
@@ -239,6 +270,12 @@ class ArrayLiteralNode(ExprNode):
     def __init__(self, elements, element_type=None):
         self.elements = elements
         self.element_type = element_type # can be None, meaning empty/inferred
+
+class ListComprehensionNode(ExprNode):
+    def __init__(self, element_expr, var_name, source_expr):
+        self.element_expr = element_expr
+        self.var_name = var_name
+        self.source_expr = source_expr
 
 class Parser:
     def __init__(self, tokens):
@@ -273,7 +310,6 @@ class Parser:
         return tok
 
     def parse_type(self):
-        # Parses types like "int", "string", "bool", "array[int]", "array[string]"
         base = self.consume("IDENTIFIER", msg="Expected type identifier").value
         if base == "array" and self.match("SYMBOL", "["):
             elem_type = self.parse_type()
@@ -298,18 +334,23 @@ class Parser:
         name = self.consume("IDENTIFIER", msg="Expected struct name").value
         self.consume("SYMBOL", "{", "Expected '{' after struct name")
         fields = []
+        methods = []
         while not self.match("SYMBOL", "}"):
-            field_name = self.consume("IDENTIFIER", msg="Expected field name").value
-            self.consume("SYMBOL", ":", "Expected ':' after field name")
-            field_type = self.parse_type()
-            fields.append((field_name, field_type))
-            if self.match("SYMBOL", ","):
-                continue
-            if self.peek().value == "}":
-                continue
-        return StructNode(name, fields)
+            if self.match("KEYWORD", "fn"):
+                # Method inside struct (C++/Rust Style inline method!)
+                methods.append(self.parse_function(struct_context=name))
+            else:
+                field_name = self.consume("IDENTIFIER", msg="Expected field name").value
+                self.consume("SYMBOL", ":", "Expected ':' after field name")
+                field_type = self.parse_type()
+                fields.append((field_name, field_type))
+                if self.match("SYMBOL", ","):
+                    continue
+                if self.peek().value == "}":
+                    continue
+        return StructNode(name, fields, methods)
 
-    def parse_function(self):
+    def parse_function(self, struct_context=None):
         name = self.consume("IDENTIFIER", msg="Expected function name").value
         self.consume("SYMBOL", "(", "Expected '(' after function name")
         params = []
@@ -331,7 +372,7 @@ class Parser:
         body = []
         while not self.match("SYMBOL", "}"):
             body.append(self.parse_statement())
-        return FuncNode(name, params, return_type, body)
+        return FuncNode(name, params, return_type, body, struct_context)
 
     def parse_statement(self):
         if self.match("KEYWORD", "let"):
@@ -358,7 +399,6 @@ class Parser:
             else_branch = []
             if self.match("KEYWORD", "else"):
                 if self.match("KEYWORD", "if"):
-                    # else if
                     else_branch = [self.parse_statement()]
                 else:
                     self.consume("SYMBOL", "{", "Expected '{' after else")
@@ -374,31 +414,48 @@ class Parser:
                 body.append(self.parse_statement())
             return WhileNode(cond, body)
 
+        if self.match("KEYWORD", "match"):
+            # Rust-style pattern matching syntax!
+            expr = self.parse_expression()
+            self.consume("SYMBOL", "{", "Expected '{' after match expression")
+            cases = []
+            while not self.match("SYMBOL", "}"):
+                pattern = None
+                if self.match("KEYWORD", "else") or self.match("IDENTIFIER", "_"):
+                    pattern = None
+                else:
+                    pattern = self.parse_expression()
+                self.consume("FAT_ARROW", msg="Expected '=>' in match arm")
+                
+                body = []
+                if self.match("SYMBOL", "{"):
+                    while not self.match("SYMBOL", "}"):
+                        body.append(self.parse_statement())
+                else:
+                    body.append(self.parse_statement())
+                cases.append((pattern, body))
+                if self.match("SYMBOL", ","):
+                    continue
+            return MatchNode(expr, cases)
+
         # Assignment or standalone expression
         expr = self.parse_expression()
         if self.match("SYMBOL", "="):
-            if not isinstance(expr, IdentifierNode):
-                print(f"Error: Left-hand side of assignment must be an identifier", file=sys.stderr)
-                sys.exit(1)
             rhs = self.parse_expression()
-            return AssignNode(expr.name, rhs)
+            return AssignNode(expr, rhs)
         
         return expr
 
     def parse_expression(self):
-        # We parse binary operations with pipeline precedence
         return self.parse_pipeline()
 
     def parse_pipeline(self):
         expr = self.parse_equality()
         while self.match("PIPE"):
-            # The right-hand side of a pipeline must be a function call, or an identifier which represents a function call
             rhs = self.parse_equality()
             if isinstance(rhs, IdentifierNode):
-                # e.g., val |> print -> print(val)
                 expr = CallNode(rhs.name, [expr])
             elif isinstance(rhs, CallNode):
-                # e.g., val |> push(arr) -> push(expr, arr)
                 rhs.args.insert(0, expr)
                 expr = rhs
             else:
@@ -472,7 +529,6 @@ class Parser:
             self.advance()
             name = tok.value
             
-            # Function/Constructor call?
             if self.match("SYMBOL", "("):
                 args = []
                 while not self.match("SYMBOL", ")"):
@@ -485,9 +541,24 @@ class Parser:
             else:
                 expr = IdentifierNode(name)
             
-            # Array index or field access or method-like pipeline can follow
+            # Postfix operations: field access, method calls, arrays
             while True:
-                if self.match("SYMBOL", "["):
+                if self.match("SYMBOL", "."):
+                    # Member field or method access (C++ syntax!)
+                    member_name = self.consume("IDENTIFIER", msg="Expected member identifier").value
+                    if self.match("SYMBOL", "("):
+                        # Method call! obj.method(...)
+                        args = []
+                        while not self.match("SYMBOL", ")"):
+                            args.append(self.parse_expression())
+                            if self.match("SYMBOL", ","):
+                                continue
+                            if self.peek().value == ")":
+                                continue
+                        expr = MemberCallNode(expr, member_name, args)
+                    else:
+                        expr = FieldAccessNode(expr, member_name)
+                elif self.match("SYMBOL", "["):
                     idx_expr = self.parse_expression()
                     self.consume("SYMBOL", "]", "Expected closing ']' for array indexing")
                     expr = ArrayIndexNode(expr, idx_expr)
@@ -496,13 +567,22 @@ class Parser:
             return expr
 
         if self.match("SYMBOL", "["):
+            # Could be standard literal [1, 2, 3] or Python-style list comprehension [x * x for x in list]!
             elements = []
-            while not self.match("SYMBOL", "]"):
-                elements.append(self.parse_expression())
-                if self.match("SYMBOL", ","):
-                    continue
-                if self.peek().value == "]":
-                    continue
+            if self.peek().value != "]":
+                first = self.parse_expression()
+                if self.match("KEYWORD", "for"):
+                    # Python-style List Comprehension! [first_expr for var in source_expr]
+                    var_name = self.consume("IDENTIFIER", msg="Expected variable name in comprehension").value
+                    self.consume("KEYWORD", "in", "Expected 'in' in comprehension")
+                    source_expr = self.parse_expression()
+                    self.consume("SYMBOL", "]", "Expected closing ']'")
+                    return ListComprehensionNode(first, var_name, source_expr)
+                
+                elements.append(first)
+                while self.match("SYMBOL", ","):
+                    elements.append(self.parse_expression())
+            self.consume("SYMBOL", "]", "Expected closing ']'")
             return ArrayLiteralNode(elements)
 
         if self.match("SYMBOL", "("):
@@ -514,18 +594,18 @@ class Parser:
         sys.exit(1)
 
 
-# Code Generator to convert AST into highly optimized C
+# Code Generator
 class CodeGenerator:
     def __init__(self):
         self.output = []
         self.temp_var_counter = 0
-        self.var_types = {} # variable name -> type
-        self.func_types = { # func_name -> (return_type, [param_types])
+        self.var_types = {} 
+        self.func_types = { 
             "print": ("void", ["string"]),
             "print_int": ("void", ["int"]),
             "print_bool": ("void", ["bool"]),
             "length": ("int", ["string"]),
-            "push": ("void", ["array[string]", "string"]), # or ints
+            "push": ("void", ["array[string]", "string"]), 
             "read_file": ("string", ["string"]),
             "write_file": ("void", ["string", "string"]),
             "split": ("array[string]", ["string", "string"]),
@@ -563,7 +643,7 @@ class CodeGenerator:
                 self.structs[decl.name] = decl
                 self.output.append(f"struct {decl.name};\n")
         
-        # Step 2: Define structs
+        # Step 2: Define struct layouts
         for decl in node.declarations:
             if isinstance(decl, StructNode):
                 self.output.append(f"struct {decl.name} {{\n")
@@ -571,21 +651,30 @@ class CodeGenerator:
                     self.output.append(f"    {self.get_c_type(f_type)} {f_name};\n")
                 self.output.append("};\n\n")
 
-        # Step 3: Forward declarations of functions
+        # Step 3: Forward declarations of functions and struct methods
         for decl in node.declarations:
             if isinstance(decl, FuncNode):
                 self.func_types[decl.name] = (decl.return_type, [t for n, t in decl.params])
                 params_c = []
                 for p_name, p_type in decl.params:
                     params_c.append(f"{self.get_c_type(p_type)} {p_name}")
-                params_str = ", ".join(params_c)
-                self.output.append(f"{self.get_c_type(decl.return_type)} fn_{decl.name}({params_str});\n")
+                self.output.append(f"{self.get_c_type(decl.return_type)} fn_{decl.name}({', '.join(params_c)});\n")
+            elif isinstance(decl, StructNode):
+                for m in decl.methods:
+                    self.func_types[f"{decl.name}_{m.name}"] = (m.return_type, [decl.name] + [t for n, t in m.params])
+                    params_c = [f"struct {decl.name} this"]
+                    for p_name, p_type in m.params:
+                        params_c.append(f"{self.get_c_type(p_type)} {p_name}")
+                    self.output.append(f"{self.get_c_type(m.return_type)} fn_{decl.name}_{m.name}({', '.join(params_c)});\n")
         self.output.append("\n")
 
-        # Step 4: Implement functions
+        # Step 4: Implement functions and methods
         for decl in node.declarations:
             if isinstance(decl, FuncNode):
                 self.generate_function(decl)
+            elif isinstance(decl, StructNode):
+                for m in decl.methods:
+                    self.generate_function(m)
 
         # Step 5: Implement main entry point
         self.output.append("""
@@ -593,7 +682,6 @@ int main(int argc, char** argv) {
     slop_arena_depth = 1;
     SlopArena* local_arena = slop_get_arena(slop_arena_depth);
     
-    // Convert CLI arguments into SlopArray of SlopStrings
     SlopArray args = slop_array_create(local_arena);
     for (int i = 0; i < argc; i++) {
         SlopString* s = (SlopString*)slop_arena_alloc(local_arena, sizeof(SlopString));
@@ -601,7 +689,6 @@ int main(int argc, char** argv) {
         slop_array_push(local_arena, &args, s);
     }
     
-    // Call main Slop function
     fn_main(args);
     return 0;
 }
@@ -610,26 +697,27 @@ int main(int argc, char** argv) {
 
     def generate_function(self, func_node):
         params_c = []
-        # Save old variable types
         old_var_types = self.var_types.copy()
+        
+        if func_node.struct_context:
+            self.var_types["this"] = func_node.struct_context
+            params_c.append(f"struct {func_node.struct_context} this")
+            
         for p_name, p_type in func_node.params:
             self.var_types[p_name] = p_type
             params_c.append(f"{self.get_c_type(p_type)} {p_name}")
-        params_str = ", ".join(params_c)
 
         ret_type = self.get_c_type(func_node.return_type)
-        self.output.append(f"{ret_type} fn_{func_node.name}({params_str}) {{\n")
+        func_name = f"{func_node.struct_context}_{func_node.name}" if func_node.struct_context else func_node.name
+        self.output.append(f"{ret_type} fn_{func_name}({', '.join(params_c)}) {{\n")
         
-        # Function prolog
         self.output.append("    slop_arena_depth++;\n")
         self.output.append("    SlopArena* local_arena = slop_get_arena(slop_arena_depth);\n")
         self.output.append("    size_t saved_offset = slop_arena_save(local_arena);\n")
         
-        # Compile statements
         for stmt in func_node.body:
             self.generate_statement(stmt)
 
-        # Function epilog (if void return is implicit/fallback)
         if func_node.return_type == "void":
             self.output.append("    slop_arena_restore(local_arena, saved_offset);\n")
             self.output.append("    slop_arena_depth--;\n")
@@ -639,22 +727,20 @@ int main(int argc, char** argv) {
 
     def generate_statement(self, stmt):
         if isinstance(stmt, VarDeclNode):
-            # Type inference if not specified
             expr_code, expr_type = self.generate_expression(stmt.expr)
             var_type = stmt.type or expr_type
             self.var_types[stmt.name] = var_type
-            c_type = self.get_c_type(var_type)
-            self.output.append(f"    {c_type} {stmt.name} = {expr_code};\n")
+            self.output.append(f"    {self.get_c_type(var_type)} {stmt.name} = {expr_code};\n")
             
         elif isinstance(stmt, AssignNode):
+            target_code, _ = self.generate_expression(stmt.name)
             expr_code, _ = self.generate_expression(stmt.expr)
-            self.output.append(f"    {stmt.name} = {expr_code};\n")
+            self.output.append(f"    {target_code} = {expr_code};\n")
             
         elif isinstance(stmt, ReturnNode):
             if stmt.expr:
                 expr_code, expr_type = self.generate_expression(stmt.expr)
                 if expr_type == "string":
-                    # Clone string to caller's arena before wiping local arena
                     self.output.append(f"    SlopString _ret = slop_string_clone(slop_get_arena(slop_arena_depth - 1), {expr_code});\n")
                     self.output.append("    slop_arena_restore(local_arena, saved_offset);\n")
                     self.output.append("    slop_arena_depth--;\n")
@@ -696,9 +782,32 @@ int main(int argc, char** argv) {
             for sub_stmt in stmt.body:
                 self.generate_statement(sub_stmt)
             self.output.append("    }\n")
+
+        elif isinstance(stmt, MatchNode):
+            # Translate Match Statement (Rust-style!) to If-Else Chain
+            expr_code, expr_type = self.generate_expression(stmt.expr)
+            first = True
+            for pattern, body_stmts in stmt.cases:
+                if pattern is None: # else arm
+                    self.output.append(" else {\n")
+                else:
+                    pat_code, _ = self.generate_expression(pattern)
+                    cond_str = f"({expr_code} == {pat_code})"
+                    if expr_type == "string":
+                        cond_str = f"slop_string_equal({expr_code}, {pat_code})"
+                    
+                    if first:
+                        self.output.append(f"    if ({cond_str}) {{\n")
+                        first = False
+                    else:
+                        self.output.append(f" else if ({cond_str}) {{\n")
+                
+                for body_stmt in body_stmts:
+                    self.generate_statement(body_stmt)
+                self.output.append("    }")
+            self.output.append("\n")
             
         else:
-            # Standalone expression
             expr_code, _ = self.generate_expression(stmt)
             self.output.append(f"    {expr_code};\n")
 
@@ -707,8 +816,6 @@ int main(int argc, char** argv) {
             if expr.type == "int":
                 return str(expr.value), "int"
             elif expr.type == "string":
-                # Convert string to static initializer or create dynamically
-                # Since dynamic create is very robust with our escaping model, let's use:
                 escaped = expr.value.replace('"', '\\"').replace('\n', '\\n')
                 return f'slop_string_create(local_arena, "{escaped}")', "string"
             elif expr.type == "bool":
@@ -722,7 +829,6 @@ int main(int argc, char** argv) {
             left_code, left_type = self.generate_expression(expr.left)
             right_code, right_type = self.generate_expression(expr.right)
             
-            # String operations
             if left_type == "string" and right_type == "string":
                 if expr.op == "+":
                     return f"slop_string_concat(local_arena, {left_code}, {right_code})", "string"
@@ -731,8 +837,30 @@ int main(int argc, char** argv) {
                 elif expr.op == "!=":
                     return f"!slop_string_equal({left_code}, {right_code})", "bool"
             
-            # Normal arithmetic or comparison
             return f"({left_code} {expr.op} {right_code})", left_type
+
+        elif isinstance(expr, FieldAccessNode):
+            obj_code, obj_type = self.generate_expression(expr.object_expr)
+            # Find field type
+            struct_def = self.structs.get(obj_type)
+            field_type = "int"
+            if struct_def:
+                for f_name, f_type in struct_def.fields:
+                    if f_name == expr.field_name:
+                        field_type = f_type
+            return f"({obj_code}.{expr.field_name})", field_type
+
+        elif isinstance(expr, MemberCallNode):
+            obj_code, obj_type = self.generate_expression(expr.object_expr)
+            func_name = f"{obj_type}_{expr.method_name}"
+            ret_type, _ = self.func_types.get(func_name, ("int", []))
+            
+            args_code = [obj_code]
+            for arg in expr.args:
+                code, _ = self.generate_expression(arg)
+                args_code.append(code)
+            
+            return f"fn_{func_name}({', '.join(args_code)})", ret_type
             
         elif isinstance(expr, ArrayIndexNode):
             arr_code, arr_type = self.generate_expression(expr.array_expr)
@@ -743,30 +871,61 @@ int main(int argc, char** argv) {
                 elem_type = arr_type[6:-1]
                 
             c_elem_type = self.get_c_type(elem_type)
-            # Casting pointer in array to correct type
             return f"(*({c_elem_type}*)({arr_code}.data[{idx_code}]))", elem_type
             
         elif isinstance(expr, ArrayLiteralNode):
-            # Check types
             elem_type = "int"
             if expr.elements:
                 _, elem_type = self.generate_expression(expr.elements[0])
             
             c_elem_type = self.get_c_type(elem_type)
             arr_var = self.fresh_temp()
-            # We declare and assign array elements in C
             self.output.append(f"    SlopArray {arr_var} = slop_array_create(local_arena);\n")
             for elem in expr.elements:
                 elem_code, _ = self.generate_expression(elem)
-                # Allocate element in the local arena so it persists until the array is clone/destroyed
                 elem_ptr = self.fresh_temp()
                 self.output.append(f"    {c_elem_type}* {elem_ptr} = ({c_elem_type}*)slop_arena_alloc(local_arena, sizeof({c_elem_type}));\n")
                 self.output.append(f"    *{elem_ptr} = {elem_code};\n")
                 self.output.append(f"    slop_array_push(local_arena, &{arr_var}, {elem_ptr});\n")
             return arr_var, f"array[{elem_type}]"
+
+        elif isinstance(expr, ListComprehensionNode):
+            # Python-style List Comprehension! [expr for var in source_expr]
+            source_code, source_type = self.generate_expression(expr.source_expr)
+            elem_type = "int"
+            if source_type.startswith("array[") and source_type.endswith("]"):
+                elem_type = source_type[6:-1]
+            
+            # Save parent state of variable type
+            old_var_type = self.var_types.get(expr.var_name)
+            self.var_types[expr.var_name] = elem_type
+            
+            # Temporary loop structures
+            arr_var = self.fresh_temp()
+            self.output.append(f"    SlopArray {arr_var} = slop_array_create(local_arena);\n")
+            idx_var = self.fresh_temp()
+            
+            self.output.append(f"    for (size_t {idx_var} = 0; {idx_var} < {source_code}.length; {idx_var}++) {{\n")
+            self.output.append(f"        {self.get_c_type(elem_type)} {expr.var_name} = *({self.get_c_type(elem_type)}*)({source_code}.data[{idx_var}]);\n")
+            
+            # Generate body element expression
+            elt_code, elt_type = self.generate_expression(expr.element_expr)
+            c_elt_type = self.get_c_type(elt_type)
+            
+            elt_ptr = self.fresh_temp()
+            self.output.append(f"        {c_elt_type}* {elt_ptr} = ({c_elt_type}*)slop_arena_alloc(local_arena, sizeof({c_elt_type}));\n")
+            self.output.append(f"        *{elt_ptr} = {elt_code};\n")
+            self.output.append(f"        slop_array_push(local_arena, &{arr_var}, {elt_ptr});\n")
+            self.output.append("    }\n")
+            
+            if old_var_type:
+                self.var_types[expr.var_name] = old_var_type
+            else:
+                del self.var_types[expr.var_name]
+                
+            return arr_var, f"array[{elt_type}]"
             
         elif isinstance(expr, CallNode):
-            # Check if builtin
             if expr.name == "print":
                 arg_code, arg_type = self.generate_expression(expr.args[0])
                 if arg_type == "int":
@@ -777,10 +936,7 @@ int main(int argc, char** argv) {
                     return f"slop_print_string({arg_code})", "void"
             elif expr.name == "length":
                 arg_code, arg_type = self.generate_expression(expr.args[0])
-                if arg_type == "string":
-                    return f"({arg_code}.length)", "int"
-                else:
-                    return f"({arg_code}.length)", "int"
+                return f"({arg_code}.length)", "int"
             elif expr.name == "push":
                 arr_code, arr_type = self.generate_expression(expr.args[0])
                 elem_code, elem_type = self.generate_expression(expr.args[1])
@@ -804,12 +960,10 @@ int main(int argc, char** argv) {
                 arg2_code, _ = self.generate_expression(expr.args[1])
                 return f"slop_string_equal({arg1_code}, {arg2_code})", "bool"
             elif expr.name == "split":
-                # Returns SlopArray of SlopStrings
                 str_code, _ = self.generate_expression(expr.args[0])
                 sep_code, _ = self.generate_expression(expr.args[1])
                 arr_var = self.fresh_temp()
                 self.output.append(f"    SlopArray {arr_var} = slop_array_create(local_arena);\n")
-                # Custom inline C string splitting to SlopStrings
                 self.output.append(f"""    {{
         SlopString s = {str_code};
         SlopString sep = {sep_code};
@@ -876,7 +1030,6 @@ int main(int argc, char** argv) {
 
             # Custom user-defined functions or struct constructors
             if expr.name in self.structs:
-                # Constructor call
                 struct_def = self.structs[expr.name]
                 struct_var = self.fresh_temp()
                 self.output.append(f"    struct {expr.name} {struct_var};\n")
@@ -891,8 +1044,7 @@ int main(int argc, char** argv) {
             for arg in expr.args:
                 code, _ = self.generate_expression(arg)
                 args_code.append(code)
-            args_str = ", ".join(args_code)
-            return f"fn_{expr.name}({args_str})", ret_type
+            return f"fn_{expr.name}({', '.join(args_code)})", ret_type
             
         print(f"Error: Unknown expression node: {type(expr)}", file=sys.stderr)
         sys.exit(1)

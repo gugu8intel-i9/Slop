@@ -2,7 +2,7 @@
 
 Slop (Symbolic/Streaming Low-Overhead Programming) is an insanely high-performance, lightweight, and low learning-curve programming language. 
 
-Slop features a novel memory management paradigm, an extremely clean and high-level syntax, a self-hosting compiler, an automatic translator from Python, and a native zero-overhead C++ bridge.
+Slop features a novel memory management paradigm, an extremely clean and high-level syntax, a self-hosting compiler, an automatic translator from Python, and native zero-overhead bridges for C++ and Rust.
 
 ---
 
@@ -20,37 +20,48 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**:
   - Upon function exit, the entire local arena offset is instantly reset to its entry state. This is an $O(1)$ complete memory reclamation with **zero CPU overhead**.
 - **Zero Heap Fragmentation and Infinite Locality**: Since arenas are contiguous memory blocks, you get 100% cache line friendliness and zero allocation overhead.
 
-### B. High-Level, Low Learning-Curve Syntax
-Slop combines the simplicity of Python, the static safety of Go, and high-level syntax powerhouses like pipeline operators.
+### B. High-Level, Low Learning-Curve Combined Syntax (Rust, C++, Python COMBINED)
+Slop combines the simplicity of Python, the static safety of Go, and the structural power of Rust and C++ into a single high-performance language:
 
+#### 1. C++ Inline Struct Methods
+Define complex, high-level structures that bundle data and inline functions. In Slop, they receive an implicit `this` pointer routing:
 ```slop
-# Comments start with a hash
+struct Vector2 {
+    x: int,
+    y: int
 
-fn greet(name: string) -> string {
-    return "Hello, " + name + "!"
-}
-
-fn process_data(nums: array[int]) -> int {
-    # Pipeline operator |> passes the left side as the first argument to the right side
-    let sum = nums 
-        |> filter(fn(x: int) -> bool { return x % 2 == 0 })
-        |> map(fn(x: int) -> int { return x * x })
-        |> sum_all()
-    
-    return sum
+    fn sum() -> int {
+        return this.x + this.y
+    }
 }
 ```
 
-### C. Self-Hosting (Slop Made in Slop)
-The Slop compiler/lexer (`compiler.slop`) is written in Slop.
-1. We write a lightweight **bootstrapper transpiler** (`slop_boot.py`) in Python that compiles Slop to native C.
-2. We compile `compiler.slop` using `slop_boot.py` into native C.
-3. We compile the generated C code with `gcc -O3 -march=native -flto` to create the ultra-fast, native `slop-compiler`.
-4. From then on, the native `slop-compiler` compiles any future `.slop` code directly.
+#### 2. Rust-style Pattern Matching (`match`)
+Write safe, expressive matching statements on strings or integers with default fallback branches:
+```slop
+match val {
+    1 => { print("One") },
+    5 => { print("Five") },
+    else => { print("Other") }
+}
+```
+
+#### 3. Python-style List Comprehensions
+Perform inline, high-level list mappings and transformations that compile directly to native, highly optimized C loops without intermediate allocations:
+```slop
+let numbers = [1, 2, 3]
+let doubled = [x * 2 for x in numbers]
+```
+
+#### 4. Pipeline Operator (`|>`)
+High-level data transformations pass the left expression as the first argument to the right function call:
+```slop
+let complex = 4 |> square() # fn_square(4)
+```
 
 ---
 
-## 2. Advanced Features
+## 2. Native Multi-Language Bridges
 
 ### A. High-Performance C++ Native Bridge (`slop_bridge.hpp`)
 To interface with existing ecosystems, Slop includes a header-only C++ bridge with:
@@ -63,7 +74,18 @@ slop::run_native([](SlopArena* arena) {
 }); // Arena memory is instantly wiped here!
 ```
 
-### B. The Auto-Slop Translator (`slop_translate.py`)
+### B. High-Performance Rust Native Bridge (`rust_bridge/`)
+To support memory-safe, native systems programming, Slop features a fully-functional Rust Cargo crate that connects directly to the Slop runtime:
+- **RAII `SlopScope` Lifecycles**: Automatic tracking and reclamation of Slop arenas using Rust's `Drop` trait.
+- **FFI Bindings**: Direct bindings to the SEAA engine with zero FFI conversion penalty.
+```rust
+run_native(|scope| {
+    let slop_str = scope.create_string("Hello from safe Rust!");
+    unsafe { slop_print_string(slop_str); }
+}); // Automatically drops and resets arena!
+```
+
+### C. The Auto-Slop Translator (`slop_translate.py`)
 To make porting existing code seamless, Slop includes a Python-to-Slop transpiler that parses standard Python AST and generates native `.slop` files automatically:
 ```python
 # input.py
@@ -86,7 +108,7 @@ This `.slop` file is compiled to native C and executed with **over 100x speedup*
 
 ---
 
-## 3. Language Specification
+## 3. Technical Language Specification
 
 ### Types
 - `int`: 64-bit signed integer (`int64_t` in C).

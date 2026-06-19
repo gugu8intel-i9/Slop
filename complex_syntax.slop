@@ -1,0 +1,53 @@
+struct Vector2 {
+    x: int,
+    y: int
+
+    fn sum() -> int {
+        return this.x + this.y
+    }
+
+    fn scale(factor: int) -> int {
+        return (this.x * factor) + (this.y * factor)
+    }
+}
+
+fn test_match(val: int) {
+    match val {
+        1 => {
+            print("Matched 1: Low")
+        },
+        5 => {
+            print("Matched 5: Medium")
+        },
+        else => {
+            print("Matched other value")
+        }
+    }
+}
+
+fn main(args: array[string]) {
+    print("--- [Testing C++ Struct Methods] ---")
+    let v = Vector2(10, 20)
+    let s = v.sum()
+    print("Sum of fields (10 + 20):")
+    print(s)
+
+    let scaled_sum = v.scale(3)
+    print("Scaled sum (30 + 60):")
+    print(scaled_sum)
+
+    print("--- [Testing Rust Match Statement] ---")
+    test_match(1)
+    test_match(5)
+    test_match(42)
+
+    print("--- [Testing Python List Comprehension] ---")
+    let original = [1, 2, 3, 4, 5]
+    let doubled = [x * 2 for x in original]
+    
+    let i = 0
+    while i < length(doubled) {
+        print(doubled[i])
+        i = i + 1
+    }
+}

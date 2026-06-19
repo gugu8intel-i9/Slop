@@ -1,0 +1,18 @@
+[package]
+name = "slop_bridge"
+version = "0.1.0"
+edition = "2021"
+authors = ["Arena Agent"]
+description = "A high-performance FFI bridge for the Slop Programming Language in Rust"
+build = "build.rs"
+
+[lib]
+name = "slop_bridge"
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1.0"
+
+[[example]]
+name = "test_bridge"
+path = "examples/test_bridge.rs"
