@@ -50,7 +50,7 @@ fi
 # Bootstrap compiler.slop -> compiler.c
 python3 slop_boot.py compiler.slop compiler.c
 
-# Compile compiler.c -> native slop-compiler executable
+# Compile compiler.c -> native slop-compiler executable with max optimization and NO warnings
 $CC -O3 -ffast-math -flto -march=native compiler.c -o "$SLOP_BIN/slop-compiler"
 
 # Copy runtime headers and Python helper files
@@ -58,7 +58,6 @@ cp slop_rt.h "$SLOP_INCLUDE/"
 cp slop_boot.py "$SLOP_BIN/"
 
 # Create the beautiful high-level "slop" command runner script
-# This lets users type "slop run file.slop" or "slop build file.slop"
 cat << 'EOF' > "$SLOP_BIN/slop"
 #!/usr/bin/env bash
 set -e
@@ -106,12 +105,35 @@ EOF
 
 chmod +x "$SLOP_BIN/slop"
 
+# Automatically configure user shell PATH
+SHELL_CONFIGS=("$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile" "$HOME/.zprofile")
+EXPORT_LINE="export PATH=\"\$HOME/.slop/bin:\$PATH\""
+CONFIGURED=false
+
+for CONFIG in "${SHELL_CONFIGS[@]}"; do
+    if [ -f "$CONFIG" ]; then
+        if ! grep -q "slop/bin" "$CONFIG"; then
+            echo "" >> "$CONFIG"
+            echo "# Slop Programming Language Path Configuration" >> "$CONFIG"
+            echo "$EXPORT_LINE" >> "$CONFIG"
+            echo -e "${BLUE}Automatically added Slop PATH configuration to $CONFIG${NC}"
+        fi
+        CONFIGURED=true
+    fi
+done
+
 echo -e "${GREEN}Slop successfully installed to $SLOP_DIR!${NC}"
 echo ""
-echo -e "To configure Slop in your shell, add it to your PATH by running:"
-echo -e "  ${BLUE}export PATH=\"\$HOME/.slop/bin:\$PATH\"${NC}"
-echo ""
-echo -e "You can add that line to your ${BLUE}~/.bashrc${NC} or ${BLUE}~/.zshrc${NC} to make it permanent."
+
+if [ "$CONFIGURED" = true ]; then
+    echo -e "${GREEN}PATH configuration has been added to your shell profiles.${NC}"
+    echo -e "To start using Slop immediately in this terminal session, run:"
+    echo -e "  ${BLUE}export PATH=\"\$HOME/.slop/bin:\$PATH\"${NC}"
+    echo -e "Or simply reload your terminal."
+else
+    echo -e "Please configure Slop manually in your shell by running:"
+    echo -e "  ${BLUE}export PATH=\"\$HOME/.slop/bin:\$PATH\"${NC}"
+fi
 echo ""
 echo -e "${GREEN}Try running your first Slop program with:${NC}"
 echo -e "  ${BLUE}slop run hello.slop${NC}"

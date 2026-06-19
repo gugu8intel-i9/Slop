@@ -644,6 +644,11 @@ class CodeGenerator:
             return f"struct {slop_type}"
         return slop_type
 
+    def wrap_parens(self, code):
+        if code.startswith("(") and code.endswith(")"):
+            return code
+        return f"({code})"
+
     def generate(self, node):
         self.output.append('#include "slop_rt.h"\n')
         self.output.append('int slop_arena_depth = 0;\n\n')
@@ -778,7 +783,7 @@ int main(int argc, char** argv) {
                 
         elif isinstance(stmt, IfNode):
             cond_code, _ = self.generate_expression(stmt.cond)
-            self.output.append(f"    if ({cond_code}) {{\n")
+            self.output.append(f"    if {self.wrap_parens(cond_code)} {{\n")
             for sub_stmt in stmt.then_branch:
                 self.generate_statement(sub_stmt)
             self.output.append("    }")
@@ -792,7 +797,7 @@ int main(int argc, char** argv) {
                 
         elif isinstance(stmt, WhileNode):
             cond_code, _ = self.generate_expression(stmt.cond)
-            self.output.append(f"    while ({cond_code}) {{\n")
+            self.output.append(f"    while {self.wrap_parens(cond_code)} {{\n")
             for sub_stmt in stmt.body:
                 self.generate_statement(sub_stmt)
             self.output.append("    }\n")
@@ -810,10 +815,10 @@ int main(int argc, char** argv) {
                         cond_str = f"slop_string_equal({expr_code}, {pat_code})"
                     
                     if first:
-                        self.output.append(f"    if ({cond_str}) {{\n")
+                        self.output.append(f"    if {self.wrap_parens(cond_str)} {{\n")
                         first = False
                     else:
-                        self.output.append(f" else if ({cond_str}) {{\n")
+                        self.output.append(f" else if {self.wrap_parens(cond_str)} {{\n")
                 
                 for body_stmt in body_stmts:
                     self.generate_statement(body_stmt)
