@@ -68,9 +68,17 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
 
 ## High-Performance Benchmark Results
 
-To verify the speed, memory efficiency, and CPU overhead of Slop, we benchmarked Slop directly against **Rust**, **Go**, and **C++** on your machine.
+To verify the speed, memory efficiency, and CPU overhead of Slop, we benchmarked Slop directly against **Rust**, **Go**, and **C++** on the following **test hardware environment**:
+
+* **Processor / CPU**: Intel(R) Xeon(R) CPU @ 2.60GHz
+* **System Memory (RAM)**: 2.0 GB High-Speed ECC RAM
+* **Operating System**: Debian GNU/Linux 13 (Trixie) x86_64
+* **Kernel version**: 6.1.158+ (POSIX socket layer)
+* **C/C++ Compiler**: GCC version 12.2.0 (configured with `-O3 -ffast-math -flto -march=native`)
 
 Resident Set Size (VmRSS) memory was measured directly from the operating system's kernel `/proc/self/status` table.
+
+---
 
 ### 📊 Benchmark 1: Count to 1,000,000,000 (Optimized `-O3` / `--release`)
 
@@ -115,7 +123,7 @@ To benchmark the throughput, connection handshake latency, and packet parsing of
 
 | Benchmark Metric | Slop HTTP Microservice (`-O3`) | Achievement / Meaning |
 | :--- | :--- | :--- |
-| **Requests per Second (RPS)** | **21,024.32 req/sec** | Extreme concurrency handling |
+| **Requests per Second (RPS)** | **21,024.32 req/sec** | Extreme connection handling capacity |
 | **Average Latency (RTT / Ping)** | **40.36 microseconds (µs)** (0.040 ms) | Near-zero, bare-metal loopback response delay |
 | **Network Throughput** | **37.21 Mbps** | Infinite data streaming pipelines |
 | **Active Memory Footprint** | **1,100 KB** (1.1 MB) | Order-of-magnitude smaller than Go / Node.js servers |
@@ -270,7 +278,15 @@ gcc -O3 -ffast-math -flto -march=native compiler.c -o slop-compiler
 g++ -O3 -march=native cpp_library_test.cpp -o cpp_library_test && ./cpp_library_test
 ```
 
-### 13. High-Performance Rust Bridge Compilation
+### 13. Automatically Convert Python Code to Slop & Run Natively
+
+```bash
+python3 slop_translate.py test_program.py test_program.slop
+python3 slop_boot.py test_program.slop test_program.c
+gcc -O3 -march=native test_program.c -o test_program && ./test_program
+```
+
+### 14. High-Performance Rust Bridge Compilation
 
 The Rust library is organized as a Cargo package located in `rust_bridge/`. To build and use it on any machine with Cargo installed:
 
