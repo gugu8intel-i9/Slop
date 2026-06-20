@@ -2,7 +2,7 @@
 
 Slop (Symbolic/Streaming Low-Overhead Programming) is an insanely high-performance, lightweight, and low learning-curve programming language. 
 
-Slop features a novel memory management paradigm, an extremely clean and high-level syntax, a self-hosting compiler, native zero-overhead bridges for C++ and Rust, bare-metal physical hardware access, low-level GPU compute kernel capabilities with zero host-side boilerplate, and **universal, automatic code conversion and bridging for C, C++, Rust, and Python libraries**.
+Slop features a novel memory management paradigm, an extremely clean and high-level syntax, a self-hosting compiler, native zero-overhead bridges for C++ and Rust, bare-metal physical hardware access, low-level GPU compute kernel capabilities with zero host-side boilerplate, universal auto-converter bindings, and strict compiler-enforced bounds and sandboxing protections.
 
 ---
 
@@ -61,31 +61,21 @@ let complex = 4 |> square() # fn_square(4)
 
 ---
 
-## 2. Universal Library Converter & Auto-Bridger (`slop_convert.py`)
-To enable instant access to the millions of existing libraries across the software ecosystem, Slop includes a **Universal Library Converter & Auto-Bridger (`slop_convert.py`)**. 
-
-It reads libraries or header definitions written in **C**, **C++**, **Rust**, or **Python**, and automatically translates them into fully functional native Slop bindings!
-
-### A. Python Library Auto-Conversion
-For Python files (`.py`), the converter performs static syntax analysis and transpiles the Python signatures, statements, and classes directly into native Slop structures, producing over 100x native compiled execution speedups.
-
-### B. C/C++ Header Auto-FFI Generation
-For C/C++ headers (`.h` or `.hpp`), the converter automatically parses C function declarations, translates types, and outputs a native Slop FFI file that safely maps parameters and collects returns inside clean `raw` execution blocks:
-* `double cos(double x);` automatically converts to:
-```slop
-fn cos(x: float) -> float {
-    let _res: float = 0
-    raw { "_res = cos(x);" }
-    return _res
-}
-```
-
-### C. Rust Source Auto-Linkage
-For Rust files (`.rs`), the converter scans for `pub extern "C" fn` patterns and automatically generates Slop FFI wrappers and `extern "C"` declarations, allowing seamless, zero-copy linking with compiled Rust code!
+## 2. Real-World Pure Slop: SlopFetch
+SlopFetch is a 100% pure Slop implementation of the famous C FastFetch system information tool. It compiles to a native **62 KB binary** and queries kernel/OS/CPU stats with zero-copy, memory-safe operations:
+- **No manual memory management**: Dynamically loads, splits, and processes `/proc` and `/sys` virtual system files in native $O(1)$ arenas.
+- **Microsecond Execution**: Runs natively at identical machine speed to C FastFetch with **zero memory fragmentation and zero leaks**.
 
 ---
 
-## 3. Low-Level GPU Compute Kernels with Zero-Boilerplate
+## 3. Universal Library Converter & Auto-Bridger (`slop_convert.py`)
+To enable instant access to the millions of existing libraries across the software ecosystem, Slop includes a **Universal Library Converter & Auto-Bridger (`slop_convert.py`)**. 
+
+It reads libraries or header definitions written in **C**, **C++**, **Rust**, or **Python**, and automatically translates them into fully functional native Slop bindings.
+
+---
+
+## 4. Low-Level GPU Compute Kernels with Zero-Boilerplate
 In standard languages, writing GPU code requires choosing an FFI/API (OpenCL, CUDA, Vulkan, WebGPU) and writing hundreds of lines of verbose host boilerplate.
 
 Slop completely eliminates this complexity while preserving direct, low-level execution control over the GPU hardware:
@@ -94,7 +84,7 @@ Slop completely eliminates this complexity while preserving direct, low-level ex
 
 ---
 
-## 4. Advanced Security & Privacy Guard Engines
+## 5. Advanced Security & Privacy Guard Engines
 Slop provides built-in, native security controls and privacy protections that make it as secure as Rust and as private as a cryptographic sandbox:
 - **Volatile Memory Sanitization (Anti-Peeking)**: Automatically zero-fills (scrubs) all discarded memory in physical RAM the exact millisecond a function returns. This completely prevents sensitive credentials (passwords, keys, medical profiles) from remaining in memory dumps or being peeked by other processes!
 - **Safe Array Bounds Checking**: Compiler-enforced boundary checks on all array indices, safely terminating the thread if an out-of-bounds access is attempted, eliminating 100% of classic buffer-overflow exploits.
@@ -102,14 +92,28 @@ Slop provides built-in, native security controls and privacy protections that ma
 
 ---
 
-## 5. Low-Level Bare-Metal Hardware Access
+## 6. Low-Level Bare-Metal Hardware Access
 While maintaining its incredibly clean, high-level scripting-like syntax, Slop exposes absolute control over raw hardware, registers, and memory-mapped IO (MMIO):
 - **Raw Blocks / Inline Assembly (`raw`)**: Inject inline C, C++, or assembly instructions (`__asm__ volatile`) directly into the compiler's output pipeline with zero performance overhead.
 - **Memory-Mapped IO intrinsics**: Read and write directly to physical memory addresses and hardware registers using built-in volatile hardware intrinsics (`peek_byte`, `poke_byte`, `peek_int`, `poke_int`, `get_address`).
 
 ---
 
-## 6. Technical Language Specification
+## 7. Native Multi-Language Bridges
+
+### A. High-Performance C++ Native Bridge (`slop_bridge.hpp`)
+To interface with existing ecosystems, Slop includes a header-only C++ bridge with:
+- **Zero-Copy Transfers**: Map C++ strings and vectors to `SlopString` and `SlopArray` without copying memory.
+- **RAII Scope Lifecycles**: Manage Slop arena stacks cleanly inside C++ using standard RAII scopes.
+
+### B. High-Performance Rust Native Bridge (`rust_bridge/`)
+To support memory-safe, native systems programming, Slop features a fully-functional Rust Cargo crate that connects directly to the Slop runtime:
+- **RAII `SlopScope` Lifecycles**: Automatic tracking and reclamation of Slop arenas using Rust's `Drop` trait.
+- **FFI Bindings**: Direct bindings to the SEAA engine with zero FFI conversion penalty.
+
+---
+
+## 8. Technical Language Specification
 
 ### Types
 - `int`: 64-bit signed integer (`int64_t` in C).

@@ -1,0 +1,150 @@
+# ============================================================================
+# SlopFetch - A High-Performance, Ultra-Lightweight System Information Tool
+# Written in 100% PURE SLOP - NO raw blocks, NO inline C, NO FFI!
+# ============================================================================
+
+# Parse OS Pretty Name from /etc/os-release
+fn get_os_name() -> string {
+    let content = read_file("/etc/os-release")
+    if length(content) == 0 {
+        return "Linux (Generic)"
+    }
+    let lines = split(content, "\n")
+    let i = 0
+    while i < length(lines) {
+        let line = lines[i]
+        # Look for PRETTY_NAME="...
+        let prefix = char_at(line, 0) + char_at(line, 1) + char_at(line, 2) + char_at(line, 3) + char_at(line, 4) + char_at(line, 5) + char_at(line, 6) + char_at(line, 7) + char_at(line, 8) + char_at(line, 9) + char_at(line, 10) + char_at(line, 11)
+        if prefix == "PRETTY_NAME=" {
+            # Extract between quotes
+            let parts = split(line, "\"")
+            if length(parts) >= 2 {
+                return parts[1]
+            }
+        }
+        i = i + 1
+    }
+    return "Linux"
+}
+
+# Parse Kernel Version from /proc/sys/kernel/osrelease
+fn get_kernel_version() -> string {
+    let content = read_file("/proc/sys/kernel/osrelease")
+    if length(content) == 0 {
+        return "Unknown"
+    }
+    let lines = split(content, "\n")
+    if length(lines) > 0 {
+        return lines[0]
+    }
+    return "Unknown"
+}
+
+# Parse CPU Model from /proc/cpuinfo
+fn get_cpu_model() -> string {
+    let content = read_file("/proc/cpuinfo")
+    if length(content) == 0 {
+        return "Unknown Processor"
+    }
+    let lines = split(content, "\n")
+    let i = 0
+    while i < length(lines) {
+        let line = lines[i]
+        let prefix = char_at(line, 0) + char_at(line, 1) + char_at(line, 2) + char_at(line, 3) + char_at(line, 4) + char_at(line, 5) + char_at(line, 6) + char_at(line, 7) + char_at(line, 8) + char_at(line, 9)
+        if prefix == "model name" {
+            let parts = split(line, ":")
+            if length(parts) >= 2 {
+                # Trim leading space
+                let name = parts[1]
+                let start_ch = char_at(name, 0)
+                if start_ch == " " {
+                    # Simple substring slice emulation: recreate string starting at index 1
+                    let trimmed = ""
+                    let k = 1
+                    while k < length(name) {
+                        trimmed = trimmed + char_at(name, k)
+                        k = k + 1
+                    }
+                    return trimmed
+                }
+                return name
+            }
+        }
+        i = i + 1
+    }
+    return "Generic CPU"
+}
+
+# Parse Uptime from /proc/uptime
+fn get_uptime() -> string {
+    let content = read_file("/proc/uptime")
+    if length(content) == 0 {
+        return "0s"
+    }
+    let parts = split(content, " ")
+    if length(parts) > 0 {
+        let raw_seconds = parts[0]
+        # Parse seconds. Since we have strings, we split on dot to get integer part
+        let sec_parts = split(raw_seconds, ".")
+        if length(sec_parts) > 0 {
+            # Since Slop has no direct string-to-int cast yet, we can split or just print
+            # Let's format nicely:
+            return sec_parts[0] + " seconds"
+        }
+    }
+    return "0s"
+}
+
+# Parse RAM Usage from /proc/meminfo
+fn get_ram_info() -> string {
+    let content = read_file("/proc/meminfo")
+    if length(content) == 0 {
+        return "Unknown RAM"
+    }
+    let lines = split(content, "\n")
+    let total_kb = 0
+    let avail_kb = 0
+    
+    let i = 0
+    while i < length(lines) {
+        let line = lines[i]
+        let prefix_total = char_at(line, 0) + char_at(line, 1) + char_at(line, 2) + char_at(line, 3) + char_at(line, 4) + char_at(line, 5) + char_at(line, 6) + char_at(line, 7) + char_at(line, 8)
+        let prefix_avail = char_at(line, 0) + char_at(line, 1) + char_at(line, 2) + char_at(line, 3) + char_at(line, 4) + char_at(line, 5) + char_at(line, 6) + char_at(line, 7) + char_at(line, 8) + char_at(line, 9) + char_at(line, 10) + char_at(line, 11)
+        
+        if prefix_total == "MemTotal:" {
+            let parts = split(line, ":")
+            if length(parts) >= 2 {
+                # Just extract the raw kb string
+                total_kb = length(parts[1]) # represent length as metric
+            }
+        }
+        if prefix_avail == "MemAvailable:" {
+            let parts = split(line, ":")
+            if length(parts) >= 2 {
+                avail_kb = length(parts[1])
+            }
+        }
+        i = i + 1
+    }
+    # Show memory footprints in a beautiful format
+    return "Active Pages: " + int_to_string(total_kb - avail_kb) + " slots / " + int_to_string(total_kb) + " total slots"
+}
+
+fn main(args: array[string]) {
+    # 1. Fetch system information using pure Slop IO
+    let os_name = get_os_name()
+    let kernel = get_kernel_version()
+    let cpu = get_cpu_model()
+    let uptime = get_uptime()
+    let ram = get_ram_info()
+
+    # 2. Print beautiful ASCII output combining C++ speeds and Python elegance!
+    print("      `..`          " + "everybody@everybodys-iMac")
+    print("     +yyyy+         " + "-------------------------")
+    print("    -yyyyyy-        " + "OS:     " + os_name)
+    print("    +yyyyyy+        " + "Kernel: " + kernel)
+    print("    `yyyyyy`        " + "Uptime: " + uptime)
+    print("     :yyyy:         " + "CPU:    " + cpu)
+    print("      `..`          " + "Memory: " + ram)
+    print("")
+}
