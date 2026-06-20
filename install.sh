@@ -57,6 +57,8 @@ $CC -O3 -ffast-math -flto -march=native compiler.c -o "$SLOP_BIN/slop-compiler"
 cp slop_rt.h "$SLOP_INCLUDE/"
 cp slop_boot.py "$SLOP_BIN/"
 cp slop_repl.py "$SLOP_BIN/"
+cp slop_convert.py "$SLOP_BIN/"
+cp slop_translate.py "$SLOP_BIN/"
 
 # Create the beautiful high-level "slop" command runner script
 cat << 'EOF' > "$SLOP_BIN/slop"
@@ -75,6 +77,7 @@ if [ -z "$1" ]; then
     echo "  run <file.slop>    Transpile, compile, and execute a Slop program instantly"
     echo "  build <file.slop>  Compile a Slop program into an optimized native binary"
     echo "  lex <file.slop>    Lex/tokenize a Slop program using the self-hosted compiler"
+    echo "  convert <file>     Automatically turn C/C++ (.h), Rust (.rs) or Python (.py) to Slop!"
     echo "  repl               Launch the interactive native compiling REPL shell"
     exit 0
 fi
@@ -99,6 +102,9 @@ elif [ "$CMD" = "build" ]; then
 elif [ "$CMD" = "lex" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     "$SLOP_BIN/slop-compiler" "$FILE"
+elif [ "$CMD" = "convert" ]; then
+    if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
+    python3 "$SLOP_BIN/slop_convert.py" "$FILE" "$3"
 elif [ "$CMD" = "repl" ]; then
     python3 "$SLOP_BIN/slop_repl.py"
 else

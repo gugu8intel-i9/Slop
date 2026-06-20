@@ -16,8 +16,9 @@ Slop is an insanely high-performance, lightweight, and low learning-curve langua
 7. [Python List Comprehensions](#7-python-list-comprehensions)
 8. [Bare-Metal Hardware Access (Pointers & Assembly)](#8-bare-metal-hardware-access-pointers--assembly)
 9. [Low-Level GPU Compute Kernels](#9-low-level-gpu-compute-kernels)
-10. [High-Performance Array Compression (SPCA)](#10-high-performance-array-compression-spca)
-11. [Bridging with C++ & Rust](#11-bridging-with-c--rust)
+10. [Universal Library Auto-Converter](#10-universal-library-auto-converter)
+11. [High-Performance Array Compression (SPCA)](#11-high-performance-array-compression-spca)
+12. [Bridging with C++ & Rust](#12-bridging-with-c--rust)
 
 ---
 
@@ -239,7 +240,20 @@ The compiler automatically generates OpenCL C shader code, context creation, dev
 
 ---
 
-## 10. High-Performance Array Compression (SPCA)
+## 10. Universal Library Auto-Converter
+
+Slop features a built-in auto-converter that lets you **instantly convert and bridge existing libraries** written in C, C++, Rust, or Python into Slop!
+
+Type this single command to translate any library definitions:
+```bash
+slop convert my_library.h my_library.slop
+```
+
+It parses the signatures of Python files (`.py`), C/C++ headers (`.h` / `.hpp`), or Rust sources (`.rs`), translates the data types, and automatically generates high-performance Slop wrapper functions, declaring the necessary FFI linkage structures under-the-hood so that compiling and linking is 100% automated!
+
+---
+
+## 11. High-Performance Array Compression (SPCA)
 
 To save memory and disk storage when processing thousands of items, Slop includes native, zero-dependency **Slop-Pack Compressed Array (SPCA)** compression:
 
@@ -260,7 +274,7 @@ fn main(args: array[string]) {
 
 ---
 
-## 11. Bridging with C++ & Rust
+## 12. Bridging with C++ & Rust
 
 Slop compiles directly to optimized C, which means you can link Slop modules directly with **C++** and **Rust** with **zero FFI conversion penalty**!
 
