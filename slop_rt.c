@@ -1,6 +1,6 @@
 #include "slop_rt.h"
 
-_Thread_local int slop_arena_depth = 0;
+THREAD_LOCAL int slop_arena_depth = 0;
 
 // Export all runtime functions with standard external linkage for FFI
 SlopArena* ext_slop_arena_create(size_t capacity) {
@@ -62,4 +62,25 @@ SlopString ext_slop_pack_strings(SlopArena* arena, SlopArray arr) {
 
 SlopArray ext_slop_unpack_strings(SlopArena* arena, SlopString packed) {
     return slop_unpack_strings(arena, packed);
+}
+
+// Zero-Copy Streaming Packet Channel Sockets exported for FFI
+int64_t ext_slop_socket_listen(int64_t port) {
+    return slop_socket_listen(port);
+}
+
+int64_t ext_slop_socket_accept(int64_t server_fd) {
+    return slop_socket_accept(server_fd);
+}
+
+SlopString ext_slop_socket_read(SlopArena* arena, int64_t client_fd) {
+    return slop_socket_read(arena, client_fd);
+}
+
+void ext_slop_socket_write(int64_t client_fd, SlopString content) {
+    slop_socket_write(client_fd, content);
+}
+
+void ext_slop_socket_close(int64_t fd) {
+    slop_socket_close(fd);
 }

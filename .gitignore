@@ -18,6 +18,7 @@ benchmark_cpp_ffi_unopt
 benchmark_slop_ffi_unopt
 slopfetch
 parallel_processing
+web_server
 
 # Generated C files
 hello.c
@@ -33,6 +34,7 @@ real_world_db.c
 benchmark_slop_ffi.c
 slopfetch.c
 parallel_processing.c
+web_server.c
 
 # Pycache / compilation artifacts
 __pycache__/

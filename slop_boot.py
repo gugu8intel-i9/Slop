@@ -658,6 +658,11 @@ class CodeGenerator:
             "slop_pack": ("string", ["array[string]"]),
             "slop_unpack": ("array[string]", ["string"]),
             "spawn": ("void", ["string"]),
+            "socket_listen": ("int", ["int"]),
+            "socket_accept": ("int", ["int"]),
+            "socket_read": ("string", ["int"]),
+            "socket_write": ("void", ["int", "string"]),
+            "socket_close": ("void", ["int"]),
         }
         self.structs = {}
 
@@ -1052,6 +1057,23 @@ int main(int argc, char** argv) {
             elif expr.name == "slop_unpack":
                 arg_code, _ = self.generate_expression(expr.args[0])
                 return f"slop_unpack_strings(local_arena, {arg_code})", "array[string]"
+                
+            elif expr.name == "socket_listen":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_socket_listen({arg_code})", "int"
+            elif expr.name == "socket_accept":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_socket_accept({arg_code})", "int"
+            elif expr.name == "socket_read":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_socket_read(local_arena, {arg_code})", "string"
+            elif expr.name == "socket_write":
+                arg1_code, _ = self.generate_expression(expr.args[0])
+                arg2_code, _ = self.generate_expression(expr.args[1])
+                return f"slop_socket_write({arg1_code}, {arg2_code})", "void"
+            elif expr.name == "socket_close":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_socket_close({arg_code})", "void"
                 
             elif expr.name == "peek_byte":
                 addr_code, _ = self.generate_expression(expr.args[0])
