@@ -1,0 +1,62 @@
+struct AVPacket {
+    pts: int,
+    dts: int,
+    size: int,
+    data: string
+}
+
+struct AVFrame {
+    width: int,
+    height: int,
+    format: int,
+    data: string
+}
+
+fn print_ram_usage() {
+    let status = read_file("/proc/self/status")
+    let lines = split(status, "\n")
+    let i = 0
+    while i < length(lines) {
+        let line = lines[i]
+        let prefix = char_at(line, 0) + char_at(line, 1) + char_at(line, 2) + char_at(line, 3) + char_at(line, 4) + char_at(line, 5)
+        if prefix == "VmRSS:" {
+            print(line)
+        }
+        i = i + 1
+    }
+}
+
+# The frame-processing loop is isolated in a function
+# This allows Slop's SEAA memory model to automatically zero-cost recycle RAM upon return!
+fn process_frame(count: int) {
+    # 1. Allocate AVPacket inside our O(1) local arena
+    let pkt = AVPacket(count, count, 128, "Simulated 128-byte raw payload string buffer inside Slop Arena")
+    
+    # 2. Allocate AVFrame inside our O(1) local arena
+    let frame = AVFrame(1920, 1080, 0, "Plane buffer simulation bytes inside Slop Arena")
+    
+    # 3. Simple calculation simulating decoding/processing step
+    pkt.pts = pkt.pts + 1
+    frame.format = pkt.size
+}
+
+fn main(args: array[string]) {
+    print("--- [Slop FFmpeg Simulation: 10 Million Frame Allocations] ---")
+
+    raw {
+        "struct timespec start, end; clock_gettime(CLOCK_MONOTONIC, &start);"
+    }
+
+    let iterations = 10000000 # 10 Million video packet transfers
+    let count = 0
+    while count < iterations {
+        process_frame(count)
+        count = count + 1
+    }
+
+    raw {
+        "clock_gettime(CLOCK_MONOTONIC, &end); double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1000000000.0; printf(\"Slop FFmpeg Simulation Time: %.6f seconds\\n\", elapsed);"
+    }
+
+    print_ram_usage()
+}

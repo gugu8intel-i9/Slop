@@ -88,7 +88,7 @@ static inline SlopArena* slop_get_arena(int depth) {
         exit(1);
     }
     if (!arenas[depth]) {
-        arenas[depth] = slop_arena_create(8 * 1024 * 1024); // 8MB starting capacity
+        arenas[depth] = slop_arena_create(64 * 1024); // 64KB dynamic starting capacity
     }
     return arenas[depth];
 }

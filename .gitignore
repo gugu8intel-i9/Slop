@@ -13,6 +13,9 @@ benchmark_slop_unopt
 secure_guards_test
 gpu_compute
 real_world_db
+benchmark_cpp_ffi
+benchmark_cpp_ffi_unopt
+benchmark_slop_ffi_unopt
 
 # Generated C files
 hello.c
@@ -25,6 +28,7 @@ benchmark_slop.c
 secure_guards_test.c
 gpu_compute.c
 real_world_db.c
+benchmark_slop_ffi.c
 
 # Pycache / compilation artifacts
 __pycache__/
