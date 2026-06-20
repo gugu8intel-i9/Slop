@@ -8,7 +8,6 @@ fn handle_client(client_fd: int) {
     # This has 100% zero-copy, zero-fragmentation performance!
     let request = socket_read(client_fd)
     
-    # Simple check on request content
     if length(request) > 0 {
         # 2. Build a high-performance HTTP response header and payload
         let body = "=== [Slop High-Performance Microservice Node] ===\nStatus: 200 OK\nCore: lock-free, zero-copy socket pipeline\nMemory: preallocated SEAA stack bucket\n"
@@ -34,16 +33,18 @@ fn main(args: array[string]) {
         return
     }
     
-    print("Server successfully listening. To test, open a separate terminal and run:")
-    print("  curl http://localhost:9090")
-    print("Or press Ctrl+C to terminate.")
-    print("")
+    print("Server successfully listening on port 9090...")
+    print("Entering high-performance event loop...")
 
-    # 2. Accept client connections in a high-speed loop (Simulated first connection acceptance)
-    # We will accept a single connection or accept in a non-blocking mode
-    # To keep the test suite running, we will perform a non-blocking check or accept 1 test connection
-    # Let's run a test by accepting 1 connection or exiting gracefully in a simulation!
-    # Since we want to run this in our test suite without blocking, we can set a raw timeout or execute directly!
-    print("-> Server entering high-performance standby state.")
-    print("--- [Internet Concurrency Initialization Successful] ---")
+    # 2. Event loop: continuously accept and handle incoming connections
+    # We will accept up to 10,050 connections (covering our benchmark) and exit gracefully,
+    # or loop infinitely. To allow clean exit in normal use, we loop based on a counter or run infinitely.
+    # Since it runs in the background, we can run infinitely.
+    let active = true
+    while active {
+        let client_fd = socket_accept(server_fd)
+        if client_fd >= 0 {
+            handle_client(client_fd)
+        }
+    }
 }
