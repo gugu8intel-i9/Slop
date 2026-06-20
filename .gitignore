@@ -17,6 +17,7 @@ benchmark_cpp_ffi
 benchmark_cpp_ffi_unopt
 benchmark_slop_ffi_unopt
 slopfetch
+parallel_processing
 
 # Generated C files
 hello.c
@@ -31,6 +32,7 @@ gpu_compute.c
 real_world_db.c
 benchmark_slop_ffi.c
 slopfetch.c
+parallel_processing.c
 
 # Pycache / compilation artifacts
 __pycache__/

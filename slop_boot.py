@@ -199,9 +199,9 @@ class FuncNode(ASTNode):
 class GPUFuncNode(ASTNode):
     def __init__(self, name, params, return_type, body):
         self.name = name
-        self.params = params # list of (name, type)
+        self.params = params 
         self.return_type = return_type
-        self.body = body # list of statements
+        self.body = body 
 
 class VarDeclNode(ASTNode):
     def __init__(self, name, type_, expr):
@@ -657,6 +657,7 @@ class CodeGenerator:
             "get_address": ("int", ["int"]),
             "slop_pack": ("string", ["array[string]"]),
             "slop_unpack": ("array[string]", ["string"]),
+            "spawn": ("void", ["string"]),
         }
         self.structs = {}
 
@@ -684,7 +685,7 @@ class CodeGenerator:
 
     def generate(self, node):
         self.output.append('#include "slop_rt.h"\n')
-        self.output.append('int slop_arena_depth = 0;\n\n')
+        self.output.append('THREAD_LOCAL int slop_arena_depth = 0;\n\n')
         
         # Step 1: Forward declarations of structs
         for decl in node.declarations:
@@ -783,8 +784,6 @@ int main(int argc, char** argv) {
         self.var_types = old_var_types
 
     def generate_gpu_function(self, gpu_node):
-        # AUTOMATIC BOILERPLATE GENERATION FOR LOW-LEVEL GPU EXECUTION!
-        # Automatically maps clean high-level Slop syntax into OpenCL host and kernel code!
         params_c = []
         old_var_types = self.var_types.copy()
         for p_name, p_type in gpu_node.params:
@@ -799,28 +798,19 @@ int main(int argc, char** argv) {
         self.output.append("    size_t saved_offset = slop_arena_save(local_arena);\n")
         self.output.append(f"    printf(\"-> Launching Low-Level GPU Compute Kernel: '{gpu_node.name}' across thousands of virtual GPU cores...\\n\");\n")
         
-        # We will generate a high-performance OpenCL/CPU grid simulator fallback
-        # It executes the body across a parallelized index loop simulating get_global_id(0)!
-        # Find array arguments
         arr_arg = gpu_node.params[0][0]
         arr_type = gpu_node.params[0][1]
         elem_type = arr_type[6:-1] if arr_type.startswith("array[") else "int"
         
         res_var = "_gpu_res"
         self.output.append(f"    SlopArray {res_var} = slop_array_create(local_arena);\n")
-        
-        # Generate the GPU Execution Grid:
         self.output.append(f"    size_t _gpu_grid_size = {arr_arg}.length;\n")
         self.output.append(f"    for (size_t gpu_id = 0; gpu_id < _gpu_grid_size; gpu_id++) {{\n")
         
-        # Inside the parallel grid, execute the GPU body
-        # Map variables
         self.var_types["gpu_id"] = "int"
         
-        # Compile statements inside loop
         for stmt in gpu_node.body:
             if isinstance(stmt, ReturnNode):
-                # GPU Return appends to output array
                 expr_code, _ = self.generate_expression(stmt.expr)
                 c_elem_type = self.get_c_type(elem_type)
                 elem_ptr = self.fresh_temp()
@@ -832,7 +822,6 @@ int main(int argc, char** argv) {
                 
         self.output.append("    }\n")
         
-        # Return results promoted to caller arena
         self.output.append(f"    SlopArray _ret = slop_array_clone_ints(slop_get_arena(slop_arena_depth - 1), {res_var});\n")
         self.output.append("    slop_arena_restore(local_arena, saved_offset);\n")
         self.output.append("    slop_arena_depth--;\n")
@@ -1038,7 +1027,26 @@ int main(int argc, char** argv) {
             return arr_var, f"array[{elt_type}]"
             
         elif isinstance(expr, CallNode):
-            if expr.name == "slop_pack":
+            if expr.name == "spawn":
+                sub_call = expr.args[0]
+                if isinstance(sub_call, CallNode):
+                    args_code = []
+                    for arg in sub_call.args:
+                        code, _ = self.generate_expression(arg)
+                        args_code.append(code)
+                    arg_ptr = "NULL"
+                    if args_code:
+                        arg_ptr = f"(void*)(intptr_t)({args_code[0]})"
+                    tid_var = self.fresh_temp()
+                    self.output.append(f"    pthread_t {tid_var};\n")
+                    self.output.append(f"    pthread_create(&{tid_var}, NULL, (void*(*)(void*))fn_{sub_call.name}, {arg_ptr});\n")
+                    self.output.append(f"    pthread_detach({tid_var});\n")
+                    return "0", "int"
+                else:
+                    print("Error: spawn argument must be a function call, e.g., spawn(my_task())", file=sys.stderr)
+                    sys.exit(1)
+                    
+            elif expr.name == "slop_pack":
                 arg_code, _ = self.generate_expression(expr.args[0])
                 return f"slop_pack_strings(local_arena, {arg_code})", "string"
             elif expr.name == "slop_unpack":

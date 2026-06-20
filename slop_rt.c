@@ -1,6 +1,6 @@
 #include "slop_rt.h"
 
-int slop_arena_depth = 0;
+_Thread_local int slop_arena_depth = 0;
 
 // Export all runtime functions with standard external linkage for FFI
 SlopArena* ext_slop_arena_create(size_t capacity) {

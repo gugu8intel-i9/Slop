@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
+#include <pthread.h>
 
 // Slop Arena / Bucket Structure
 typedef struct SlopArena {
@@ -79,10 +80,16 @@ static inline void slop_arena_restore(SlopArena* arena, size_t offset) {
     arena->offset = offset;
 }
 
-// Global Arena Stack
-extern int slop_arena_depth;
+// Thread-Local Global Arena Stack (100% Lock-Free Concurrency)
+#ifdef _MSC_VER
+#define THREAD_LOCAL __declspec(thread)
+#else
+#define THREAD_LOCAL _Thread_local
+#endif
+
+extern THREAD_LOCAL int slop_arena_depth;
 static inline SlopArena* slop_get_arena(int depth) {
-    static SlopArena* arenas[1024] = {NULL};
+    static THREAD_LOCAL SlopArena* arenas[1024] = {NULL};
     if (depth < 0 || depth >= 1024) {
         fprintf(stderr, "Slop call depth limit exceeded! Max: 1024.\n");
         exit(1);
