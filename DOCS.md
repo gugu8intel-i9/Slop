@@ -35,6 +35,13 @@ export PATH="$HOME/.slop/bin:$PATH"
 
 Now, the global `slop` command tool is available. You can transpile, compile, and execute scripts instantly!
 
+### The Interactive REPL Shell
+You can also launch the high-performance interactive compiling REPL shell directly by running:
+```bash
+slop repl
+```
+This lets you type Slop expressions (e.g. `x = [1, 2, 3]`, `x[1] * 5`, `"hello" + " world"`) and see immediate results executed in optimized, native machine assembly in milliseconds!
+
 ---
 
 ## 2. Hello, World!

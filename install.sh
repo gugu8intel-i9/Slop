@@ -53,9 +53,10 @@ python3 slop_boot.py compiler.slop compiler.c
 # Compile compiler.c -> native slop-compiler executable with max optimization and NO warnings
 $CC -O3 -ffast-math -flto -march=native compiler.c -o "$SLOP_BIN/slop-compiler"
 
-# Copy runtime headers and Python helper files
+# Copy runtime headers, REPL, and Python helper files
 cp slop_rt.h "$SLOP_INCLUDE/"
 cp slop_boot.py "$SLOP_BIN/"
+cp slop_repl.py "$SLOP_BIN/"
 
 # Create the beautiful high-level "slop" command runner script
 cat << 'EOF' > "$SLOP_BIN/slop"
@@ -74,6 +75,7 @@ if [ -z "$1" ]; then
     echo "  run <file.slop>    Transpile, compile, and execute a Slop program instantly"
     echo "  build <file.slop>  Compile a Slop program into an optimized native binary"
     echo "  lex <file.slop>    Lex/tokenize a Slop program using the self-hosted compiler"
+    echo "  repl               Launch the interactive native compiling REPL shell"
     exit 0
 fi
 
@@ -97,6 +99,8 @@ elif [ "$CMD" = "build" ]; then
 elif [ "$CMD" = "lex" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     "$SLOP_BIN/slop-compiler" "$FILE"
+elif [ "$CMD" = "repl" ]; then
+    python3 "$SLOP_BIN/slop_repl.py"
 else
     echo "Error: Unknown command '$CMD'"
     exit 1
@@ -137,3 +141,4 @@ fi
 echo ""
 echo -e "${GREEN}Try running your first Slop program with:${NC}"
 echo -e "  ${BLUE}slop run hello.slop${NC}"
+EOF

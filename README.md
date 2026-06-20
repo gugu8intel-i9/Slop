@@ -27,28 +27,32 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
    - **Safe Array Bounds Checking**: Compiler-enforced boundary checks on all array indices, safely terminating the thread if an out-of-bounds access is attempted, eliminating 100% of classic buffer-overflow exploits.
    - **Directory Traversal blockade**: Native file operations immediately reject any path containing directory traversal sequences (like `../`), preventing arbitrary file-reading security breaches.
 
-4. **Low-Level Bare-Metal Hardware Access**:
+4. **Interactive Compiling REPL Shell (`slop repl`)**:
+   - **Exposes a real-time, interactive command-line shell**!
+   - Type Slop lines and run them instantly—it compiles and runs native optimized machine assembly behind the scenes in milliseconds, offering the ease of Python with the raw power of compiled C!
+
+5. **Low-Level Bare-Metal Hardware Access**:
    - **Volatile MMIO Operations**: Exposes physical hardware register peek/poke operations (`peek_byte`, `poke_byte`, `peek_int`, `poke_int`, `get_address`) to read and write raw machine memory addresses.
    - **`raw` Inline Assembly & C**: Injects inline Assembly (`__asm__ volatile`) and raw optimized C blocks directly into your Slop program with zero overhead!
 
-5. **Novel Storage Innovation: Slop-Pack Compressed Array (SPCA)**:
+6. **Novel Storage Innovation: Slop-Pack Compressed Array (SPCA)**:
    - **Exposes native string array compression (`slop_pack` and `slop_unpack`)** that performs adaptive, run-length dictionary tokenization in a single $O(N)$ pass.
    - **Reduces storage footprint by 75% to over 90%** for redundant data arrays (database rows, category indices, logs, status fields), enabling massive storage and memory bandwidth savings with zero external dependencies!
 
-6. **Self-Hosting (Slop Made in Slop)**:
+7. **Self-Hosting (Slop Made in Slop)**:
    - The Slop compiler/lexer (`compiler.slop`) is written entirely in Slop.
    - It is bootstrapped by a Python-based transpiler (`slop_boot.py`) that outputs optimized, native C.
    - Once compiled, the native binary can compile and lex other Slop files!
 
-7. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
+8. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
    - A zero-copy header-only C++ library that lets you run C++ code inside Slop memory buckets.
    - Share strings and vectors between C++ and Slop without copying a single byte!
 
-8. **High-Performance Rust Native Bridge (`rust_bridge/`)**:
+9. **High-Performance Rust Native Bridge (`rust_bridge/`)**:
    - A fully functional Cargo-crate library implementing Rust FFI bindings directly to the Slop SEAA engine.
    - Provides safe, idiomatic Rust wrappers with RAII `SlopScope` lifetimes and zero-copy string and array structures.
 
-9. **Auto-Slop Python Transpiler (`slop_translate.py`)**:
+10. **Auto-Slop Python Transpiler (`slop_translate.py`)**:
    - Write standard Python code and automatically convert it to native `.slop` files!
    - Compiles your Python code into native machine code with **100x+ speedup**.
 
@@ -98,6 +102,7 @@ To compare the raw CPU instructions and force the processor to execute all 1 Bil
 - `hardware_access.slop` - Demonstrating direct volatile hardware, pointer register peeks, and inline assembly in Slop!
 - `storage_savings.slop` - Demonstrating the built-in, native Slop-Pack array compression (SPCA) saving up to 90% storage!
 - `secure_guards_test.slop` - Test script verifying array bounds checking and path traversal blocks.
+- `slop_repl.py` - Interactive compiling REPL shell tool.
 - `slop_bridge.hpp` - The C++ native bridge library.
 - `cpp_library_test.cpp` - Example C++ code running on the high-performance Slop bridge.
 - `rust_bridge/` - Cargo library for the high-performance Rust FFI bridge.
@@ -109,7 +114,21 @@ To compare the raw CPU instructions and force the processor to execute all 1 Bil
 
 ## Quick Start
 
-### 1. Run the Security Guard & Privacy Verification
+### 1. Launch the Interactive compiling REPL shell
+
+Once installed, you can launch the native-speed interactive REPL:
+```bash
+slop repl
+```
+**Example Session:**
+```
+slop> let x = [10, 20, 30]
+slop> x[1] * 5
+200
+slop> exit
+```
+
+### 2. Run the Security Guard & Privacy Verification
 
 ```bash
 # Transpile Slop to C
@@ -122,7 +141,7 @@ gcc -O3 -ffast-math -flto -march=native secure_guards_test.c -o secure_guards_te
 ./secure_guards_test
 ```
 
-### 2. Run the Novel Storage Compression (SPCA) Demo
+### 3. Run the Novel Storage Compression (SPCA) Demo
 
 ```bash
 # Transpile Slop to C
@@ -135,7 +154,7 @@ gcc -O3 -ffast-math -flto -march=native storage_savings.c -o storage_savings
 ./storage_savings
 ```
 
-### 3. Run the Bare-Metal Hardware & Assembly Demo
+### 4. Run the Bare-Metal Hardware & Assembly Demo
 
 ```bash
 python3 slop_boot.py hardware_access.slop
@@ -143,7 +162,7 @@ gcc -O3 -ffast-math -flto -march=native hardware_access.c -o hardware_access
 ./hardware_access
 ```
 
-### 4. Run the Multi-Paradigm Syntax Demo
+### 5. Run the Multi-Paradigm Syntax Demo
 
 ```bash
 python3 slop_boot.py complex_syntax.slop
@@ -151,7 +170,7 @@ gcc -O3 -ffast-math -flto -march=native complex_syntax.c -o complex_syntax
 ./complex_syntax
 ```
 
-### 5. Run the Self-Hosting Compiler
+### 6. Run the Self-Hosting Compiler
 
 ```bash
 python3 slop_boot.py compiler.slop
@@ -159,13 +178,13 @@ gcc -O3 -ffast-math -flto -march=native compiler.c -o slop-compiler
 ./slop-compiler storage_savings.slop
 ```
 
-### 6. Run the C++ Native Bridge Test
+### 7. Run the C++ Native Bridge Test
 
 ```bash
 g++ -O3 -march=native cpp_library_test.cpp -o cpp_library_test && ./cpp_library_test
 ```
 
-### 7. Automatically Convert Python Code to Slop & Run Natively
+### 8. Automatically Convert Python Code to Slop & Run Natively
 
 ```bash
 python3 slop_translate.py test_program.py test_program.slop
@@ -173,7 +192,7 @@ python3 slop_boot.py test_program.slop test_program.c
 gcc -O3 -march=native test_program.c -o test_program && ./test_program
 ```
 
-### 8. High-Performance Rust Bridge Compilation
+### 9. High-Performance Rust Bridge Compilation
 
 The Rust library is organized as a Cargo package located in `rust_bridge/`. To build and use it on any machine with Cargo installed:
 
