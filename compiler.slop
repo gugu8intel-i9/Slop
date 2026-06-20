@@ -100,6 +100,7 @@ fn is_keyword(s: string) -> bool {
     if s == "for" { return true }
     if s == "in" { return true }
     if s == "raw" { return true }
+    if s == "gpu" { return true }
     return false
 }
 

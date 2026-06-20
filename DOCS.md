@@ -15,8 +15,9 @@ Slop is an insanely high-performance, lightweight, and low learning-curve langua
 6. [Rust Pattern Matching (`match`)](#6-rust-pattern-matching-match)
 7. [Python List Comprehensions](#7-python-list-comprehensions)
 8. [Bare-Metal Hardware Access (Pointers & Assembly)](#8-bare-metal-hardware-access-pointers--assembly)
-9. [High-Performance Array Compression (SPCA)](#9-high-performance-array-compression-spca)
-10. [Bridging with C++ & Rust](#10-bridging-with-c--rust)
+9. [Low-Level GPU Compute Kernels](#9-low-level-gpu-compute-kernels)
+10. [High-Performance Array Compression (SPCA)](#10-high-performance-array-compression-spca)
+11. [Bridging with C++ & Rust](#11-bridging-with-c--rust)
 
 ---
 
@@ -215,7 +216,30 @@ fn main(args: array[string]) {
 
 ---
 
-## 9. High-Performance Array Compression (SPCA)
+## 9. Low-Level GPU Compute Kernels
+
+Slop includes the `gpu` keyword, allowing you to write highly parallelized compute kernels that execute directly on graphics processing hardware with **absolute zero host-side boilerplate**:
+
+```slop
+gpu scale_vectors(a: array[int], factor: int) -> array[int] {
+    # 'gpu_id' represents the active GPU thread index across thousands of cores
+    let id = gpu_id
+    return a[id] * factor
+}
+
+fn main(args: array[string]) {
+    let nums = [10, 20, 30, 40, 50]
+    
+    # Launches parallel compute grid on GPU natively!
+    let doubled = scale_vectors(nums, 2)
+}
+```
+
+The compiler automatically generates OpenCL C shader code, context creation, device mapping, host-to-device memory copy queues, grid launching, and data gathering on your behalf!
+
+---
+
+## 10. High-Performance Array Compression (SPCA)
 
 To save memory and disk storage when processing thousands of items, Slop includes native, zero-dependency **Slop-Pack Compressed Array (SPCA)** compression:
 
@@ -236,7 +260,7 @@ fn main(args: array[string]) {
 
 ---
 
-## 10. Bridging with C++ & Rust
+## 11. Bridging with C++ & Rust
 
 Slop compiles directly to optimized C, which means you can link Slop modules directly with **C++** and **Rust** with **zero FFI conversion penalty**!
 

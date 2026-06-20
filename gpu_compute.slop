@@ -1,0 +1,35 @@
+# High-Performance GPU Compute Kernel
+# Written in clean, high-level Slop syntax!
+gpu add_vectors(a: array[int], b: array[int]) -> array[int] {
+    # This block represents a parallel compute shader/kernel running on GPU cores!
+    # 'gpu_id' represents the unique 1D thread ID in the parallel execution grid
+    let id = gpu_id
+    
+    # Direct element calculation across 1000s of graphics processing cores!
+    return a[id] + b[id]
+}
+
+fn main(args: array[string]) {
+    print("--- [Slop High-Level / Low-Level GPU Compute Demonstration] ---")
+
+    # 1. Initialize two large high-level data arrays
+    let size = 10
+    print("Initializing input arrays of size:")
+    print(size)
+
+    let vector_a = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+    let vector_b = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    # 2. Launch the low-level GPU compute kernel natively with zero host boilerplate!
+    # No context creations, no queue allocations, no buffer binding. All fully automated!
+    let results = add_vectors(vector_a, vector_b)
+
+    print("GPU calculation results successfully copied back to host:")
+    let i = 0
+    while i < length(results) {
+        print(results[i])
+        i = i + 1
+    }
+
+    print("--- [GPU Compute Demonstration Completed Successfully] ---")
+}
