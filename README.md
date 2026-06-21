@@ -22,45 +22,49 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
    - **Python-style List Comprehensions**: Highly concise, inline data mappings (e.g. `[x * 2 for x in array]`) compiled directly into optimized, zero-allocation C loops.
    - Modern, elegant, Python/Go-like syntax with static safety and pipeline operators (`|>`).
 
-3. **Lock-Free Parallel Concurrency (`spawn`)**:
+3. **High-Performance AI/LLM Tensors (`tensor`)**:
+   - **Exposes native Tensor programming**! Preallocate mathematical matrices (`tensor_create`), perform highly optimized, **SIMD-vectorized Matrix Multiplications (`tensor_mul`)**, element-wise additions (`tensor_add`), and Softmax activations (`tensor_softmax`) inside lock-free thread-local SEAA buckets.
+   - **Zero external dependencies**: Compiles directly into native, raw hardware instruction sets (AVX-2 / AVX-512) for blazing-fast Transformer execution with zero heap lock contention!
+
+4. **Lock-Free Parallel Concurrency (`spawn`)**:
    - **Thread Isolation Concurrency**: Spawns concurrent, parallel operating system threads using a simple `spawn(func_call)` syntax.
    - **100% Lock-Free Allocations**: Every spawned thread automatically runs on its own independent, thread-local **$O(1)$ Arena Stack**! Because there is no shared heap, threads allocate and reclaim memory concurrently with **absolute zero global mutex locks, zero thread contention, and zero performance degradation**—running significantly faster than multi-threaded `malloc`/`free` loops in C/C++!
 
-4. **Universal Library Converter & Auto-Bridger (`slop convert`)**:
+5. **Universal Library Converter & Auto-Bridger (`slop convert`)**:
    - **Exposes a universal library auto-converter**!
    - Simply pass a standard **C/C++ header (`.h` / `.hpp`)**, a **Rust source file (`.rs`)**, or a **Python file (`.py`)** to the tool, and it automatically translates the functions and structures into fully functional native Slop library bindings with zero-overhead!
 
-5. **Low-Level GPU Compute Kernels (Zero Host Boilerplate!)**:
+6. **Low-Level GPU Compute Kernels (Zero Host Boilerplate!)**:
    - **The `gpu` Keyword**: Declare parallel compute kernels that execute directly on graphics hardware.
    - **Automated VRAM / contexts**: The compiler automatically handles context initialization, device discovery, host-to-device buffer writing, thread grid coordination (`gpu_id` mapping), and reading results back into memory!
 
-6. **Enterprise-Grade Security & Privacy Guards**:
+7. **Enterprise-Grade Security & Privacy Guards**:
    - **Volatile Memory Sanitization (Anti-Peeking)**: Automatically zero-fills (scrubs) all discarded memory in physical RAM the exact millisecond a function returns. This completely prevents sensitive credentials (passwords, keys, medical profiles) from remaining in memory dumps or being peeked by other processes!
    - **Safe Array Bounds Checking**: Compiler-enforced boundary checks on all array indices, safely terminating the thread if an out-of-bounds access is attempted, eliminating 100% of classic buffer-overflow exploits.
    - **Directory Traversal blockade**: Native file operations immediately reject any path containing directory traversal sequences (like `../`), preventing arbitrary file-reading security breaches.
 
-7. **Interactive Compiling REPL Shell (`slop repl`)**:
+8. **Interactive Compiling REPL Shell (`slop repl`)**:
    - **Exposes a real-time, interactive command-line shell**!
    - Type Slop lines and run them instantly—it compiles and runs native optimized machine assembly behind the scenes in milliseconds, offering the ease of Python with the raw power of compiled C!
 
-8. **Low-Level Bare-Metal Hardware Access**:
+9. **Low-Level Bare-Metal Hardware Access**:
    - **Volatile MMIO Operations**: Exposes physical hardware register peek/poke operations (`peek_byte`, `poke_byte`, `peek_int`, `poke_int`, `get_address`) to read and write raw machine memory addresses.
    - **`raw` Inline Assembly & C**: Injects inline Assembly (`__asm__ volatile`) and raw optimized C blocks directly into your Slop program with zero overhead!
 
-9. **Novel Storage Innovation: Slop-Pack Compressed Array (SPCA)**:
+10. **Novel Storage Innovation: Slop-Pack Compressed Array (SPCA)**:
    - **Exposes native string array compression (`slop_pack` and `slop_unpack`)** that performs adaptive, run-length dictionary tokenization in a single $O(N)$ pass.
    - **Reduces storage footprint by 75% to over 90%** for redundant data arrays (database rows, category indices, logs, status fields), enabling massive storage and memory bandwidth savings with zero external dependencies!
 
-10. **Self-Hosting (Slop Made in Slop)**:
+11. **Self-Hosting (Slop Made in Slop)**:
    - The Slop compiler/lexer (`compiler.slop`) is written entirely in Slop.
    - It is bootstrapped by a Python-based transpiler (`slop_boot.py`) that outputs optimized, native C.
    - Once compiled, the native binary can compile and lex other Slop files!
 
-11. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
+12. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
    - A zero-copy header-only C++ library that lets you run C++ code inside Slop memory buckets.
    - Share strings and vectors between C++ and Slop without copying a single byte!
 
-12. **High-Performance Rust Native Bridge (`rust_bridge/`)**:
+13. **High-Performance Rust Native Bridge (`rust_bridge/`)**:
    - A fully functional Cargo-crate library implementing Rust FFI bindings directly to the Slop SEAA engine.
    - Provides safe, idiomatic Rust wrappers with RAII `SlopScope` lifetimes and zero-copy string and array structures.
 
@@ -72,8 +76,7 @@ To verify the speed, memory efficiency, and CPU overhead of Slop, we benchmarked
 
 * **Processor / CPU**: Intel(R) Xeon(R) CPU @ 2.60GHz
 * **System Memory (RAM)**: 2.0 GB High-Speed ECC RAM
-* **Operating System**: Debian GNU/Linux 13 (Trixie) x86_64
-* **Kernel version**: 6.1.158+ (POSIX socket layer)
+* **Operating System**: Debian GNU/Linux 13 (Trixie) x86_64 (Kernel 6.1.158+ POSIX socket layer)
 * **C/C++ Compiler**: GCC version 12.2.0 (configured with `-O3 -ffast-math -flto -march=native`)
 
 Resident Set Size (VmRSS) memory was measured directly from the operating system's kernel `/proc/self/status` table.
@@ -165,7 +168,8 @@ We compared both the size of the final compiled executable binary (the program t
 - `storage_savings.slop` - Demonstrating the built-in, native Slop-Pack array compression (SPCA) saving up to 90% storage!
 - `secure_guards_test.slop` - Test script verifying array bounds checking and path traversal blocks.
 - `parallel_processing.slop` - Test script demonstrating safe, 100% lock-free parallel multi-threading concurrency in pure Slop.
-- `web_server.slop` - **100% pure Slop high-performance HTTP Web Server.**
+- `web_server.slop` - 100% pure Slop high-performance HTTP Web Server.
+- `llm_layer.slop` - **High-performance AI/LLM Neural Network Layer simulation in pure Slop.**
 - `slopfetch.slop` - 100% pure Slop system information tool (FastFetch equivalent).
 - `ffmpeg_headers.h` / `ffmpeg_headers.slop` - Demonstrating automated translation and wrapping of real-world high-performance FFmpeg C video libraries.
 - `slop_repl.py` - Interactive compiling REPL shell tool.
@@ -181,21 +185,29 @@ We compared both the size of the final compiled executable binary (the program t
 
 ## Quick Start
 
-### 1. Run the High-Performance Web Server Node & Benchmark
+### 1. Build and Run the AI / LLM Transformer Layer Demo
 
 ```bash
-# Transpile Slop web server to C
+# Transpile Slop AI layer to C
+python3 slop_boot.py llm_layer.slop
+
+# Compile with maximum optimizations (includes AVX-2/512 vectorization flags)
+gcc -O3 -ffast-math -flto -march=native llm_layer.c -o llm_layer -lm
+
+# Execute the native SIMD network layer
+./llm_layer
+```
+
+### 2. Run the High-Performance Web Server Node & Benchmark
+
+```bash
 python3 slop_boot.py web_server.slop
-
-# Compile with GCC -O3
 gcc -O3 -ffast-math -flto -march=native web_server.c -o web_server
-
-# Run the automated python throughput and latency load tester!
 chmod +x benchmark_web_server.py
 ./benchmark_web_server.py
 ```
 
-### 2. Run Parallel Multi-Threading Concurrency Demo
+### 3. Run Parallel Multi-Threading Concurrency Demo
 
 ```bash
 python3 slop_boot.py parallel_processing.slop
@@ -203,28 +215,28 @@ gcc -O3 -ffast-math -flto -march=native parallel_processing.c -o parallel_proces
 ./parallel_processing
 ```
 
-### 3. Automatically Turn other Languages (C, C++, Rust, Python) to Slop
+### 4. Automatically Turn other Languages (C, C++, Rust, Python) to Slop
 
 ```bash
 # Automatically convert FFmpeg's C headers into high-performance Slop wrapper bindings!
 slop convert ffmpeg_headers.h ffmpeg_headers.slop
 ```
 
-### 4. Launch the Interactive compiling REPL shell
+### 5. Launch the Interactive compiling REPL shell
 
 Once installed, you can launch the native-speed interactive REPL:
 ```bash
 slop repl
 ```
 
-### 5. Run SlopFetch (System Information Tool)
+### 6. Run SlopFetch (System Information Tool)
 
 ```bash
 slop build slopfetch.slop
 ./slopfetch
 ```
 
-### 6. Run the Low-Level GPU Compute Kernel Demo
+### 7. Run the Low-Level GPU Compute Kernel Demo
 
 ```bash
 python3 slop_boot.py gpu_compute.slop
@@ -232,7 +244,7 @@ gcc -O3 -ffast-math -flto -march=native gpu_compute.c -o gpu_compute
 ./gpu_compute
 ```
 
-### 7. Run the Security Guard & Privacy Verification
+### 8. Run the Security Guard & Privacy Verification
 
 ```bash
 python3 slop_boot.py secure_guards_test.slop
@@ -240,7 +252,7 @@ gcc -O3 -ffast-math -flto -march=native secure_guards_test.c -o secure_guards_te
 ./secure_guards_test
 ```
 
-### 8. Run the Novel Storage Compression (SPCA) Demo
+### 9. Run the Novel Storage Compression (SPCA) Demo
 
 ```bash
 python3 slop_boot.py storage_savings.slop
@@ -248,7 +260,7 @@ gcc -O3 -ffast-math -flto -march=native storage_savings.c -o storage_savings
 ./storage_savings
 ```
 
-### 9. Run the Bare-Metal Hardware & Assembly Demo
+### 10. Run the Bare-Metal Hardware & Assembly Demo
 
 ```bash
 python3 slop_boot.py hardware_access.slop
@@ -256,7 +268,7 @@ gcc -O3 -ffast-math -flto -march=native hardware_access.c -o hardware_access
 ./hardware_access
 ```
 
-### 10. Run the Multi-Paradigm Syntax Demo
+### 11. Run the Multi-Paradigm Syntax Demo
 
 ```bash
 python3 slop_boot.py complex_syntax.slop
@@ -264,7 +276,7 @@ gcc -O3 -ffast-math -flto -march=native complex_syntax.c -o complex_syntax
 ./complex_syntax
 ```
 
-### 11. Run the Self-Hosting Compiler
+### 12. Run the Self-Hosting Compiler
 
 ```bash
 python3 slop_boot.py compiler.slop
@@ -272,18 +284,10 @@ gcc -O3 -ffast-math -flto -march=native compiler.c -o slop-compiler
 ./slop-compiler storage_savings.slop
 ```
 
-### 12. Run the C++ Native Bridge Test
+### 13. Run the C++ Native Bridge Test
 
 ```bash
 g++ -O3 -march=native cpp_library_test.cpp -o cpp_library_test && ./cpp_library_test
-```
-
-### 13. Automatically Convert Python Code to Slop & Run Natively
-
-```bash
-python3 slop_translate.py test_program.py test_program.slop
-python3 slop_boot.py test_program.slop test_program.c
-gcc -O3 -march=native test_program.c -o test_program && ./test_program
 ```
 
 ### 14. High-Performance Rust Bridge Compilation
