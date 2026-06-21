@@ -663,6 +663,11 @@ class CodeGenerator:
             "socket_read": ("string", ["int"]),
             "socket_write": ("void", ["int", "string"]),
             "socket_close": ("void", ["int"]),
+            "tensor_create": ("tensor", ["int", "int"]),
+            "tensor_mul": ("tensor", ["tensor", "tensor"]),
+            "tensor_add": ("tensor", ["tensor", "tensor"]),
+            "tensor_softmax": ("void", ["tensor"]),
+            "tensor_print": ("void", ["tensor"]),
         }
         self.structs = {}
 
@@ -677,6 +682,8 @@ class CodeGenerator:
             return "SlopString"
         if slop_type == "void":
             return "void"
+        if slop_type == "tensor":
+            return "SlopTensor"
         if slop_type.startswith("array["):
             return "SlopArray"
         if slop_type in self.structs:
@@ -1075,6 +1082,25 @@ int main(int argc, char** argv) {
                 arg_code, _ = self.generate_expression(expr.args[0])
                 return f"slop_socket_close({arg_code})", "void"
                 
+            elif expr.name == "tensor_create":
+                arg1_code, _ = self.generate_expression(expr.args[0])
+                arg2_code, _ = self.generate_expression(expr.args[1])
+                return f"slop_tensor_create(local_arena, {arg1_code}, {arg2_code})", "tensor"
+            elif expr.name == "tensor_mul":
+                arg1_code, _ = self.generate_expression(expr.args[0])
+                arg2_code, _ = self.generate_expression(expr.args[1])
+                return f"slop_tensor_mul(local_arena, {arg1_code}, {arg2_code})", "tensor"
+            elif expr.name == "tensor_add":
+                arg1_code, _ = self.generate_expression(expr.args[0])
+                arg2_code, _ = self.generate_expression(expr.args[1])
+                return f"slop_tensor_add(local_arena, {arg1_code}, {arg2_code})", "tensor"
+            elif expr.name == "tensor_softmax":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_tensor_softmax({arg_code})", "void"
+            elif expr.name == "tensor_print":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_tensor_print({arg_code})", "void"
+
             elif expr.name == "peek_byte":
                 addr_code, _ = self.generate_expression(expr.args[0])
                 return f"(*(volatile uint8_t*)({addr_code}))", "int"
@@ -1211,7 +1237,6 @@ int main(int argc, char** argv) {
             for arg in expr.args:
                 code, _ = self.generate_expression(arg)
                 args_code.append(code)
-            args_str = ", ".join(args_code)
             return f"fn_{expr.name}({', '.join(args_code)})", ret_type
             
         print(f"Error: Unknown expression node: {type(expr)}", file=sys.stderr)

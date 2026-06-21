@@ -1,0 +1,25 @@
+fn main(args: array[string]) {
+    print("--- [Slop High-Performance AI/LLM Neural Network Layer Demo] ---")
+    print("Initializing LLM Transformer feedforward parameters...")
+
+    # 1. Allocate input embedding X (1 x 128 vector representing a token)
+    # and weights W (128 x 128 matrix representing a dense linear projection layer)
+    # inside our preallocated, lock-free, zero-copy SEAA memory bucket!
+    let x = tensor_create(1, 128)
+    let w = tensor_create(128, 128)
+
+    # 2. Compute a highly optimized, SIMD-vectorized Matrix Multiplication X * W
+    # GCC automatically vectorizes this loop into raw AVX2 / AVX-512 instructions!
+    print("Computing parallel dense linear projection (X * W)...")
+    let h = tensor_mul(x, w)
+
+    # 3. Apply a fast, stable row-wise Softmax activation function natively on the GPU/CPU!
+    print("Applying Softmax probability activation...")
+    tensor_softmax(h)
+
+    # 4. Print results (showing shape and the top probability coordinates)
+    print("Transformer Hidden Layer output activation probabilities:")
+    tensor_print(h)
+
+    print("--- [AI/LLM Neural Layer Simulation Completed Successfully] ---")
+}

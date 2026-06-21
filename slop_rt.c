@@ -84,3 +84,24 @@ void ext_slop_socket_write(int64_t client_fd, SlopString content) {
 void ext_slop_socket_close(int64_t fd) {
     slop_socket_close(fd);
 }
+
+// Sloppy Tensor Arena (STA) exports for FFI
+SlopTensor ext_slop_tensor_create(SlopArena* arena, int64_t rows, int64_t cols) {
+    return slop_tensor_create(arena, rows, cols);
+}
+
+SlopTensor ext_slop_tensor_mul(SlopArena* arena, SlopTensor t1, SlopTensor t2) {
+    return slop_tensor_mul(arena, t1, t2);
+}
+
+SlopTensor ext_slop_tensor_add(SlopArena* arena, SlopTensor t1, SlopTensor t2) {
+    return slop_tensor_add(arena, t1, t2);
+}
+
+void ext_slop_tensor_softmax(SlopTensor t) {
+    slop_tensor_softmax(t);
+}
+
+void ext_slop_tensor_print(SlopTensor t) {
+    slop_tensor_print(t);
+}

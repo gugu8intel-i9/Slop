@@ -19,6 +19,7 @@ benchmark_slop_ffi_unopt
 slopfetch
 parallel_processing
 web_server
+llm_layer
 
 # Generated C files
 hello.c
@@ -35,6 +36,7 @@ benchmark_slop_ffi.c
 slopfetch.c
 parallel_processing.c
 web_server.c
+llm_layer.c
 
 # Pycache / compilation artifacts
 __pycache__/
