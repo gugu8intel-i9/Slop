@@ -668,6 +668,9 @@ class CodeGenerator:
             "tensor_add": ("tensor", ["tensor", "tensor"]),
             "tensor_softmax": ("void", ["tensor"]),
             "tensor_print": ("void", ["tensor"]),
+            "ui_create": ("int", ["string"]),
+            "ui_render": ("void", ["string"]),
+            "ui_serve": ("void", ["int"]),
         }
         self.structs = {}
 
@@ -1101,6 +1104,16 @@ int main(int argc, char** argv) {
                 arg_code, _ = self.generate_expression(expr.args[0])
                 return f"slop_tensor_print({arg_code})", "void"
 
+            elif expr.name == "ui_create":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_ui_create({arg_code})", "int"
+            elif expr.name == "ui_render":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_ui_render({arg_code})", "void"
+            elif expr.name == "ui_serve":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_ui_serve({arg_code})", "void"
+
             elif expr.name == "peek_byte":
                 addr_code, _ = self.generate_expression(expr.args[0])
                 return f"(*(volatile uint8_t*)({addr_code}))", "int"
@@ -1237,6 +1250,7 @@ int main(int argc, char** argv) {
             for arg in expr.args:
                 code, _ = self.generate_expression(arg)
                 args_code.append(code)
+            args_str = ", ".join(args_code)
             return f"fn_{expr.name}({', '.join(args_code)})", ret_type
             
         print(f"Error: Unknown expression node: {type(expr)}", file=sys.stderr)

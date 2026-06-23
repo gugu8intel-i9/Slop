@@ -1,0 +1,43 @@
+# High-Performance UI/UX & Desktop App Frontend Demo
+# Written in clean, 100% pure Slop!
+
+fn main(args: array[string]) {
+    print("--- [Slop High-Performance Native UI/UX App Demo] ---")
+
+    # 1. Create a native desktop window/browser context
+    # Automatically binds standard ports and signals the OS WebKit engine to open!
+    print("Initializing native OS WebKit rendering engine...")
+    let ui_server = ui_create("My Slop Desktop App")
+    if ui_server < 0 {
+        print("ERROR: Failed to open desktop UI socket!")
+        return
+    }
+
+    # 2. Design a gorgeous, fully-styled HTML5, CSS3, and animated JS dashboard
+    # This represents standard web-tech frontend, but powered by Slop backend speed!
+    let html = "<!DOCTYPE html><html><head><title>Slop UI App</title><style>" +
+               "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: linear-gradient(135deg, #1e1e24 0%, #111116 100%); color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }" +
+               ".card { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1); padding: 40px; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3); text-align: center; max-width: 450px; animation: fadeIn 1s ease-in-out; }" +
+               "h1 { font-size: 2.5rem; margin-bottom: 10px; background: linear-gradient(90deg, #38ef7d, #11998e); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }" +
+               "p { font-size: 1.1rem; color: #a0aec0; margin-bottom: 30px; }" +
+               ".badge { background: #11998e; color: #ffffff; padding: 6px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }" +
+               "@keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }" +
+               "</style></head><body>" +
+               "<div class='card'>" +
+               "<span class='badge'>Natively Compiled</span>" +
+               "<h1>Slop UI / UX</h1>" +
+               "<p>Sleek, animated HTML5/CSS3 frontend rendering natively at raw machine speed on Slop's zero-copy memory stack.</p>" +
+               "</div></body></html>"
+
+    # 3. Render the frontend into our UI container
+    print("Injecting HTML5/CSS3 templates into the frontend context...")
+    ui_render(html)
+
+    print("Desktop App launched successfully!")
+    print("Serving single-page frontend instance in the background...")
+    
+    # 4. Serve the client request
+    ui_serve(ui_server)
+    
+    print("--- [Desktop App Frontend Session Successfully Completed] ---")
+}

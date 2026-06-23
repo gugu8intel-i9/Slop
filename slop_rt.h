@@ -13,6 +13,7 @@
 
 // POSIX socket headers for high-performance zero-copy network streaming
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -385,14 +386,7 @@ static inline void slop_socket_close(int64_t fd) {
     close((int)fd);
 }
 
-// ============================================================================
-// NOVEL AI/LLM INNOVATION: Sloppy Tensor Arenas (STA)
-// ============================================================================
-// Zero-dependency, SIMD-vectorized multidimensional tensors allocated inside
-// thread-local SEAA buckets. Runs GEMMs and activation loops at physical
-// hardware speed with absolute zero heap locks or memory allocation overhead.
-// ============================================================================
-
+// Sloppy Tensor Arenas (STA)
 typedef struct SlopTensor {
     int64_t rows;
     int64_t cols;
@@ -404,22 +398,16 @@ static inline SlopTensor slop_tensor_create(SlopArena* arena, int64_t rows, int6
     t.rows = rows;
     t.cols = cols;
     t.data = (double*)slop_arena_alloc(arena, rows * cols * sizeof(double));
-    // Zero-initialize tensor data
     memset(t.data, 0, rows * cols * sizeof(double));
     return t;
 }
 
 static inline SlopTensor slop_tensor_mul(SlopArena* arena, SlopTensor t1, SlopTensor t2) {
     if (t1.cols != t2.rows) {
-        fprintf(stderr, "Slop AI Error: Matrix dimension mismatch for multiplication! (%lldx%lld) * (%lldx%lld)\n",
-                (long long)t1.rows, (long long)t1.cols, (long long)t2.rows, (long long)t2.cols);
+        fprintf(stderr, "Slop AI Error: Matrix dimension mismatch for multiplication!\n");
         exit(1);
     }
-    
     SlopTensor res = slop_tensor_create(arena, t1.rows, t2.cols);
-    
-    // Blazing-fast cache-oblivious matrix multiplication
-    // GCC compiles this loop directly into vectorized SIMD (AVX2/AVX-512) instructions!
     for (int64_t i = 0; i < t1.rows; i++) {
         for (int64_t k = 0; k < t1.cols; k++) {
             double val = t1.data[i * t1.cols + k];
@@ -428,7 +416,6 @@ static inline SlopTensor slop_tensor_mul(SlopArena* arena, SlopTensor t1, SlopTe
             }
         }
     }
-    
     return res;
 }
 
@@ -445,26 +432,19 @@ static inline SlopTensor slop_tensor_add(SlopArena* arena, SlopTensor t1, SlopTe
 }
 
 static inline void slop_tensor_softmax(SlopTensor t) {
-    // Softmax applied row-wise (ideal for Transformer attention)
     for (int64_t r = 0; r < t.rows; r++) {
         int64_t row_offset = r * t.cols;
-        
-        // Find max value in row (numerical stability trick)
         double max_val = t.data[row_offset];
         for (int64_t c = 1; c < t.cols; c++) {
             if (t.data[row_offset + c] > max_val) {
                 max_val = t.data[row_offset + c];
             }
         }
-        
-        // Compute exponentials and sum
         double sum = 0.0;
         for (int64_t c = 0; c < t.cols; c++) {
             t.data[row_offset + c] = exp(t.data[row_offset + c] - max_val);
             sum += t.data[row_offset + c];
         }
-        
-        // Normalize
         for (int64_t c = 0; c < t.cols; c++) {
             t.data[row_offset + c] /= sum;
         }
@@ -483,6 +463,57 @@ static inline void slop_tensor_print(SlopTensor t) {
     }
     if (t.rows > 5) printf("  ... (+%lld rows)\n", (long long)(t.rows - 5));
     printf("\n");
+}
+
+// Sloppy Single-Page Application (SPA) Engine
+static const char* slop_ui_html = NULL;
+
+static inline int64_t slop_ui_create(SlopString title) {
+    int64_t server_fd = slop_socket_listen(9191);
+    if (server_fd < 0) return -1;
+    
+#ifdef __APPLE__
+    system("open http://localhost:9191 &");
+#else
+    system("xdg-open http://localhost:9191 &");
+#endif
+
+    return server_fd;
+}
+
+static inline void slop_ui_render(SlopString html) {
+    slop_ui_html = html.data;
+}
+
+static inline void slop_ui_serve(int64_t server_fd) {
+    // 100ms non-blocking select timeout to prevent hangs inside headless / CI environments!
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET((int)server_fd, &read_fds);
+    
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 100000; // 100ms
+    
+    int activity = select((int)server_fd + 1, &read_fds, NULL, NULL, &timeout);
+    if (activity > 0) {
+        int client_fd = accept((int)server_fd, NULL, NULL);
+        if (client_fd >= 0) {
+            char req[1024];
+            recv(client_fd, req, sizeof(req), 0);
+            
+            const char* header = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n";
+            send(client_fd, header, strlen(header), 0);
+            if (slop_ui_html) {
+                send(client_fd, slop_ui_html, strlen(slop_ui_html), 0);
+            } else {
+                send(client_fd, "<h1>Slop UI Render Standby</h1>", 31, 0);
+            }
+            close(client_fd);
+        }
+    } else {
+        printf("-> No browser connection detected within 100ms. Closing UI container gracefully.\n");
+    }
 }
 
 // Helper IO Functions

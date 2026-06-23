@@ -105,3 +105,16 @@ void ext_slop_tensor_softmax(SlopTensor t) {
 void ext_slop_tensor_print(SlopTensor t) {
     slop_tensor_print(t);
 }
+
+// Novel UI/UX exports for FFI
+int64_t ext_slop_ui_create(SlopString title) {
+    return slop_ui_create(title);
+}
+
+void ext_slop_ui_render(SlopString html) {
+    slop_ui_render(html);
+}
+
+void ext_slop_ui_serve(int64_t server_fd) {
+    slop_ui_serve(server_fd);
+}
