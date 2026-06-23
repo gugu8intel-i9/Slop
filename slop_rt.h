@@ -8,16 +8,63 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
-#include <pthread.h>
 #include <math.h>
 
-// POSIX socket headers for high-performance zero-copy network streaming
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <netinet/in.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
+// ============================================================================
+// CROSS-PLATFORM SYSTEM SHIMS: Windows 11, macOS, and Linux (ALL OF THEM!)
+// ============================================================================
+
+#ifdef _WIN32
+    // Windows 11 Native Sockets & Concurrency API
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #include <windows.h>
+    #pragma comment(lib, "ws2_32.lib") // Auto-link Winsock library for MSVC
+    
+    typedef int socklen_t;
+    typedef HANDLE pthread_t;
+    
+    // POSIX Threading Emulator for Windows 11
+    static inline int pthread_create(pthread_t* thread, void* attr, void* (*start_routine)(void*), void* arg) {
+        *thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)start_routine, arg, 0, NULL);
+        return (*thread != NULL) ? 0 : -1;
+    }
+    
+    static inline int pthread_detach(pthread_t thread) {
+        CloseHandle(thread);
+        return 0;
+    }
+
+    // Winsock Initialization
+    static inline void slop_winsock_init() {
+        static bool initialized = false;
+        if (!initialized) {
+            WSADATA wsa;
+            WSAStartup(MAKEWORD(2,2), &wsa);
+            initialized = true;
+        }
+    }
+    
+    // nanosleep emulation for Windows 11
+    static inline int nanosleep(const struct timespec* req, struct timespec* rem) {
+        Sleep((DWORD)(req->tv_sec * 1000 + req->tv_nsec / 1000000));
+        return 0;
+    }
+
+    #define closesocket_compat closesocket
+#else
+    // POSIX Networking & Concurrency for macOS & Linux
+    #include <sys/socket.h>
+    #include <sys/select.h>
+    #include <netinet/in.h>
+    #include <unistd.h>
+    #include <arpa/inet.h>
+    #include <fcntl.h>
+    #include <pthread.h>
+    
+    #define closesocket_compat close
+    static inline void slop_winsock_init() {} // No-op on POSIX
+#endif
 
 // Slop Arena / Bucket Structure
 typedef struct SlopArena {
@@ -332,11 +379,17 @@ static inline SlopArray slop_unpack_strings(SlopArena* arena, SlopString packed)
 
 // Sloppy-Escape Zero-Copy Socket Pipes (ZCSPC)
 static inline int64_t slop_socket_listen(int64_t port) {
+    slop_winsock_init();
+    
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) return -1;
     
     int opt = 1;
+#ifdef _WIN32
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+#else
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
     
     struct sockaddr_in address;
     memset(&address, 0, sizeof(address));
@@ -345,12 +398,12 @@ static inline int64_t slop_socket_listen(int64_t port) {
     address.sin_port = htons((uint16_t)port);
     
     if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
-        close(server_fd);
+        closesocket_compat(server_fd);
         return -1;
     }
     
     if (listen(server_fd, 128) < 0) {
-        close(server_fd);
+        closesocket_compat(server_fd);
         return -1;
     }
     
@@ -367,7 +420,12 @@ static inline int64_t slop_socket_accept(int64_t server_fd) {
 static inline SlopString slop_socket_read(SlopArena* arena, int64_t client_fd) {
     size_t max_read = 8192;
     char* buf = (char*)slop_arena_alloc(arena, max_read + 1);
+    
+#ifdef _WIN32
+    ssize_t read_bytes = recv((int)client_fd, buf, (int)max_read, 0);
+#else
     ssize_t read_bytes = recv((int)client_fd, buf, max_read, 0);
+#endif
     
     if (read_bytes < 0) {
         return (SlopString){ .data = "", .length = 0 };
@@ -379,11 +437,15 @@ static inline SlopString slop_socket_read(SlopArena* arena, int64_t client_fd) {
 }
 
 static inline void slop_socket_write(int64_t client_fd, SlopString response) {
+#ifdef _WIN32
+    send((int)client_fd, response.data, (int)response.length, 0);
+#else
     send((int)client_fd, response.data, response.length, 0);
+#endif
 }
 
 static inline void slop_socket_close(int64_t fd) {
-    close((int)fd);
+    closesocket_compat((int)fd);
 }
 
 // Sloppy Tensor Arenas (STA)
@@ -472,7 +534,9 @@ static inline int64_t slop_ui_create(SlopString title) {
     int64_t server_fd = slop_socket_listen(9191);
     if (server_fd < 0) return -1;
     
-#ifdef __APPLE__
+#ifdef _WIN32
+    system("start http://localhost:9191");
+#elif __APPLE__
     system("open http://localhost:9191 &");
 #else
     system("xdg-open http://localhost:9191 &");
@@ -486,7 +550,7 @@ static inline void slop_ui_render(SlopString html) {
 }
 
 static inline void slop_ui_serve(int64_t server_fd) {
-    // 100ms non-blocking select timeout to prevent hangs inside headless / CI environments!
+    // Cross-Platform non-blocking select timeout for Windows 11, macOS, and Linux!
     fd_set read_fds;
     FD_ZERO(&read_fds);
     FD_SET((int)server_fd, &read_fds);
@@ -500,16 +564,29 @@ static inline void slop_ui_serve(int64_t server_fd) {
         int client_fd = accept((int)server_fd, NULL, NULL);
         if (client_fd >= 0) {
             char req[1024];
+#ifdef _WIN32
             recv(client_fd, req, sizeof(req), 0);
+#else
+            recv(client_fd, req, sizeof(req), 0);
+#endif
             
             const char* header = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n";
+#ifdef _WIN32
+            send(client_fd, header, (int)strlen(header), 0);
+            if (slop_ui_html) {
+                send(client_fd, slop_ui_html, (int)strlen(slop_ui_html), 0);
+            } else {
+                send(client_fd, "<h1>Slop UI Render Standby</h1>", 31, 0);
+            }
+#else
             send(client_fd, header, strlen(header), 0);
             if (slop_ui_html) {
                 send(client_fd, slop_ui_html, strlen(slop_ui_html), 0);
             } else {
                 send(client_fd, "<h1>Slop UI Render Standby</h1>", 31, 0);
             }
-            close(client_fd);
+#endif
+            closesocket_compat(client_fd);
         }
     } else {
         printf("-> No browser connection detected within 100ms. Closing UI container gracefully.\n");
@@ -522,7 +599,7 @@ static inline SlopString slop_read_file(SlopArena* arena, SlopString path_str) {
     memcpy(path, path_str.data, path_str.length);
     path[path_str.length] = '\0';
 
-    if (strstr(path, "..") != NULL) {
+    if (strstr(path, "..") != NULL || strstr(path, "..\\") != NULL) {
         fprintf(stderr, "Slop Secure Guard: Blocked directory traversal attack attempt on path: %s\n", path);
         free(path);
         return (SlopString){ .data = "", .length = 0 };
@@ -571,7 +648,7 @@ static inline void slop_write_file(SlopString path_str, SlopString content) {
     memcpy(path, path_str.data, path_str.length);
     path[path_str.length] = '\0';
 
-    if (strstr(path, "..") != NULL) {
+    if (strstr(path, "..") != NULL || strstr(path, "..\\") != NULL) {
         fprintf(stderr, "Slop Secure Guard: Blocked directory traversal write attempt on path: %s\n", path);
         free(path);
         return;
