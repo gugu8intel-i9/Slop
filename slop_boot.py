@@ -671,6 +671,12 @@ class CodeGenerator:
             "ui_create": ("int", ["string"]),
             "ui_render": ("void", ["string"]),
             "ui_serve": ("void", ["int"]),
+            "game_init": ("int", ["int", "int"]),
+            "game_clear": ("void", []),
+            "game_rect": ("void", ["int", "int", "int", "int", "string"]),
+            "game_circle": ("void", ["int", "int", "int", "string"]),
+            "game_text": ("void", ["int", "int", "string", "string"]),
+            "game_update": ("void", ["int"]),
         }
         self.structs = {}
 
@@ -1113,6 +1119,35 @@ int main(int argc, char** argv) {
             elif expr.name == "ui_serve":
                 arg_code, _ = self.generate_expression(expr.args[0])
                 return f"slop_ui_serve({arg_code})", "void"
+
+            elif expr.name == "game_init":
+                arg1_code, _ = self.generate_expression(expr.args[0])
+                arg2_code, _ = self.generate_expression(expr.args[1])
+                return f"slop_game_init({arg1_code}, {arg2_code})", "int"
+            elif expr.name == "game_clear":
+                return f"slop_game_clear()", "void"
+            elif expr.name == "game_rect":
+                arg1_code, _ = self.generate_expression(expr.args[0])
+                arg2_code, _ = self.generate_expression(expr.args[1])
+                arg3_code, _ = self.generate_expression(expr.args[2])
+                arg4_code, _ = self.generate_expression(expr.args[3])
+                arg5_code, _ = self.generate_expression(expr.args[4])
+                return f"slop_game_rect({arg1_code}, {arg2_code}, {arg3_code}, {arg4_code}, {arg5_code})", "void"
+            elif expr.name == "game_circle":
+                arg1_code, _ = self.generate_expression(expr.args[0])
+                arg2_code, _ = self.generate_expression(expr.args[1])
+                arg3_code, _ = self.generate_expression(expr.args[2])
+                arg4_code, _ = self.generate_expression(expr.args[3])
+                return f"slop_game_circle({arg1_code}, {arg2_code}, {arg3_code}, {arg4_code})", "void"
+            elif expr.name == "game_text":
+                arg1_code, _ = self.generate_expression(expr.args[0])
+                arg2_code, _ = self.generate_expression(expr.args[1])
+                arg3_code, _ = self.generate_expression(expr.args[2])
+                arg4_code, _ = self.generate_expression(expr.args[3])
+                return f"slop_game_text({arg1_code}, {arg2_code}, {arg3_code}, {arg4_code})", "void"
+            elif expr.name == "game_update":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_game_update({arg_code})", "void"
 
             elif expr.name == "peek_byte":
                 addr_code, _ = self.generate_expression(expr.args[0])

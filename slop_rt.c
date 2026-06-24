@@ -118,3 +118,28 @@ void ext_slop_ui_render(SlopString html) {
 void ext_slop_ui_serve(int64_t server_fd) {
     slop_ui_serve(server_fd);
 }
+
+// Sloppy-Sprite WebGL Canvas (SSCE) Game Engine exports for FFI
+int64_t ext_slop_game_init(int64_t width, int64_t height) {
+    return slop_game_init(width, height);
+}
+
+void ext_slop_game_clear() {
+    slop_game_clear();
+}
+
+void ext_slop_game_rect(int64_t x, int64_t y, int64_t w, int64_t h, SlopString color) {
+    slop_game_rect(x, y, w, h, color);
+}
+
+void ext_slop_game_circle(int64_t x, int64_t y, int64_t r, SlopString color) {
+    slop_game_circle(x, y, r, color);
+}
+
+void ext_slop_game_text(int64_t x, int64_t y, SlopString text, SlopString color) {
+    slop_game_text(x, y, text, color);
+}
+
+void ext_slop_game_update(int64_t server_fd) {
+    slop_game_update(server_fd);
+}

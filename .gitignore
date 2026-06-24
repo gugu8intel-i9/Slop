@@ -21,6 +21,7 @@ parallel_processing
 web_server
 llm_layer
 ui_app
+game_demo
 
 # Generated C files
 hello.c
@@ -39,6 +40,7 @@ parallel_processing.c
 web_server.c
 llm_layer.c
 ui_app.c
+game_demo.c
 
 # Pycache / compilation artifacts
 __pycache__/

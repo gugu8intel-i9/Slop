@@ -1,0 +1,85 @@
+# High-Performance 2D Game & Multimedia Demo
+# Written in clean, 100% pure Slop!
+
+fn main(args: array[string]) {
+    print("--- [Slop High-Performance 2D Game Engine Demo] ---")
+    print("Initializing hardware-accelerated 2D WebGL drawing canvas...")
+
+    # 1. Initialize the game canvas (width 800, height 600)
+    let screen = game_init(800, 600)
+    if screen < 0 {
+        print("ERROR: Failed to open game canvas!")
+        return
+    }
+
+    # 2. Set up initial player and ball physics coordinates
+    let ball_x = 100
+    let ball_y = 100
+    let ball_dx = 5
+    let ball_dy = 4
+    let radius = 15
+
+    let player_x = 350
+    let player_y = 550
+    let player_w = 100
+    let player_h = 15
+
+    let score = 0
+    let frames = 0
+    let max_frames = 150 # Run game loop for 150 frames (simulates 2.5 seconds at 60FPS)
+
+    print("Desktop Game launched successfully!")
+    print("Starting high-performance 2D Game Loop...")
+    print("")
+
+    # 3. Enter high-performance, garbage-collection-free Game Loop!
+    while frames < max_frames {
+        # A. Clear current drawing buffer
+        game_clear()
+
+        # B. Update Ball physics and bounce off wall boundaries
+        ball_x = ball_x + ball_dx
+        ball_y = ball_y + ball_dy
+
+        if ball_x < radius {
+            ball_dx = 0 - ball_dx # Reverse speed (bounce!)
+            ball_x = radius
+        }
+        if ball_x > (800 - radius) {
+            ball_dx = 0 - ball_dx
+            ball_x = 800 - radius
+        }
+        if ball_y < radius {
+            ball_dy = 0 - ball_dy
+            ball_y = radius
+        }
+        if ball_y > (600 - radius) {
+            ball_dy = 0 - ball_dy
+            ball_y = 600 - radius
+            score = score + 1 # Bounced! Increment score
+        }
+
+        # C. Draw Game Elements natively (WebGL Double-Buffer flush)
+        # Draw background playfield border
+        game_rect(10, 10, 780, 580, "#1e1e24")
+        
+        # Draw player controller paddle
+        game_rect(player_x, player_y, player_w, player_h, "#38ef7d")
+        
+        # Draw bouncing physics ball
+        game_circle(ball_x, ball_y, radius, "#11998e")
+        
+        # Draw HUD Score text
+        game_text(30, 50, "SCORE: " + int_to_string(score), "#ffffff")
+        game_text(30, 80, "FRAMES: " + int_to_string(frames) + " / 150", "#a0aec0")
+
+        # D. Flush current frame buffer to the browser canvas
+        # Automatically updates inputs and enforces 60 FPS frame limits (16.6ms)
+        game_update(screen)
+
+        frames = frames + 1
+    }
+
+    print("Game Loop successfully completed!")
+    print("--- [2D Game Session Completed Successfully] ---")
+}
