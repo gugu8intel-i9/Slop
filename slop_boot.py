@@ -289,8 +289,10 @@ class ListComprehensionNode(ExprNode):
         self.source_expr = source_expr
 
 class Parser:
-    def __init__(self, tokens):
+    def __init__(self, tokens, source, filename):
         self.tokens = tokens
+        self.source = source
+        self.filename = filename
         self.pos = 0
 
     def peek(self, offset=0):
@@ -316,9 +318,50 @@ class Parser:
         if not tok:
             actual = self.peek()
             err_msg = msg or f"Expected {type_} (value: {value}), got {actual.type} (value: {actual.value})"
-            print(f"Error at {actual.line}:{actual.col} - {err_msg}", file=sys.stderr)
+            self.report_error(actual.line, actual.col, actual.value, err_msg)
             sys.exit(1)
         return tok
+
+    def report_error(self, line, col, token_val, expected_msg):
+        # BEAUTIFUL RUST-STYLE ERROR DIAGNOSTICS ENGINE (SDE)
+        RED = '\033[1;31m'
+        BLUE = '\033[1;34m'
+        NC = '\033[0m'
+        
+        print(f"{RED}error[S042]: syntax/parsing error{NC}", file=sys.stderr)
+        print(f"{BLUE}  --> {NC}{self.filename}:{line}:{col}", file=sys.stderr)
+        print(f"{BLUE}   |{NC}", file=sys.stderr)
+        
+        lines = self.source.split("\n")
+        if 1 <= line <= len(lines):
+            line_text = lines[line - 1]
+            print(f"{BLUE}{line:3d} |{NC} {line_text}", file=sys.stderr)
+            
+            arrow_line = ""
+            for char in line_text[:col - 1]:
+                if char == "\t":
+                    arrow_line += "    "
+                else:
+                    arrow_line += " "
+            print(f"{BLUE}   |{NC} {arrow_line}{RED}^{NC} {expected_msg}", file=sys.stderr)
+            
+        print(f"{BLUE}   |{NC}", file=sys.stderr)
+        
+        # Friendly Contextual Help Tips
+        help_msg = "Verify your syntax rules match the Slop Guide (DOCS.md)."
+        if "}" in expected_msg or "braces" in expected_msg:
+            help_msg = "Did you forget to close the function block or struct block with a '}' brace?"
+        elif ")" in expected_msg:
+            help_msg = "Did you forget to close the function parameter list with a ')' parenthesis?"
+        elif "]" in expected_msg:
+            help_msg = "Did you forget to close the array literal or type declaration with a ']' bracket?"
+        elif "expression" in expected_msg or "type" in expected_msg:
+            help_msg = "Ensure you have specified a valid variable, literal value, or data type."
+        elif "=" in expected_msg:
+            help_msg = "Did you forget to assign a value to the variable using '='?"
+            
+        print(f"{BLUE}   = help: {NC}{help_msg}", file=sys.stderr)
+        print()
 
     def parse_type(self):
         base = self.consume("IDENTIFIER", msg="Expected type identifier").value
@@ -339,7 +382,7 @@ class Parser:
                 declarations.append(self.parse_gpu_function())
             else:
                 tok = self.peek()
-                print(f"Error at {tok.line}:{tok.col} - Unexpected top-level declaration starting with {tok.type} {tok.value}", file=sys.stderr)
+                self.report_error(tok.line, tok.col, tok.value, f"Unexpected top-level declaration starting with '{tok.value}' (type: {tok.type})")
                 sys.exit(1)
         return ProgramNode(declarations)
 
@@ -500,7 +543,7 @@ class Parser:
                 rhs.args.insert(0, expr)
                 expr = rhs
             else:
-                print("Error: Right-hand side of pipeline operator must be a function call or identifier", file=sys.stderr)
+                self.report_error(rhs.line, rhs.col, rhs.value, "Right-hand side of pipeline operator must be a function call or identifier")
                 sys.exit(1)
         return expr
 
@@ -627,7 +670,7 @@ class Parser:
             self.consume("SYMBOL", ")", "Expected closing ')'")
             return expr
 
-        print(f"Error at {tok.line}:{tok.col} - Unexpected expression token '{tok.value}' (type: {tok.type})", file=sys.stderr)
+        self.report_error(tok.line, tok.col, tok.value, f"Unexpected expression token '{tok.value}' (type: {tok.type})")
         sys.exit(1)
 
 
@@ -1314,7 +1357,7 @@ def main():
     lexer = Lexer(source)
     tokens = lexer.tokenize()
 
-    parser = Parser(tokens)
+    parser = Parser(tokens, source, input_file)
     ast = parser.parse()
 
     codegen = CodeGenerator()
