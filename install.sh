@@ -60,6 +60,7 @@ cp slop_repl.py "$SLOP_BIN/"
 cp slop_convert.py "$SLOP_BIN/"
 cp slop_translate.py "$SLOP_BIN/"
 cp slop_builder.py "$SLOP_BIN/"
+cp slop_fmt.py "$SLOP_BIN/"
 
 # Create the beautiful high-level "slop" command runner script
 cat << 'EOF' > "$SLOP_BIN/slop"
@@ -79,6 +80,7 @@ if [ -z "$1" ]; then
     echo "  build              Build current project using slop.toml manifest"
     echo "  run                Build and execute current project instantly"
     echo "  run <file.slop>    Transpile, compile, and execute a standalone Slop file"
+    echo "  fmt <file.slop>    Automatically format Slop code to standard clean style"
     echo "  convert <file>     Automatically turn C/C++ (.h), Rust (.rs) or Python (.py) to Slop!"
     echo "  lex <file.slop>    Lex/tokenize a Slop program using the self-hosted compiler"
     echo "  repl               Launch the interactive native compiling REPL shell"
@@ -115,6 +117,9 @@ elif [ "$CMD" = "build" ]; then
 elif [ "$CMD" = "new" ]; then
     if [ -z "$FILE" ]; then echo "Error: Please specify a project name"; exit 1; fi
     python3 "$SLOP_BIN/slop_builder.py" "new" "$FILE"
+elif [ "$CMD" = "fmt" ]; then
+    if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
+    python3 "$SLOP_BIN/slop_fmt.py" "$FILE" "$3"
 elif [ "$CMD" = "lex" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     "$SLOP_BIN/slop-compiler" "$FILE"
