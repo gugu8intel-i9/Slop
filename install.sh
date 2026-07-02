@@ -59,6 +59,7 @@ cp slop_boot.py "$SLOP_BIN/"
 cp slop_repl.py "$SLOP_BIN/"
 cp slop_convert.py "$SLOP_BIN/"
 cp slop_translate.py "$SLOP_BIN/"
+cp slop_builder.py "$SLOP_BIN/"
 
 # Create the beautiful high-level "slop" command runner script
 cat << 'EOF' > "$SLOP_BIN/slop"
@@ -74,10 +75,12 @@ if [ -z "$1" ]; then
     echo "Usage: slop <command> [arguments]"
     echo ""
     echo "Commands:"
-    echo "  run <file.slop>    Transpile, compile, and execute a Slop program instantly"
-    echo "  build <file.slop>  Compile a Slop program into an optimized native binary"
-    echo "  lex <file.slop>    Lex/tokenize a Slop program using the self-hosted compiler"
+    echo "  new <project_name> Initialize a new high-performance Slop project with slop.toml"
+    echo "  build              Build current project using slop.toml manifest"
+    echo "  run                Build and execute current project instantly"
+    echo "  run <file.slop>    Transpile, compile, and execute a standalone Slop file"
     echo "  convert <file>     Automatically turn C/C++ (.h), Rust (.rs) or Python (.py) to Slop!"
+    echo "  lex <file.slop>    Lex/tokenize a Slop program using the self-hosted compiler"
     echo "  repl               Launch the interactive native compiling REPL shell"
     exit 0
 fi
@@ -86,19 +89,32 @@ CMD="$1"
 FILE="$2"
 
 if [ "$CMD" = "run" ]; then
-    if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
-    BASE="${FILE%.slop}"
-    python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
-    gcc -O3 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
-    ./"$BASE"
-    rm -f "$BASE.c" "$BASE"
+    if [ -z "$FILE" ]; then
+        # Project mode: run project via slop_builder.py
+        python3 "$SLOP_BIN/slop_builder.py" "run"
+    else
+        # Script mode: run single file
+        BASE="${FILE%.slop}"
+        python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
+        gcc -O3 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
+        ./"$BASE"
+        rm -f "$BASE.c" "$BASE"
+    fi
 elif [ "$CMD" = "build" ]; then
-    if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
-    BASE="${FILE%.slop}"
-    python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
-    gcc -O3 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
-    rm -f "$BASE.c"
-    echo "Successfully built native executable: $BASE"
+    if [ -z "$FILE" ]; then
+        # Project mode: build project via slop_builder.py
+        python3 "$SLOP_BIN/slop_builder.py" "build"
+    else
+        # Script mode: build single file
+        BASE="${FILE%.slop}"
+        python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
+        gcc -O3 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
+        rm -f "$BASE.c"
+        echo "Successfully built native executable: $BASE"
+    fi
+elif [ "$CMD" = "new" ]; then
+    if [ -z "$FILE" ]; then echo "Error: Please specify a project name"; exit 1; fi
+    python3 "$SLOP_BIN/slop_builder.py" "new" "$FILE"
 elif [ "$CMD" = "lex" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     "$SLOP_BIN/slop-compiler" "$FILE"
@@ -147,4 +163,3 @@ fi
 echo ""
 echo -e "${GREEN}Try running your first Slop program with:${NC}"
 echo -e "  ${BLUE}slop run hello.slop${NC}"
-EOF
