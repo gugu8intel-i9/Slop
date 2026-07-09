@@ -75,7 +75,15 @@ class Lexer:
                 tokens.append(Token("PIPE", "|>", l, c))
                 continue
 
+            if char == '.' and self.peek(1) == '.':
+                l, c = self.line, self.col
+                self.advance()
+                self.advance()
+                tokens.append(Token("RANGE", "..", l, c))
+                continue
+
             if char == '=' and self.peek(1) == '=':
+
                 l, c = self.line, self.col
                 self.advance()
                 self.advance()
@@ -160,7 +168,7 @@ class Lexer:
                 while self.peek().isalnum() or self.peek() == '_':
                     val.append(self.advance())
                 name = "".join(val)
-                if name in ["fn", "let", "if", "else", "while", "return", "struct", "true", "false", "match", "for", "in", "raw", "gpu"]:
+                if name in ["fn", "let", "if", "else", "while", "return", "struct", "true", "false", "match", "for", "in", "raw", "gpu", "parallel"]:
                     tokens.append(Token("KEYWORD", name, l, c))
                 else:
                     tokens.append(Token("IDENTIFIER", name, l, c))
@@ -287,6 +295,24 @@ class ListComprehensionNode(ExprNode):
         self.element_expr = element_expr
         self.var_name = var_name
         self.source_expr = source_expr
+
+class ParallelComprehensionNode(ExprNode):
+    def __init__(self, element_expr, var_name, source_expr):
+        self.element_expr = element_expr
+        self.var_name = var_name
+        self.source_expr = source_expr
+
+class ParallelMapCallNode(ExprNode):
+    def __init__(self, fn_name, arg):
+        self.fn_name = fn_name
+        self.arg = arg
+
+class ParallelForNode(ASTNode):
+    def __init__(self, var_name, start_expr, end_expr, body):
+        self.var_name = var_name
+        self.start_expr = start_expr
+        self.end_expr = end_expr
+        self.body = body
 
 class Parser:
     def __init__(self, tokens, source, filename):
@@ -475,6 +501,39 @@ class Parser:
             self.consume("SYMBOL", "}", "Expected '}' after raw code string")
             return RawBlockNode(code_str)
 
+        if self.match("KEYWORD", "parallel"):
+            if self.match("KEYWORD", "for"):
+                var_name = self.consume("IDENTIFIER", msg="Expected loop variable name in parallel for").value
+                self.consume("KEYWORD", "in", "Expected 'in' in parallel for")
+                start_expr = self.parse_expression()
+                self.consume("RANGE", "..", "Expected '..' range operator in parallel for")
+                end_expr = self.parse_expression()
+                self.consume("SYMBOL", "{", "Expected '{' to start parallel for body")
+                body = []
+                while not self.match("SYMBOL", "}"):
+                    body.append(self.parse_statement())
+                return ParallelForNode(var_name, start_expr, end_expr, body)
+            elif self.peek().type == "IDENTIFIER":
+                fn_name = self.consume("IDENTIFIER", msg="Expected function name after parallel").value
+                self.consume("SYMBOL", "(", "Expected '(' after function name in parallel map")
+                args = []
+                while not self.match("SYMBOL", ")"):
+                    args.append(self.parse_expression())
+                    if self.match("SYMBOL", ","):
+                        continue
+                    if self.peek().value == ")":
+                        continue
+                if len(args) != 1:
+                    self.report_error(self.peek().line, self.peek().col, self.peek().value, "parallel map expects exactly one array argument")
+                    sys.exit(1)
+                return ParallelMapCallNode(fn_name, args[0])
+            elif self.peek().type == "SYMBOL" and self.peek().value == "[":
+                return self.parse_parallel_comprehension()
+            else:
+                tok = self.peek()
+                self.report_error(tok.line, tok.col, tok.value, "Expected 'for', a function name, or '[' after 'parallel'")
+                sys.exit(1)
+
         if self.match("KEYWORD", "if"):
             cond = self.parse_expression()
             self.consume("SYMBOL", "{", "Expected '{' after if condition")
@@ -531,7 +590,41 @@ class Parser:
         return expr
 
     def parse_expression(self):
+        return self.parse_parallel()
+
+    def parse_parallel(self):
+        if self.match("KEYWORD", "parallel"):
+            if self.peek().type == "SYMBOL" and self.peek().value == "[":
+                return self.parse_parallel_comprehension()
+            elif self.peek().type == "IDENTIFIER":
+                fn_name = self.consume("IDENTIFIER", msg="Expected function name after parallel").value
+                self.consume("SYMBOL", "(", "Expected '(' after function name in parallel map")
+                args = []
+                while not self.match("SYMBOL", ")"):
+                    args.append(self.parse_expression())
+                    if self.match("SYMBOL", ","):
+                        continue
+                    if self.peek().value == ")":
+                        continue
+                if len(args) != 1:
+                    self.report_error(self.peek().line, self.peek().col, self.peek().value, "parallel map expects exactly one array argument")
+                    sys.exit(1)
+                return ParallelMapCallNode(fn_name, args[0])
+            else:
+                tok = self.peek()
+                self.report_error(tok.line, tok.col, tok.value, "Expected a function name or '[' after 'parallel'")
+                sys.exit(1)
         return self.parse_pipeline()
+
+    def parse_parallel_comprehension(self):
+        self.consume("SYMBOL", "[", "Expected '[' to start parallel comprehension")
+        first = self.parse_expression()
+        self.consume("KEYWORD", "for", "Expected 'for' in parallel comprehension")
+        var_name = self.consume("IDENTIFIER", msg="Expected variable name in parallel comprehension").value
+        self.consume("KEYWORD", "in", "Expected 'in' in parallel comprehension")
+        source_expr = self.parse_expression()
+        self.consume("SYMBOL", "]", "Expected closing ']' for parallel comprehension")
+        return ParallelComprehensionNode(first, var_name, source_expr)
 
     def parse_pipeline(self):
         expr = self.parse_equality()
@@ -679,8 +772,11 @@ class CodeGenerator:
     def __init__(self):
         self.output = []
         self.temp_var_counter = 0
-        self.var_types = {} 
-        self.func_types = { 
+        self.var_types = {}
+        self.parallel_helpers = []
+        self.parallel_helper_decls = []
+        self.parallel_helper_counter = 0
+        self.func_types = {
             "print": ("void", ["string"]),
             "print_int": ("void", ["int"]),
             "print_bool": ("void", ["bool"]),
@@ -747,7 +843,100 @@ class CodeGenerator:
             return code
         return f"({code})"
 
+    def collect_parallel_helpers(self, node):
+        if isinstance(node, ProgramNode):
+            for decl in node.declarations:
+                self.collect_parallel_helpers(decl)
+        elif isinstance(node, FuncNode) or isinstance(node, GPUFuncNode):
+            for stmt in node.body:
+                self.collect_parallel_helpers(stmt)
+        elif isinstance(node, StructNode):
+            for m in node.methods:
+                self.collect_parallel_helpers(m)
+        elif isinstance(node, VarDeclNode):
+            self.collect_parallel_helpers(node.expr)
+        elif isinstance(node, AssignNode):
+            self.collect_parallel_helpers(node.expr)
+        elif isinstance(node, ReturnNode):
+            if node.expr:
+                self.collect_parallel_helpers(node.expr)
+        elif isinstance(node, IfNode):
+            self.collect_parallel_helpers(node.cond)
+            for s in node.then_branch:
+                self.collect_parallel_helpers(s)
+            for s in node.else_branch:
+                self.collect_parallel_helpers(s)
+        elif isinstance(node, WhileNode):
+            self.collect_parallel_helpers(node.cond)
+            for s in node.body:
+                self.collect_parallel_helpers(s)
+        elif isinstance(node, MatchNode):
+            self.collect_parallel_helpers(node.expr)
+            for pattern, body in node.cases:
+                if pattern:
+                    self.collect_parallel_helpers(pattern)
+                for s in body:
+                    self.collect_parallel_helpers(s)
+        elif isinstance(node, ParallelForNode):
+            self.parallel_helper_counter += 1
+            helper_name = f"fn_par_for_{self.parallel_helper_counter}"
+            helper_code = self.generate_parallel_helper(
+                helper_name,
+                [(node.var_name, "int")],
+                "void",
+                node.body,
+                {node.var_name: "int"},
+                ctx_param=True
+            )
+            self.parallel_helper_decls.append(f"void {helper_name}(int64_t {node.var_name}, void* _ctx);\n")
+            self.parallel_helpers.append(helper_code)
+            for s in node.body:
+                self.collect_parallel_helpers(s)
+        elif isinstance(node, ParallelComprehensionNode):
+            self.parallel_helper_counter += 1
+            helper_name = f"fn_par_map_{self.parallel_helper_counter}"
+            elem_type = "int"
+            helper_body = [ReturnNode(node.element_expr)]
+            helper_code = self.generate_parallel_helper(
+                helper_name,
+                [(node.var_name, elem_type)],
+                elem_type,
+                helper_body,
+                {node.var_name: elem_type},
+                ctx_param=False
+            )
+            self.parallel_helper_decls.append(f"int64_t {helper_name}(int64_t {node.var_name});\n")
+            self.parallel_helpers.append(helper_code)
+            self.collect_parallel_helpers(node.source_expr)
+            self.collect_parallel_helpers(node.element_expr)
+        elif isinstance(node, ParallelMapCallNode):
+            self.collect_parallel_helpers(node.arg)
+        elif isinstance(node, BinaryOpNode):
+            self.collect_parallel_helpers(node.left)
+            self.collect_parallel_helpers(node.right)
+        elif isinstance(node, CallNode):
+            for arg in node.args:
+                self.collect_parallel_helpers(arg)
+        elif isinstance(node, MemberCallNode):
+            self.collect_parallel_helpers(node.object_expr)
+            for arg in node.args:
+                self.collect_parallel_helpers(arg)
+        elif isinstance(node, FieldAccessNode):
+            self.collect_parallel_helpers(node.object_expr)
+        elif isinstance(node, ArrayIndexNode):
+            self.collect_parallel_helpers(node.array_expr)
+            self.collect_parallel_helpers(node.index_expr)
+        elif isinstance(node, ArrayLiteralNode):
+            for e in node.elements:
+                self.collect_parallel_helpers(e)
+        elif isinstance(node, ListComprehensionNode):
+            self.collect_parallel_helpers(node.element_expr)
+            self.collect_parallel_helpers(node.source_expr)
+
     def generate(self, node):
+        self.collect_parallel_helpers(node)
+        # Reset counter so that normal generation assigns the same helper names in the same order
+        self.parallel_helper_counter = 0
         self.output.append('#include "slop_rt.h"\n')
         self.output.append('THREAD_LOCAL int slop_arena_depth = 0;\n\n')
         
@@ -788,6 +977,11 @@ class CodeGenerator:
                     self.output.append(f"{self.get_c_type(m.return_type)} fn_{decl.name}_{m.name}({', '.join(params_c)});\n")
         self.output.append("\n")
 
+        # Step 3b: Forward declarations of generated parallel helpers (must precede use)
+        for decl_code in self.parallel_helper_decls:
+            self.output.append(decl_code)
+        self.output.append("\n")
+
         # Step 4: Implement functions, GPU functions, and methods
         for decl in node.declarations:
             if isinstance(decl, FuncNode):
@@ -797,6 +991,10 @@ class CodeGenerator:
             elif isinstance(decl, StructNode):
                 for m in decl.methods:
                     self.generate_function(m)
+
+        # Step 4b: Implementations of generated parallel helpers
+        for helper_code in self.parallel_helpers:
+            self.output.append(helper_code)
 
         # Step 5: Implement main entry point
         self.output.append("""
@@ -817,14 +1015,47 @@ int main(int argc, char** argv) {
 """)
         return "".join(self.output)
 
+    def generate_parallel_helper(self, name, params, return_type, body, extra_var_types, ctx_param=False):
+        old_output = self.output
+        old_var_types = self.var_types.copy()
+        self.output = []
+        self.var_types.update(extra_var_types)
+
+        params_c = []
+        for p_name, p_type in params:
+            self.var_types[p_name] = p_type
+            params_c.append(f"{self.get_c_type(p_type)} {p_name}")
+        if ctx_param:
+            params_c.append("void* _ctx")
+
+        c_ret = self.get_c_type(return_type)
+        self.output.append(f"{c_ret} {name}({', '.join(params_c)}) {{\n")
+        self.output.append("    slop_arena_depth++;\n")
+        self.output.append("    SlopArena* local_arena = slop_get_arena(slop_arena_depth);\n")
+        self.output.append("    size_t saved_offset = slop_arena_save(local_arena);\n")
+
+        for stmt in body:
+            self.generate_statement(stmt)
+
+        if return_type == "void":
+            self.output.append("    slop_arena_restore(local_arena, saved_offset);\n")
+            self.output.append("    slop_arena_depth--;\n")
+            self.output.append("    return;\n")
+
+        self.output.append("}\n\n")
+        code = "".join(self.output)
+        self.output = old_output
+        self.var_types = old_var_types
+        return code
+
     def generate_function(self, func_node):
         params_c = []
         old_var_types = self.var_types.copy()
-        
+
         if func_node.struct_context:
             self.var_types["this"] = func_node.struct_context
             params_c.append(f"struct {func_node.struct_context} this")
-            
+
         for p_name, p_type in func_node.params:
             self.var_types[p_name] = p_type
             params_c.append(f"{self.get_c_type(p_type)} {p_name}")
@@ -832,18 +1063,18 @@ int main(int argc, char** argv) {
         ret_type = self.get_c_type(func_node.return_type)
         func_name = f"{func_node.struct_context}_{func_node.name}" if func_node.struct_context else func_node.name
         self.output.append(f"{ret_type} fn_{func_name}({', '.join(params_c)}) {{\n")
-        
+
         self.output.append("    slop_arena_depth++;\n")
         self.output.append("    SlopArena* local_arena = slop_get_arena(slop_arena_depth);\n")
         self.output.append("    size_t saved_offset = slop_arena_save(local_arena);\n")
-        
+
         for stmt in func_node.body:
             self.generate_statement(stmt)
 
         if func_node.return_type == "void":
             self.output.append("    slop_arena_restore(local_arena, saved_offset);\n")
             self.output.append("    slop_arena_depth--;\n")
-        
+
         self.output.append("}\n\n")
         self.var_types = old_var_types
 
@@ -976,7 +1207,14 @@ int main(int argc, char** argv) {
                     self.generate_statement(body_stmt)
                 self.output.append("    }")
             self.output.append("\n")
-            
+
+        elif isinstance(stmt, ParallelForNode):
+            start_code, _ = self.generate_expression(stmt.start_expr)
+            end_code, _ = self.generate_expression(stmt.end_expr)
+            self.parallel_helper_counter += 1
+            helper_name = f"fn_par_for_{self.parallel_helper_counter}"
+            self.output.append(f"    slop_parallel_for({start_code}, {end_code}, {helper_name}, NULL);\n")
+
         else:
             expr_code, _ = self.generate_expression(stmt)
             self.output.append(f"    {expr_code};\n")
@@ -1087,9 +1325,36 @@ int main(int argc, char** argv) {
                 self.var_types[expr.var_name] = old_var_type
             else:
                 del self.var_types[expr.var_name]
-                
+
             return arr_var, f"array[{elt_type}]"
-            
+
+        elif isinstance(expr, ParallelComprehensionNode):
+            source_code, source_type = self.generate_expression(expr.source_expr)
+            elem_type = "int"
+            if source_type.startswith("array[") and source_type.endswith("]"):
+                elem_type = source_type[6:-1]
+
+            self.parallel_helper_counter += 1
+            helper_name = f"fn_par_map_{self.parallel_helper_counter}"
+
+            res_var = self.fresh_temp()
+            self.output.append(f"    SlopArray {res_var} = slop_parallel_map(local_arena, {source_code}, {helper_name});\n")
+            return res_var, f"array[{elem_type}]"
+
+        elif isinstance(expr, ParallelMapCallNode):
+            arg_code, arg_type = self.generate_expression(expr.arg)
+            ret_type, _ = self.func_types.get(expr.fn_name, ("int", []))
+            if not arg_type.startswith("array["):
+                print(f"Error: parallel map argument must be an array, got {arg_type}", file=sys.stderr)
+                sys.exit(1)
+            elem_type = arg_type[6:-1] if arg_type.endswith("]") else "int"
+            if elem_type != "int" or ret_type != "int":
+                print(f"Error: parallel map currently supports int->int functions only", file=sys.stderr)
+                sys.exit(1)
+            res_var = self.fresh_temp()
+            self.output.append(f"    SlopArray {res_var} = slop_parallel_map(local_arena, {arg_code}, fn_{expr.fn_name});\n")
+            return res_var, f"array[{ret_type}]"
+
         elif isinstance(expr, CallNode):
             if expr.name == "spawn":
                 sub_call = expr.args[0]

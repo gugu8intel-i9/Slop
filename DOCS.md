@@ -16,9 +16,10 @@ Slop is an insanely high-performance, lightweight, and low learning-curve langua
 7. [Python List Comprehensions](#7-python-list-comprehensions)
 8. [Bare-Metal Hardware Access (Pointers & Assembly)](#8-bare-metal-hardware-access-pointers--assembly)
 9. [Low-Level GPU Compute Kernels](#9-low-level-gpu-compute-kernels)
-10. [Universal Library Auto-Converter](#10-universal-library-auto-converter)
-11. [High-Performance Array Compression (SPCA)](#11-high-performance-array-compression-spca)
-12. [Bridging with C++ & Rust](#12-bridging-with-c--rust)
+10. [Unified Parallel Compute Engine (`parallel`)](#10-unified-parallel-compute-engine-parallel)
+11. [Universal Library Auto-Converter](#11-universal-library-auto-converter)
+12. [High-Performance Array Compression (SPCA)](#12-high-performance-array-compression-spca)
+13. [Bridging with C++ & Rust](#13-bridging-with-c--rust)
 
 ---
 
@@ -240,7 +241,63 @@ The compiler automatically generates OpenCL C shader code, context creation, dev
 
 ---
 
-## 10. Universal Library Auto-Converter
+## 10. Unified Parallel Compute Engine (`parallel`)
+
+Slop makes multi-core CPU parallelism as easy as writing Python. The `parallel` keyword automatically distributes independent work across a native thread pool. No mutexes, no thread classes, no boilerplate.
+
+### Parallel List Comprehension
+Prefix any list comprehension with `parallel` and the compiler distributes the mapping across all CPU cores:
+
+```slop
+fn main(args: array[string]) {
+    let numbers = [1, 2, 3, 4, 5]
+    let doubled = parallel [x * 2 for x in numbers]
+
+    let i = 0
+    while i < length(doubled) {
+        print(doubled[i])
+        i = i + 1
+    }
+}
+```
+
+### Parallel Function Map
+Pass an `int -> int` function and an array to run the function in parallel over every element:
+
+```slop
+fn square(x: int) -> int {
+    return x * x
+}
+
+fn main(args: array[string]) {
+    let numbers = [1, 2, 3, 4, 5]
+    let squares = parallel square(numbers)
+    # squares is now [1, 4, 9, 16, 25]
+}
+```
+
+### Parallel For Loop
+Run a side-effect loop body across a numeric range. Each iteration is executed on a worker thread from the runtime pool:
+
+```slop
+fn worker(id: int) {
+    print("Processing worker ID:")
+    print(id)
+}
+
+fn main(args: array[string]) {
+    parallel for i in 0..10 {
+        worker(i)
+    }
+}
+```
+
+### How it works
+The compiler extracts the per-element body into a tiny helper function and passes it to the runtime's `slop_parallel_for` / `slop_parallel_map` dispatcher. The runtime detects the number of CPU cores, splits the iteration space into contiguous chunks, and launches one `pthread` per chunk. Every worker gets its own thread-local SEAA arena bucket, so allocations remain 100% lock-free.
+
+---
+
+## 11. Universal Library Auto-Converter
 
 Slop features a built-in auto-converter that lets you **instantly convert and bridge existing libraries** written in C, C++, Rust, or Python into Slop!
 
@@ -253,7 +310,7 @@ It parses the signatures of Python files (`.py`), C/C++ headers (`.h` / `.hpp`),
 
 ---
 
-## 11. High-Performance Array Compression (SPCA)
+## 12. High-Performance Array Compression (SPCA)
 
 To save memory and disk storage when processing thousands of items, Slop includes native, zero-dependency **Slop-Pack Compressed Array (SPCA)** compression:
 
@@ -274,7 +331,7 @@ fn main(args: array[string]) {
 
 ---
 
-## 12. Bridging with C++ & Rust
+## 13. Bridging with C++ & Rust
 
 Slop compiles directly to optimized C, which means you can link Slop modules directly with **C++** and **Rust** with **zero FFI conversion penalty**!
 

@@ -101,6 +101,7 @@ fn is_keyword(s: string) -> bool {
     if s == "in" { return true }
     if s == "raw" { return true }
     if s == "gpu" { return true }
+    if s == "parallel" { return true }
     return false
 }
 
@@ -184,6 +185,14 @@ fn main(args: array[string]) {
                 if ch == "|" {
                     if next_ch == ">" {
                         print("Token(PIPE, \"|>\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
+                        pos = pos + 2
+                        col = col + 2
+                        processed_op = true
+                    }
+                }
+                if ch == "." {
+                    if next_ch == "." {
+                        print("Token(RANGE, \"..\", " + int_to_string(line) + ":" + int_to_string(col) + ")")
                         pos = pos + 2
                         col = col + 2
                         processed_op = true

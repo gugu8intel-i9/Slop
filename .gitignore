@@ -22,6 +22,10 @@ web_server
 llm_layer
 ui_app
 game_demo
+unified_parallel
+benchmark_parallel
+benchmark_seq
+benchmark_par
 
 # Generated C files
 hello.c
@@ -41,6 +45,10 @@ web_server.c
 llm_layer.c
 ui_app.c
 game_demo.c
+unified_parallel.c
+benchmark_parallel.c
+benchmark_seq.c
+benchmark_par.c
 
 # Pycache / compilation artifacts
 __pycache__/

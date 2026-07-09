@@ -50,6 +50,10 @@ def tokenize(source):
             tokens.append(Token("PIPE", "|>"))
             pos += 2
             continue
+        if char == '.' and pos + 1 < length and source[pos+1] == '.':
+            tokens.append(Token("RANGE", ".."))
+            pos += 2
+            continue
         if char == '=' and pos + 1 < length and source[pos+1] == '=':
             tokens.append(Token("EQ", "=="))
             pos += 2
@@ -105,7 +109,7 @@ def tokenize(source):
                 val.append(source[pos])
                 pos += 1
             name = "".join(val)
-            if name in ["fn", "let", "if", "else", "while", "return", "struct", "true", "false", "match", "for", "in", "raw", "gpu"]:
+            if name in ["fn", "let", "if", "else", "while", "return", "struct", "true", "false", "match", "for", "in", "raw", "gpu", "parallel"]:
                 tokens.append(Token("KEYWORD", name))
             else:
                 tokens.append(Token("IDENTIFIER", name))
@@ -150,7 +154,7 @@ def format_slop(source):
             output.append("    " * indent_level)
             
         # Format operators and symbols with uniform spacing rules
-        if tok.type in ["ARROW", "FAT_ARROW", "PIPE", "EQ", "NEQ", "LEQ", "GEQ"]:
+        if tok.type in ["ARROW", "FAT_ARROW", "PIPE", "EQ", "NEQ", "LEQ", "GEQ", "RANGE"]:
             # Surround operators with standard spaces
             if output and output[-1] != " ":
                 output.append(" ")
@@ -216,6 +220,7 @@ def re_normalize(code):
     code = re_replace(code, r'match\s+', 'match ')
     code = re_replace(code, r'raw\s*', 'raw ')
     code = re_replace(code, r'gpu\s+', 'gpu ')
+    code = re_replace(code, r'parallel\s+', 'parallel ')
     return code.strip() + "\n"
 
 def re_replace(text, pattern, replacement):

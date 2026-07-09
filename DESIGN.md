@@ -98,14 +98,43 @@ Most modern languages suffer from heavy thread lock contention or data race cond
 
 ---
 
-## 5. Universal Library Converter & Auto-Bridger (`slop_convert.py`)
+## 5. Unified Parallel Compute Engine (`parallel`)
+Slop introduces a **Unified Parallel Compute Engine (SPCE)** that makes multi-core CPU parallelism as easy as writing Pythonic list comprehensions. The `parallel` keyword distributes independent work across a dynamically sized pool of native operating system threads:
+
+### A. Zero-Boilerplate Parallel Syntax
+Three high-level forms are compiled to lock-free native thread-pool dispatch:
+```slop
+# Parallel list comprehension
+let doubled = parallel [x * 2 for x in numbers]
+
+# Parallel function map (int -> int)
+let quadrupled = parallel quadruple(numbers)
+
+# Parallel side-effect loop
+parallel for i in 0..100 {
+    work(i)
+}
+```
+
+### B. Work-Stealing-Style Thread Pool
+The runtime detects the number of available CPU cores via `sysconf(_SC_NPROCESSORS_ONLN)` and splits the iteration space into equal chunks. Each chunk is processed by a dedicated `pthread` worker. A shared atomic index is intentionally avoided because the static chunking is deterministic, cache-friendly, and produces zero cross-thread synchronization during the computation phase.
+
+### C. Heterogeneous-Ready Abstraction
+The SPCE abstraction is CPU-native today and GPU-ready tomorrow. Because the compiler turns `parallel` comprehensions and maps into a uniform "per-element function" dispatch pattern, the same Slop syntax can later be retargeted to GPU compute grids (via the existing `gpu` machinery) without changing user code.
+
+### D. 100% Lock-Free Memory on Workers
+Every worker thread initializes its own `slop_arena_depth` and receives its own independent thread-local SEAA arena bucket. Temporary allocations inside the per-element helper function are reclaimed when the worker returns, so no global allocator lock is ever touched. This makes parallel maps and loops as contention-free as the `spawn` model.
+
+---
+
+## 6. Universal Library Converter & Auto-Bridger (`slop_convert.py`)
 To enable instant access to the millions of existing libraries across the software ecosystem, Slop includes a **Universal Library Converter & Auto-Bridger (`slop_convert.py`)**. 
 
 It reads libraries or header definitions written in **C**, **C++**, **Rust**, or **Python**, and automatically translates them into fully functional native Slop bindings.
 
 ---
 
-## 6. Low-Level GPU Compute Kernels with Zero-Boilerplate
+## 7. Low-Level GPU Compute Kernels with Zero-Boilerplate
 In standard languages, writing GPU code requires choosing an FFI/API (OpenCL, CUDA, Vulkan, WebGPU) and writing hundreds of lines of verbose host boilerplate.
 
 Slop completely eliminates this complexity while preserving direct, low-level execution control over the GPU hardware:
@@ -114,7 +143,7 @@ Slop completely eliminates this complexity while preserving direct, low-level ex
 
 ---
 
-## 7. Advanced Security & Privacy Guard Engines
+## 8. Advanced Security & Privacy Guard Engines
 Slop provides built-in, native security controls and privacy protections that make it as secure as Rust and as private as a cryptographic sandbox:
 - **Volatile Memory Sanitization (Anti-Peeking)**: Automatically zero-fills (scrubs) all discarded memory in physical RAM the exact millisecond a function returns. This completely prevents sensitive credentials (passwords, keys, medical profiles) from remaining in memory dumps or being peeked by other processes!
 - **Safe Array Bounds Checking**: Compiler-enforced boundary checks on all array indices, safely terminating the thread if an out-of-bounds access is attempted, eliminating 100% of classic buffer-overflow exploits.
@@ -122,14 +151,14 @@ Slop provides built-in, native security controls and privacy protections that ma
 
 ---
 
-## 8. Low-Level Bare-Metal Hardware Access
+## 9. Low-Level Bare-Metal Hardware Access
 While maintaining its incredibly clean, high-level scripting-like syntax, Slop exposes absolute control over raw hardware, registers, and memory-mapped IO (MMIO):
 - **Raw Blocks / Inline Assembly (`raw`)**: Inject inline C, C++, or assembly instructions (`__asm__ volatile`) directly into the compiler's output pipeline with zero performance overhead.
 - **Memory-Mapped IO intrinsics**: Read and write directly to physical memory addresses and hardware registers using built-in volatile hardware intrinsics (`peek_byte`, `poke_byte`, `peek_int`, `poke_int`, `get_address`).
 
 ---
 
-## 9. Native Multi-Language Bridges
+## 10. Native Multi-Language Bridges
 
 ### A. High-Performance C++ Native Bridge (`slop_bridge.hpp`)
 To interface with existing ecosystems, Slop includes a header-only C++ bridge with:
@@ -143,7 +172,7 @@ To support memory-safe, native systems programming, Slop features a fully-functi
 
 ---
 
-## 10. Technical Language Specification
+## 11. Technical Language Specification
 
 ### Types
 - `int`: 64-bit signed integer (`int64_t` in C).

@@ -136,7 +136,7 @@ def build_project():
     # Check if we need to link math or threads libraries
     with open(target_file, "r") as f:
         target_src = f.read()
-        if "spawn" in target_src:
+        if "spawn" in target_src or "parallel" in target_src:
             comp_cmd.append("-lpthread")
         if "tensor" in target_src:
             comp_cmd.append("-lm")

@@ -1,0 +1,60 @@
+# Slop Unified Parallel Compute Engine (SPCE) Demonstration
+# One keyword, zero boilerplate, insane multi-core performance.
+
+fn double(x: int) -> int {
+    return x * 2
+}
+
+fn quadruple(x: int) -> int {
+    return x * 4
+}
+
+fn heavy_work(x: int) -> int {
+    # Simulate CPU-bound work by iterating on each element independently
+    let y = x
+    let i = 0
+    while i < 1000 {
+        y = y + (i % 7)
+        i = i + 1
+    }
+    return y
+}
+
+fn main(args: array[string]) {
+    print("--- [Slop Unified Parallel Compute Engine (SPCE)] ---")
+    print("Distributing work across all CPU cores with zero locks...")
+
+    let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    # 1. Parallel list comprehension: same syntax as Python, but runs on all cores
+    let doubled = parallel [x * 2 for x in nums]
+    print("Parallel doubled:")
+    let i = 0
+    while i < length(doubled) {
+        print(doubled[i])
+        i = i + 1
+    }
+
+    # 2. Parallel function map: pass any int->int function and an array
+    let quadrupled = parallel quadruple(nums)
+    print("Parallel quadrupled:")
+    i = 0
+    while i < length(quadrupled) {
+        print(quadrupled[i])
+        i = i + 1
+    }
+
+    # 3. Parallel for loop: side-effect work across cores
+    print("Parallel for loop (0..5):")
+    parallel for i in 0..5 {
+        print(i)
+    }
+
+    # 4. Heavy CPU-bound parallel map to demonstrate performance
+    let work_input = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000]
+    let work_result = parallel heavy_work(work_input)
+    print("Parallel heavy work result[0]:")
+    print(work_result[0])
+
+    print("--- [SPCE demonstration completed successfully] ---")
+}
