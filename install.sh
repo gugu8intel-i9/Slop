@@ -96,10 +96,11 @@ if [ "$CMD" = "run" ]; then
         python3 "$SLOP_BIN/slop_builder.py" "run"
     else
         # Script mode: run single file
+        FILE=$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")
         BASE="${FILE%.slop}"
         python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
         gcc -O3 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
-        ./"$BASE"
+        "$BASE"
         rm -f "$BASE.c" "$BASE"
     fi
 elif [ "$CMD" = "build" ]; then
@@ -108,6 +109,7 @@ elif [ "$CMD" = "build" ]; then
         python3 "$SLOP_BIN/slop_builder.py" "build"
     else
         # Script mode: build single file
+        FILE=$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")
         BASE="${FILE%.slop}"
         python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
         gcc -O3 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
