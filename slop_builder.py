@@ -132,7 +132,7 @@ def build_project():
     # 3. Compile native optimized binary
     binary_output = f"build/{pkg_name}"
     print(f"Compiling highly optimized native binary {binary_output}...")
-    comp_cmd = ["gcc"] + flags + [f"-I{slop_include}", c_output, "-o", binary_output]
+    comp_cmd = ["gcc", "-std=gnu11"] + flags + [f"-I{slop_include}", c_output, "-o", binary_output]
     # Check if we need to link math or threads libraries
     with open(target_file, "r") as f:
         target_src = f.read()

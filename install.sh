@@ -50,8 +50,8 @@ fi
 # Bootstrap compiler.slop -> compiler.c
 python3 slop_boot.py compiler.slop compiler.c
 
-# Compile compiler.c -> native slop-compiler executable with max optimization and NO warnings
-$CC -O3 -ffast-math -flto -march=native compiler.c -o "$SLOP_BIN/slop-compiler"
+# Compile compiler.c -> native slop-compiler executable with max optimization
+$CC -O3 -std=gnu11 -ffast-math -flto -march=native compiler.c -o "$SLOP_BIN/slop-compiler"
 
 # Copy runtime headers, REPL, and Python helper files
 cp slop_rt.h "$SLOP_INCLUDE/"
@@ -99,7 +99,7 @@ if [ "$CMD" = "run" ]; then
         FILE=$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")
         BASE="${FILE%.slop}"
         python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
-        gcc -O3 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
+        gcc -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
         "$BASE"
         rm -f "$BASE.c" "$BASE"
     fi
@@ -112,7 +112,7 @@ elif [ "$CMD" = "build" ]; then
         FILE=$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")
         BASE="${FILE%.slop}"
         python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
-        gcc -O3 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
+        gcc -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
         rm -f "$BASE.c"
         echo "Successfully built native executable: $BASE"
     fi

@@ -1,13 +1,21 @@
 #ifndef SLOP_RT_H
 #define SLOP_RT_H
 
-#define _POSIX_C_SOURCE 199309L
+// Expose all POSIX.1-2008 + OS-native extensions (required for macOS/BSD snprintf,
+// sysconf, pthread, and socket declarations with strict compilers).
+#if defined(__APPLE__)
+    #define _DARWIN_C_SOURCE
+#endif
+#define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <math.h>
 
@@ -15,7 +23,6 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <netinet/in.h>
-#include <unistd.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 
@@ -61,7 +68,6 @@
     #include <sys/socket.h>
     #include <sys/select.h>
     #include <netinet/in.h>
-    #include <unistd.h>
     #include <arpa/inet.h>
     #include <fcntl.h>
     #include <pthread.h>
