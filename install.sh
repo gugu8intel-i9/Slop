@@ -62,6 +62,11 @@ cp slop_translate.py "$SLOP_BIN/"
 cp slop_builder.py "$SLOP_BIN/"
 cp slop_fmt.py "$SLOP_BIN/"
 
+# Copy example/demo Slop programs so users can run them immediately
+mkdir -p "$SLOP_DIR/examples"
+cp hello.slop complex_syntax.slop parallel_processing.slop gpu_compute.slop \
+   unified_parallel.slop benchmark_seq.slop benchmark_par.slop "$SLOP_DIR/examples/" 2>/dev/null || true
+
 # Create the beautiful high-level "slop" command runner script
 cat << 'EOF' > "$SLOP_BIN/slop"
 #!/usr/bin/env bash
@@ -179,4 +184,6 @@ else
 fi
 echo ""
 echo -e "${GREEN}Try running your first Slop program with:${NC}"
-echo -e "  ${BLUE}slop run hello.slop${NC}"
+echo -e "  ${BLUE}slop run \$HOME/.slop/examples/hello.slop${NC}"
+echo -e "${GREEN}Or try the new parallel compute demo:${NC}"
+echo -e "  ${BLUE}slop run \$HOME/.slop/examples/unified_parallel.slop${NC}"
