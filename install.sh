@@ -96,7 +96,12 @@ if [ "$CMD" = "run" ]; then
         python3 "$SLOP_BIN/slop_builder.py" "run"
     else
         # Script mode: run single file
-        FILE=$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")
+        if [ "$FILE" = "${FILE#/}" ]; then
+            FILE="$(pwd)/$FILE"
+        fi
+        if [ ! -f "$FILE" ]; then
+            echo "Error: File not found '$FILE'"; exit 1
+        fi
         BASE="${FILE%.slop}"
         python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
         gcc -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
@@ -109,7 +114,12 @@ elif [ "$CMD" = "build" ]; then
         python3 "$SLOP_BIN/slop_builder.py" "build"
     else
         # Script mode: build single file
-        FILE=$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")
+        if [ "$FILE" = "${FILE#/}" ]; then
+            FILE="$(pwd)/$FILE"
+        fi
+        if [ ! -f "$FILE" ]; then
+            echo "Error: File not found '$FILE'"; exit 1
+        fi
         BASE="${FILE%.slop}"
         python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
         gcc -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
