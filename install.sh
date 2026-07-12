@@ -29,7 +29,7 @@ git clone --depth 1 https://github.com/gugu8intel-i9/Slop.git "$TMP_DIR/Slop"
 
 cd "$TMP_DIR/Slop"
 
-echo -e "${BLUE}Compiling the self-hosting native Slop Compiler...${NC}"
+echo -e "${BLUE}Bootstrapping and self-hosting the native Slop Compiler...${NC}"
 
 # Check for Python (used for bootstrapping)
 if ! command -v python3 &> /dev/null; then
@@ -47,13 +47,25 @@ else
     exit 1
 fi
 
-# Bootstrap compiler.slop -> compiler.c
-python3 slop_boot.py compiler.slop compiler.c
+# Stage 0: one-time Python bootstrap compiler.slop -> compiler_boot.c
+python3 slop_boot.py compiler.slop compiler_boot.c
+$CC -O3 -std=gnu11 -ffast-math -flto -march=native compiler_boot.c -o "$TMP_DIR/slop-compiler-bootstrap"
 
-# Compile compiler.c -> native slop-compiler executable with max optimization
-$CC -O3 -std=gnu11 -ffast-math -flto -march=native compiler.c -o "$SLOP_BIN/slop-compiler"
+# Stage 1: native Slop compiler compiles the Slop compiler itself
+"$TMP_DIR/slop-compiler-bootstrap" compiler.slop compiler_self.c
+$CC -O3 -std=gnu11 -ffast-math -flto -march=native compiler_self.c -o "$SLOP_BIN/slop-compiler"
 
-# Copy runtime headers, REPL, and Python helper files
+# Stage 2: verify the self-hosted compiler reaches a stable C fixpoint
+"$SLOP_BIN/slop-compiler" compiler.slop compiler_self2.c
+if cmp -s compiler_self.c compiler_self2.c; then
+    echo -e "${GREEN}Self-hosting fixpoint verified.${NC}"
+else
+    echo -e "${RED}Error: self-hosting fixpoint check failed.${NC}"
+    exit 1
+fi
+
+# Copy compiler source, runtime headers, REPL, and helper files
+cp compiler.slop "$SLOP_DIR/"
 cp slop_rt.h "$SLOP_INCLUDE/"
 cp slop_boot.py "$SLOP_BIN/"
 cp slop_repl.py "$SLOP_BIN/"
@@ -75,6 +87,15 @@ set -e
 SLOP_DIR="$HOME/.slop"
 SLOP_BIN="$SLOP_DIR/bin"
 SLOP_INCLUDE="$SLOP_DIR/include"
+
+if command -v gcc >/dev/null 2>&1; then
+    SLOP_CC="gcc"
+elif command -v clang >/dev/null 2>&1; then
+    SLOP_CC="clang"
+else
+    echo "Error: gcc or clang is required to compile native Slop programs"
+    exit 1
+fi
 
 if [ -z "$1" ]; then
     echo "Slop Programming Language Tool"
@@ -108,8 +129,8 @@ if [ "$CMD" = "run" ]; then
             echo "Error: File not found '$FILE'"; exit 1
         fi
         BASE="${FILE%.slop}"
-        python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
-        gcc -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
+        "$SLOP_BIN/slop-compiler" "$FILE" "$BASE.c"
+        "$SLOP_CC" -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
         "$BASE"
         rm -f "$BASE.c" "$BASE"
     fi
@@ -126,8 +147,8 @@ elif [ "$CMD" = "build" ]; then
             echo "Error: File not found '$FILE'"; exit 1
         fi
         BASE="${FILE%.slop}"
-        python3 "$SLOP_BIN/slop_boot.py" "$FILE" "$BASE.c"
-        gcc -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
+        "$SLOP_BIN/slop-compiler" "$FILE" "$BASE.c"
+        "$SLOP_CC" -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
         rm -f "$BASE.c"
         echo "Successfully built native executable: $BASE"
     fi

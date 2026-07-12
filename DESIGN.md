@@ -6,6 +6,21 @@ Slop features a novel memory management paradigm, an extremely clean and high-le
 
 ---
 
+## Self-Hosting Compiler Architecture
+
+The production compiler is `compiler.slop`: a Slop program that lexes, parses, and emits portable C. The bootstrap process is deliberately minimal:
+
+1. `slop_boot.py` performs the **one-time** translation of `compiler.slop` to C.
+2. GCC/Clang builds that C into the first native `slop-compiler`.
+3. The native compiler then compiles `compiler.slop` again.
+4. A second native compiler repeats the compilation and the generated C must match byte-for-byte, proving the self-hosting fixpoint.
+
+This keeps Python out of the normal compiler path. Day-to-day Slop builds are native: `.slop -> C -> machine code`.
+
+The token stream is encoded in compact strings and is parsed from both left and right so string literals may safely contain delimiter characters such as `|`. This is required for stable compiler reproduction across self-hosted generations.
+
+---
+
 ## 1. Core Architectural Innovations
 
 ### A. The "Slop Bucket" Memory Architecture (Sloppy-Escape Arena Allocation - SEAA)

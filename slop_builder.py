@@ -119,14 +119,20 @@ def build_project():
     # 2. Transpile to C
     os.makedirs("build", exist_ok=True)
     c_output = f"build/{pkg_name}.c"
-    print(f"Transpiling {target_file} to C...")
+    print(f"Compiling {target_file} to C with the native self-hosted compiler...")
+    native_compiler = os.path.join(slop_bin, "slop-compiler")
+    local_compiler = os.path.abspath("slop-compiler")
+    if os.path.exists(native_compiler):
+        compile_cmd = [native_compiler, target_file, c_output]
+    elif os.path.exists(local_compiler):
+        compile_cmd = [local_compiler, target_file, c_output]
+    else:
+        # Development fallback only: the production install uses native slop-compiler.
+        compile_cmd = [sys.executable, os.path.join(slop_bin if os.path.exists(slop_bin) else slop_include, "slop_boot.py"), target_file, c_output]
     try:
-        subprocess.run(
-            [sys.executable, os.path.join(slop_bin if os.path.exists(slop_bin) else slop_include, "slop_boot.py"), target_file, c_output],
-            check=True
-        )
+        subprocess.run(compile_cmd, check=True)
     except subprocess.CalledProcessError:
-        print(f"{RED}Error: Transpilation failed!{NC}", file=sys.stderr)
+        print(f"{RED}Error: Slop-to-C compilation failed!{NC}", file=sys.stderr)
         return False
         
     # 3. Compile native optimized binary

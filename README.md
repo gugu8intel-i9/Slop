@@ -65,9 +65,9 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
    - **Reduces storage footprint by 75% to over 90%** for redundant data arrays (database rows, category indices, logs, status fields), enabling massive storage and memory bandwidth savings with zero external dependencies!
 
 13. **Self-Hosting (Slop Made in Slop)**:
-   - The Slop compiler/lexer (`compiler.slop`) is written entirely in Slop.
-   - It is bootstrapped by a Python-based transpiler (`slop_boot.py`) that outputs optimized, native C.
-   - Once compiled, the native binary can compile and lex other Slop files!
+   - The production Slop compiler/lexer (`compiler.slop`) is written in Slop and compiles to optimized native C.
+   - `slop_boot.py` is only a one-time bootstrap bridge used to create the first native compiler binary.
+   - After that, the native `slop-compiler` compiles Slop programs — including `compiler.slop` itself — with no Python in the normal compilation path.
 
 14. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
    - A zero-copy header-only C++ library that lets you run C++ code inside Slop memory buckets.
@@ -182,8 +182,9 @@ We compared both the size of the final compiled executable binary (the program t
 ## Directory Structure
 
 - `slop_rt.h` / `slop_rt.c` - The core runtime library containing the Bucket allocator, FFI exports, and print/IO builtins.
-- `slop_boot.py` - The bootstrap compiler/transpiler that translates Slop source code to C.
-- `compiler.slop` - **The self-hosting Slop compiler/lexer written in Slop itself!**
+- `slop_boot.py` - One-time bootstrap transpiler used only to build the first native compiler from Slop source.
+- `compiler.slop` - **The self-hosting native Slop compiler/lexer written in Slop itself!**
+- `compiler_v2.slop` - Current self-hosting compiler source; mirrored into `compiler.slop` for the primary install path.
 - `hello.slop` - An example Slop script demonstrating pipeline operations and arrays.
 - `complex_syntax.slop` - Demonstrating C++ methods, Rust matches, and Python list comprehensions in Slop!
 - `hardware_access.slop` - Demonstrating direct volatile hardware, pointer register peeks, and inline assembly in Slop!
@@ -324,12 +325,30 @@ gcc -O3 -ffast-math -flto -march=native complex_syntax.c -o complex_syntax
 ./complex_syntax
 ```
 
-### 14. Run the Self-Hosting Compiler
+### 14. Build and Verify the Self-Hosting Compiler
+
+`slop_boot.py` is intentionally a one-time bootstrapper. The verified chain is:
 
 ```bash
-python3 slop_boot.py compiler.slop
-gcc -O3 -ffast-math -flto -march=native compiler.c -o slop-compiler
-./slop-compiler storage_savings.slop
+# Stage 0: one-time Python bootstrap to native C
+python3 slop_boot.py compiler.slop compiler.c
+gcc -O3 -std=gnu11 -ffast-math -flto -march=native compiler.c -o slop-compiler
+
+# Stage 1: native Slop compiler compiles the Slop compiler source
+./slop-compiler compiler.slop compiler_self.c
+gcc -O3 -std=gnu11 -ffast-math -flto -march=native compiler_self.c -o slop-compiler-self
+
+# Stage 2: self-built compiler reaches a stable fixpoint
+./slop-compiler-self compiler.slop compiler_self2.c
+diff compiler_self.c compiler_self2.c
+```
+
+If `diff` prints nothing, the compiler has reached the self-hosting fixpoint. For normal programs, use the native compiler directly:
+
+```bash
+./slop-compiler hello.slop hello.c
+gcc -O3 -std=gnu11 -ffast-math -flto -march=native hello.c -o hello
+./hello
 ```
 
 ### 15. Run the C++ Native Bridge Test

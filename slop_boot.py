@@ -1224,7 +1224,7 @@ int main(int argc, char** argv) {
             if expr.type == "int":
                 return str(expr.value), "int"
             elif expr.type == "string":
-                escaped = expr.value.replace('"', '\\"').replace('\n', '\\n')
+                escaped = expr.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
                 return f'slop_string_create(local_arena, "{escaped}")', "string"
             elif expr.type == "bool":
                 return "true" if expr.value else "false", "bool"
@@ -1514,31 +1514,31 @@ int main(int argc, char** argv) {
                 arr_var = self.fresh_temp()
                 self.output.append(f"    SlopArray {arr_var} = slop_array_create(local_arena);\n")
                 self.output.append(f"""    {{
-        SlopString s = {str_code};
-        SlopString sep = {sep_code};
-        size_t start = 0;
-        if (sep.length == 0) {{
-            for (size_t i = 0; i < s.length; i++) {{
-                SlopString* sub = (SlopString*)slop_arena_alloc(local_arena, sizeof(SlopString));
-                *sub = slop_string_create_len(local_arena, s.data + i, 1);
-                slop_array_push(local_arena, &{arr_var}, sub);
+        SlopString _slop_s = {str_code};
+        SlopString _slop_sep = {sep_code};
+        size_t _slop_start = 0;
+        if (_slop_sep.length == 0) {{
+            for (size_t _slop_i = 0; _slop_i < _slop_s.length; _slop_i++) {{
+                SlopString* _slop_sub = (SlopString*)slop_arena_alloc(local_arena, sizeof(SlopString));
+                *_slop_sub = slop_string_create_len(local_arena, _slop_s.data + _slop_i, 1);
+                slop_array_push(local_arena, &{arr_var}, _slop_sub);
             }}
         }} else {{
-            for (size_t i = 0; s.length >= sep.length && i <= s.length - sep.length; ) {{
-                if (memcmp(s.data + i, sep.data, sep.length) == 0) {{
-                    SlopString* sub = (SlopString*)slop_arena_alloc(local_arena, sizeof(SlopString));
-                    *sub = slop_string_create_len(local_arena, s.data + start, i - start);
-                    slop_array_push(local_arena, &{arr_var}, sub);
-                    i += sep.length;
-                    start = i;
+            for (size_t _slop_i = 0; _slop_s.length >= _slop_sep.length && _slop_i <= _slop_s.length - _slop_sep.length; ) {{
+                if (memcmp(_slop_s.data + _slop_i, _slop_sep.data, _slop_sep.length) == 0) {{
+                    SlopString* _slop_sub = (SlopString*)slop_arena_alloc(local_arena, sizeof(SlopString));
+                    *_slop_sub = slop_string_create_len(local_arena, _slop_s.data + _slop_start, _slop_i - _slop_start);
+                    slop_array_push(local_arena, &{arr_var}, _slop_sub);
+                    _slop_i += _slop_sep.length;
+                    _slop_start = _slop_i;
                 }} else {{
-                    i++;
+                    _slop_i++;
                 }}
             }}
-            if (start <= s.length) {{
-                SlopString* sub = (SlopString*)slop_arena_alloc(local_arena, sizeof(SlopString));
-                *sub = slop_string_create_len(local_arena, s.data + start, s.length - start);
-                slop_array_push(local_arena, &{arr_var}, sub);
+            if (_slop_start <= _slop_s.length) {{
+                SlopString* _slop_sub = (SlopString*)slop_arena_alloc(local_arena, sizeof(SlopString));
+                *_slop_sub = slop_string_create_len(local_arena, _slop_s.data + _slop_start, _slop_s.length - _slop_start);
+                slop_array_push(local_arena, &{arr_var}, _slop_sub);
             }}
         }}
     }}
@@ -1550,14 +1550,14 @@ int main(int argc, char** argv) {
                 res_var = self.fresh_temp()
                 self.output.append(f"    SlopString {res_var} = slop_string_create(local_arena, \"\");\n")
                 self.output.append(f"""    {{
-                    SlopArray arr = {arr_code};
-                    SlopString sep = {sep_code};
-                    for (size_t i = 0; i < arr.length; i++) {{
-                        SlopString* s = (SlopString*)arr.data[i];
-                        if (i > 0) {{
-                            {res_var} = slop_string_concat(local_arena, {res_var}, sep);
+                    SlopArray _slop_arr = {arr_code};
+                    SlopString _slop_sep = {sep_code};
+                    for (size_t _slop_i = 0; _slop_i < _slop_arr.length; _slop_i++) {{
+                        SlopString* _slop_sub = (SlopString*)_slop_arr.data[_slop_i];
+                        if (_slop_i > 0) {{
+                            {res_var} = slop_string_concat(local_arena, {res_var}, _slop_sep);
                         }}
-                        {res_var} = slop_string_concat(local_arena, {res_var}, *s);
+                        {res_var} = slop_string_concat(local_arena, {res_var}, *_slop_sub);
                     }}
                 }}
 """)
@@ -1568,10 +1568,10 @@ int main(int argc, char** argv) {
                 res_var = self.fresh_temp()
                 self.output.append(f"    SlopString {res_var} = slop_string_create(local_arena, \"\");\n")
                 self.output.append(f"""    {{
-                    SlopString s = {str_code};
-                    int64_t idx = {idx_code};
-                    if (idx >= 0 && (size_t)idx < s.length) {{
-                        {res_var} = slop_string_create_len(local_arena, s.data + idx, 1);
+                    SlopString _slop_s = {str_code};
+                    int64_t _slop_idx = {idx_code};
+                    if (_slop_idx >= 0 && (size_t)_slop_idx < _slop_s.length) {{
+                        {res_var} = slop_string_create_len(local_arena, _slop_s.data + _slop_idx, 1);
                     }}
                 }}
 """)

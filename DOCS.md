@@ -20,6 +20,7 @@ Slop is an insanely high-performance, lightweight, and low learning-curve langua
 11. [Universal Library Auto-Converter](#11-universal-library-auto-converter)
 12. [High-Performance Array Compression (SPCA)](#12-high-performance-array-compression-spca)
 13. [Bridging with C++ & Rust](#13-bridging-with-c--rust)
+14. [Self-Hosting Compiler](#14-self-hosting-compiler)
 
 ---
 
@@ -36,7 +37,7 @@ Once installed, append Slop to your `PATH` (e.g., in `~/.bashrc` or `~/.zshrc`):
 export PATH="$HOME/.slop/bin:$PATH"
 ```
 
-Now, the global `slop` command tool is available. You can transpile, compile, and execute scripts instantly!
+Now, the global `slop` command tool is available. Installation uses `slop_boot.py` once to build the first native compiler; normal `slop run` / `slop build` calls use the native self-hosted `slop-compiler`.
 
 ### The Interactive REPL Shell
 You can also launch the high-performance interactive compiling REPL shell directly by running:
@@ -359,6 +360,32 @@ fn run_calculation() {
         unsafe { slop_print_string(s); }
     });
 }
+```
+
+---
+
+## 14. Self-Hosting Compiler
+
+The Slop compiler is written in Slop as `compiler.slop`. Python is not the production compiler: `slop_boot.py` is only the bootstrap bridge used to create the first native compiler binary.
+
+Manual verification chain:
+
+```bash
+python3 slop_boot.py compiler.slop compiler.c
+gcc -O3 -std=gnu11 -ffast-math -flto -march=native compiler.c -o slop-compiler
+
+./slop-compiler compiler.slop compiler_self.c
+gcc -O3 -std=gnu11 -ffast-math -flto -march=native compiler_self.c -o slop-compiler-self
+
+./slop-compiler-self compiler.slop compiler_self2.c
+diff compiler_self.c compiler_self2.c
+```
+
+An empty `diff` means the generated C is stable across compiler generations. From there, compile application code with the native compiler:
+
+```bash
+./slop-compiler app.slop app.c
+gcc -O3 -std=gnu11 -ffast-math -flto -march=native app.c -o app
 ```
 
 Happy coding in Slop! Let's write some insanely high-performance, low-memory code!
