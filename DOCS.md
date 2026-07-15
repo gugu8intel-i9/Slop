@@ -21,6 +21,7 @@ Slop is an insanely high-performance, lightweight, and low learning-curve langua
 12. [High-Performance Array Compression (SPCA)](#12-high-performance-array-compression-spca)
 13. [Bridging with C++ & Rust](#13-bridging-with-c--rust)
 14. [Self-Hosting Compiler](#14-self-hosting-compiler)
+15. [Direct Native Backend MVP](#15-direct-native-backend-mvp)
 
 ---
 
@@ -387,5 +388,23 @@ An empty `diff` means the generated C is stable across compiler generations. Fro
 ./slop-compiler app.slop app.c
 gcc -O3 -std=gnu11 -ffast-math -flto -march=native app.c -o app
 ```
+
+---
+
+## 15. Direct Native Backend MVP
+
+Slop's stable backend is still the portable C backend, but the repository now includes an experimental direct native backend:
+
+```bash
+gcc -O3 -std=gnu11 slop_native_backend.c -o slop-native-backend
+./slop-native-backend native_backend_demo.slop native_backend_demo.s
+as --64 native_backend_demo.s -o native_backend_demo.o
+ld -o native_backend_demo native_backend_demo.o
+./native_backend_demo
+```
+
+Current MVP target: x86_64 Linux assembly using direct `write` and `exit` syscalls. Current source subset: `print("literal")`, integer/string `let`, and `print(name)`.
+
+The long-term compatibility model is multi-backend: native targets for platforms where Slop has direct codegen, and the C backend as the universal fallback.
 
 Happy coding in Slop! Let's write some insanely high-performance, low-memory code!

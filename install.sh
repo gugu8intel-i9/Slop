@@ -64,6 +64,9 @@ else
     exit 1
 fi
 
+# Build the direct native backend MVP: .slop subset -> x86_64 Linux assembly
+$CC -O3 -std=gnu11 slop_native_backend.c -o "$SLOP_BIN/slop-native-backend"
+
 # Copy compiler source, runtime headers, REPL, and helper files
 cp compiler.slop "$SLOP_DIR/"
 cp slop_rt.h "$SLOP_INCLUDE/"
@@ -109,6 +112,7 @@ if [ -z "$1" ]; then
     echo "  fmt <file.slop>    Automatically format Slop code to standard clean style"
     echo "  convert <file>     Automatically turn C/C++ (.h), Rust (.rs) or Python (.py) to Slop!"
     echo "  lex <file.slop>    Lex/tokenize a Slop program using the self-hosted compiler"
+    echo "  native <file.slop> Compile MVP native subset directly to x86_64 Linux ELF"
     echo "  repl               Launch the interactive native compiling REPL shell"
     exit 0
 fi
@@ -161,6 +165,24 @@ elif [ "$CMD" = "fmt" ]; then
 elif [ "$CMD" = "lex" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     "$SLOP_BIN/slop-compiler" "$FILE"
+elif [ "$CMD" = "native" ]; then
+    if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
+    if [ "$FILE" = "${FILE#/}" ]; then
+        FILE="$(pwd)/$FILE"
+    fi
+    if [ ! -f "$FILE" ]; then
+        echo "Error: File not found '$FILE'"; exit 1
+    fi
+    if ! command -v as >/dev/null 2>&1 || ! command -v ld >/dev/null 2>&1; then
+        echo "Error: GNU as and ld are required for the MVP native backend"
+        exit 1
+    fi
+    BASE="${FILE%.slop}"
+    "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE.s"
+    as --64 "$BASE.s" -o "$BASE.o"
+    ld -o "$BASE" "$BASE.o"
+    rm -f "$BASE.o"
+    echo "Successfully built direct native executable: $BASE"
 elif [ "$CMD" = "convert" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     python3 "$SLOP_BIN/slop_convert.py" "$FILE" "$3"

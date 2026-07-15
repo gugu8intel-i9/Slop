@@ -1,6 +1,8 @@
 # Binary executables
 hello
 slop-compiler
+slop-native-backend
+native_backend_demo
 cpp_library_test
 test_program
 complex_syntax
@@ -53,3 +55,7 @@ benchmark_par.c
 # Pycache / compilation artifacts
 __pycache__/
 *.pyc
+
+# Native backend generated artifacts
+*.o
+*.s

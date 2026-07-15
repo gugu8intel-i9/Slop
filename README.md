@@ -69,11 +69,15 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
    - `slop_boot.py` is only a one-time bootstrap bridge used to create the first native compiler binary.
    - After that, the native `slop-compiler` compiles Slop programs — including `compiler.slop` itself — with no Python in the normal compilation path.
 
-14. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
+14. **Direct Native Backend MVP (`slop-native-backend`)**:
+   - Experimental direct `.slop -> x86_64 Linux assembly -> ELF` path for a small syscall-only subset.
+   - Keeps the portable C backend as the universal compatibility backend while native targets are expanded.
+
+15. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
    - A zero-copy header-only C++ library that lets you run C++ code inside Slop memory buckets.
    - Share strings and vectors between C++ and Slop without copying a single byte!
 
-15. **High-Performance Rust Native Bridge (`rust_bridge/`)**:
+16. **High-Performance Rust Native Bridge (`rust_bridge/`)**:
    - A fully functional Cargo-crate library implementing Rust FFI bindings directly to the Slop SEAA engine.
    - Provides safe, idiomatic Rust wrappers with RAII `SlopScope` lifetimes and zero-copy string and array structures.
 
@@ -186,6 +190,8 @@ We compared both the size of the final compiled executable binary (the program c
 - `slop_boot.py` - One-time bootstrap transpiler used only to build the first native compiler from Slop source.
 - `compiler.slop` - **The self-hosting native Slop compiler/lexer written in Slop itself!**
 - `compiler_v2.slop` - Current self-hosting compiler source; mirrored into `compiler.slop` for the primary install path.
+- `slop_native_backend.c` - Experimental direct native backend: Slop subset to x86_64 Linux assembly/ELF without emitting C.
+- `native_backend_demo.slop` - Minimal program that demonstrates the direct native backend.
 - `hello.slop` - An example Slop script demonstrating pipeline operations and arrays.
 - `complex_syntax.slop` - Demonstrating C++ methods, Rust matches, and Python list comprehensions in Slop!
 - `hardware_access.slop` - Demonstrating direct volatile hardware, pointer register peeks, and inline assembly in Slop!
@@ -353,13 +359,35 @@ gcc -O3 -std=gnu11 -ffast-math -flto -march=native hello.c -o hello
 ./hello
 ```
 
-### 15. Run the C++ Native Bridge Test
+### 15. Run the Direct Native Backend MVP
+
+The normal backend remains the portable, compatible C backend. Slop now also includes an experimental direct native backend for a small syscall-only subset:
+
+```bash
+gcc -O3 -std=gnu11 slop_native_backend.c -o slop-native-backend
+./slop-native-backend native_backend_demo.slop native_backend_demo.s
+as --64 native_backend_demo.s -o native_backend_demo.o
+ld -o native_backend_demo native_backend_demo.o
+./native_backend_demo
+```
+
+Expected output:
+
+```text
+Hello from Slop's direct native backend
+42
+x86_64 Linux ELF via syscalls
+```
+
+This is the first native target. The compatibility strategy is multi-backend: direct native backends for speed and control, plus the C backend for maximum portability and C ABI integration.
+
+### 16. Run the C++ Native Bridge Test
 
 ```bash
 g++ -O3 -march=native cpp_library_test.cpp -o cpp_library_test && ./cpp_library_test
 ```
 
-### 16. Automatically Convert Python Code to Slop & Run Natively
+### 17. Automatically Convert Python Code to Slop & Run Natively
 
 ```bash
 python3 slop_translate.py test_program.py test_program.slop
@@ -367,7 +395,7 @@ python3 slop_boot.py test_program.slop test_program.c
 gcc -O3 -march=native test_program.c -o test_program && ./test_program
 ```
 
-### 17. High-Performance Rust Bridge Compilation
+### 18. High-Performance Rust Bridge Compilation
 
 The Rust library is organized as a Cargo package located in `rust_bridge/`. To build and use it on any machine with Cargo installed:
 

@@ -21,6 +21,18 @@ The token stream is encoded in compact strings and is parsed from both left and 
 
 ---
 
+## Direct Native Backend Roadmap
+
+Slop now has a backend-pluggable architecture:
+
+- **Portable C backend**: the compatibility backend for every platform with GCC/Clang/MSVC-style C tooling.
+- **Direct native backend MVP**: `slop_native_backend.c` emits x86_64 Linux assembly for a small syscall-only subset, producing ELF executables without emitting C.
+- **Future native targets**: x86_64 SysV objects, AArch64, Windows x64 COFF, macOS Mach-O, WebAssembly, and C ABI-compatible object files.
+
+The compatibility goal is not to discard C immediately. The innovative path is a tiered backend system: emit native code where Slop has a mature target, and fall back to the portable C backend everywhere else. That keeps Slop compatible while enabling high-performance direct codegen, target-specific optimizations, and eventually linkable object files.
+
+---
+
 ## 1. Core Architectural Innovations
 
 ### A. The "Slop Bucket" Memory Architecture (Sloppy-Escape Arena Allocation - SEAA)

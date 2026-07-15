@@ -1,0 +1,7 @@
+fn main(args: array[string]) {
+    print("Hello from Slop's direct native backend")
+    let answer = 42
+    print(answer)
+    let target = "x86_64 Linux ELF via syscalls"
+    print(target)
+}
