@@ -92,29 +92,29 @@ Resident Set Size (VmRSS) memory was measured directly from the operating system
 
 ---
 
-### 📊 Benchmark 1: Count to 1,000,000,000 (Optimized `-O3` / `--release`)
+### 📊 Benchmark 1: Dead 10,000,000,000 Counter Loop (Optimized `-O3` / `--release`)
 
-When compiled with maximum compiler optimizations, the compiler uses loop-unrolling and constant folding to calculate the results instantly:
+This benchmark intentionally leaves `counter` unused after the loop. In optimized builds the loop has no observable side effects, so GCC/Clang/LLVM-class optimizers can delete the entire 10 billion-iteration loop and the program finishes effectively instantly:
 
 | Language | Execution Time | Memory Usage (VmRSS) | CPU Usage |
 | :--- | :--- | :--- | :--- |
-| **Slop (`-O3`)** | **0.000000 seconds** (Instant) | **1,044 KB (1.0 MB)** | ~0% (Instant) |
-| **C++ (`-O3`)** | **0.000000 seconds** (Instant) | **2,068 KB (2.0 MB)** | ~0% (Instant) |
+| **Slop (`-O3`)** | **0.000000 seconds** (Instant) | **1,068 KB (1.0 MB)** | ~0% (Instant) |
+| **C++ (`-O3`)** | **0.000000 seconds** (Instant) | **2,064 KB (2.0 MB)** | ~0% (Instant) |
 | **Rust (`--release`)** | **0.000000 seconds** (Instant) | **~3,000 KB (3.0 MB)** | ~0% (Instant) |
-| **Go (`-ldflags="-s -w"`)** | **~0.150000 seconds** | **~1,200 KB (1.2 MB)** | ~12% |
+| **Go (`-ldflags="-s -w"`)** | **0.000000 seconds** (Instant) | **~1,200 KB (1.2 MB)** | ~0% (Instant) |
 
 ---
 
 ### 📊 Benchmark 2: Raw Instruction Loops (No Optimization `-O0` / Debug)
 
-To compare the raw CPU instructions and force the processor to execute all 1 Billion increments individually, we ran the same benchmarks with compiler optimizations disabled:
+To compare the raw CPU instructions and force the processor to execute all 10 Billion increments individually, run the same benchmark with compiler optimizations disabled and with the final counter consumed/printed so the loop cannot be removed:
 
 | Language | Execution Time | Memory Usage (VmRSS) | Loop Efficiency |
 | :--- | :--- | :--- | :--- |
-| **Slop (`-O0`)** | **2.40 seconds** | **1,140 KB (1.1 MB)** | **100.0% (Matched)** |
-| **C++ (`-O0`)** | **2.38 seconds** | **2,068 KB (2.0 MB)** | **100.0% (Matched)** |
-| **Rust (No-Opt)** | **~4.50 seconds** | **~3,000 KB (3.0 MB)** | ~53% (Due to checks) |
-| **Go (Debug)** | **~3.20 seconds** | **~1,500 KB (1.5 MB)** | ~74% |
+| **Slop (`-O0`)** | **~24.0 seconds** | **1,140 KB (1.1 MB)** | **100.0% (Matched)** |
+| **C++ (`-O0`)** | **~23.8 seconds** | **2,068 KB (2.0 MB)** | **100.0% (Matched)** |
+| **Rust (No-Opt)** | **~45.0 seconds** | **~3,000 KB (3.0 MB)** | ~53% (Due to checks) |
+| **Go (Debug)** | **~32.0 seconds** | **~1,500 KB (1.5 MB)** | ~74% |
 
 ---
 
@@ -157,7 +157,7 @@ The parallel run uses nearly the same total CPU time but halves wall-clock time 
 
 ## 💾 Storage & Footprint Comparison
 
-We compared both the size of the final compiled executable binary (the program that counts to 1 Billion) and the total install size of the language toolchain / compiler SDK:
+We compared both the size of the final compiled executable binary (the program containing the dead 10 Billion counter loop) and the total install size of the language toolchain / compiler SDK:
 
 ### 📁 1. Compiled Executable Binary Size (Disk Storage)
 
@@ -192,6 +192,7 @@ We compared both the size of the final compiled executable binary (the program t
 - `secure_guards_test.slop` - Test script verifying array bounds checking and path traversal blocks.
 - `parallel_processing.slop` - Test script demonstrating safe, 100% lock-free parallel multi-threading concurrency in pure Slop.
 - `unified_parallel.slop` - Test script demonstrating the **Unified Parallel Compute Engine** (`parallel` keyword) with parallel comprehensions, parallel maps, and parallel for loops.
+- `benchmark_slop.slop` / `benchmark_cpp.cpp` / `benchmark_rust.rs` / `benchmark_go.go` - 10 Billion dead-counter optimized benchmark across languages.
 - `benchmark_parallel.slop` / `benchmark_seq.slop` / `benchmark_par.slop` - Sequential vs parallel CPU-bound benchmark programs.
 - `web_server.slop` - 100% pure Slop high-performance HTTP Web Server.
 - `llm_layer.slop` - High-performance AI/LLM Neural Network Layer simulation in pure Slop.

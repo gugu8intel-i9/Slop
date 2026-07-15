@@ -703,7 +703,11 @@ fn collect_signatures(tokens: array[string]) -> array[string] {
                 }
                 func_names = arr_append(func_names, name)
                 func_returns = arr_append(func_returns, rtype)
-                func_params = arr_append(func_params, params)
+                if length(params) == 0 {
+                    func_params = arr_append(func_params, "<none>")
+                } else {
+                    func_params = arr_append(func_params, params)
+                }
             } else {
                 print("Unexpected top-level token")
                 print(kind)
@@ -1296,6 +1300,18 @@ fn gen_stmt(tokens: array[string], pos: int, var_types: string, func_names: stri
             push(result, new_var_types)
             return result
         }
+        if v == "raw" {
+            pos = pos + 1
+            pos = expect(tokens, pos, "SYMBOL", "{")
+            let code = tok_val(tokens, pos)
+            pos = pos + 1
+            pos = expect(tokens, pos, "SYMBOL", "}")
+            let result: array[string] = []
+            push(result, int_to_string(pos))
+            push(result, output + "    " + code + "\n")
+            push(result, var_types)
+            return result
+        }
     }
 
     if t == "KEYWORD" {
@@ -1575,17 +1591,19 @@ fn main(args: array[string]) {
         let name = arr_get(func_names, i)
         let rtype = arr_get(func_returns, i)
         let params = arr_get(func_params, i)
-        let p_parts = split(params, ",")
         let p_str = ""
-        let j = 0
-        while j < length(p_parts) {
-            let pp = split(p_parts[j], ":")
-            if length(p_str) == 0 {
-                p_str = c_type(pp[1], struct_names) + " " + pp[0]
-            } else {
-                p_str = p_str + ", " + c_type(pp[1], struct_names) + " " + pp[0]
+        if params != "<none>" {
+            let p_parts = split(params, ",")
+            let j = 0
+            while j < length(p_parts) {
+                let pp = split(p_parts[j], ":")
+                if length(p_str) == 0 {
+                    p_str = c_type(pp[1], struct_names) + " " + pp[0]
+                } else {
+                    p_str = p_str + ", " + c_type(pp[1], struct_names) + " " + pp[0]
+                }
+                j = j + 1
             }
-            j = j + 1
         }
         output = output + c_type(rtype, struct_names) + " fn_" + name + "(" + p_str + ");\n"
         i = i + 1
