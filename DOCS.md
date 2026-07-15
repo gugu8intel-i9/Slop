@@ -40,7 +40,7 @@ Once installed, append Slop to your `PATH` (e.g., in `~/.bashrc` or `~/.zshrc`):
 export PATH="$HOME/.slop/bin:$PATH"
 ```
 
-Now, the global `slop` command tool is available. Installation uses `slop_boot.py` once to build the first native compiler; normal `slop run` / `slop build` calls use the native self-hosted `slop-compiler`.
+Now, the global `slop` command tool is available. Linux x86_64 installation uses the shipped prebuilt `slop-compiler`; `slop_boot.py` is only the fallback bootstrap path for platforms without prebuilts. Normal `slop run` / `slop build` calls use the native self-hosted `slop-compiler`.
 
 ### The Interactive REPL Shell
 You can also launch the high-performance interactive compiling REPL shell directly by running:

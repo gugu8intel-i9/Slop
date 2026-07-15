@@ -186,6 +186,21 @@ We compared both the size of the final compiled executable binary (the program c
 
 ---
 
+## Prebuilt Compiler Install
+
+Linux x86_64 installs now ship a prebuilt stage0 compiler:
+
+```text
+bootstrap/prebuilt/linux-x86_64/slop-compiler
+bootstrap/prebuilt/linux-x86_64/slop-native-backend
+```
+
+That means a normal Linux x86_64 install no longer needs Python or GCC just to obtain `slop-compiler`. Python/GCC are only fallback requirements when a platform does not have a prebuilt yet.
+
+Important distinction: the stable portable backend still emits C, so compiling general Slop apps through `slop run`/`slop build` still needs GCC/Clang until the full native backend and object emitter are complete. The experimental `slop native` path avoids C for its current subset.
+
+---
+
 ## Learn Slop Fast
 
 Start here if you are new:
@@ -202,7 +217,8 @@ Slop's learning rule is: **write simple code; the compiler makes it fast**. The 
 ## Directory Structure
 
 - `slop_rt.h` / `slop_rt.c` - The core runtime library containing the Bucket allocator, FFI exports, and print/IO builtins.
-- `slop_boot.py` - One-time bootstrap transpiler used only to build the first native compiler from Slop source.
+- `bootstrap/prebuilt/` - Trusted prebuilt stage0 Slop binaries; Linux x86_64 installs use these instead of Python/GCC bootstrapping.
+- `slop_boot.py` - One-time bootstrap transpiler used only as fallback when no prebuilt compiler exists for the platform.
 - `compiler.slop` - **The self-hosting native Slop compiler/lexer written in Slop itself!**
 - `compiler_v2.slop` - Current self-hosting compiler source; mirrored into `compiler.slop` for the primary install path.
 - `slop_ir.h` / `SLOP_IR.md` - Slop Intermediate Representation: compact shared IR for optimizers and all backends.

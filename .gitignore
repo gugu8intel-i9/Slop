@@ -59,3 +59,8 @@ __pycache__/
 # Native backend generated artifacts
 *.o
 *.s
+
+# Keep shipped stage0 prebuilts tracked
+!bootstrap/prebuilt/linux-x86_64/slop-compiler
+!bootstrap/prebuilt/linux-x86_64/slop-native-backend
+!bootstrap/prebuilt/linux-x86_64/SHA256SUMS

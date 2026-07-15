@@ -29,43 +29,64 @@ git clone --depth 1 https://github.com/gugu8intel-i9/Slop.git "$TMP_DIR/Slop"
 
 cd "$TMP_DIR/Slop"
 
-echo -e "${BLUE}Bootstrapping and self-hosting the native Slop Compiler...${NC}"
+echo -e "${BLUE}Installing native Slop compiler...${NC}"
 
-# Check for Python (used for bootstrapping)
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}Error: python3 is required to bootstrap Slop.${NC}"
-    exit 1
+# Prefer checked-in prebuilt stage0 binaries so normal installs do not need Python or GCC.
+# If this platform is not prebuilt yet, fall back to the transparent bootstrap path.
+OS_NAME="$(uname -s)"
+ARCH_NAME="$(uname -m)"
+PREBUILT_DIR=""
+if [ "$OS_NAME" = "Linux" ] && { [ "$ARCH_NAME" = "x86_64" ] || [ "$ARCH_NAME" = "amd64" ]; }; then
+    PREBUILT_DIR="bootstrap/prebuilt/linux-x86_64"
 fi
 
-# Check for GCC/Clang (used to build the native binary)
-if command -v gcc &> /dev/null; then
-    CC="gcc"
-elif command -v clang &> /dev/null; then
-    CC="clang"
+if [ -n "$PREBUILT_DIR" ] && [ -x "$PREBUILT_DIR/slop-compiler" ] && [ -x "$PREBUILT_DIR/slop-native-backend" ]; then
+    echo -e "${GREEN}Using prebuilt Slop compiler for $OS_NAME/$ARCH_NAME.${NC}"
+    cp "$PREBUILT_DIR/slop-compiler" "$SLOP_BIN/slop-compiler"
+    cp "$PREBUILT_DIR/slop-native-backend" "$SLOP_BIN/slop-native-backend"
+    chmod +x "$SLOP_BIN/slop-compiler" "$SLOP_BIN/slop-native-backend"
+    if command -v sha256sum >/dev/null 2>&1 && [ -f "$PREBUILT_DIR/SHA256SUMS" ]; then
+        (cd "$PREBUILT_DIR" && sha256sum -c SHA256SUMS)
+    fi
 else
-    echo -e "${RED}Error: A C/C++ compiler (gcc or clang) is required to build Slop.${NC}"
-    exit 1
+    echo -e "${BLUE}No prebuilt compiler for $OS_NAME/$ARCH_NAME; falling back to bootstrap.${NC}"
+
+    # Check for Python (used only for first bootstrap fallback)
+    if ! command -v python3 &> /dev/null; then
+        echo -e "${RED}Error: python3 is required only when no prebuilt Slop compiler exists for this platform.${NC}"
+        exit 1
+    fi
+
+    # Check for GCC/Clang (used only to build the fallback native binaries)
+    if command -v gcc &> /dev/null; then
+        CC="gcc"
+    elif command -v clang &> /dev/null; then
+        CC="clang"
+    else
+        echo -e "${RED}Error: gcc or clang is required only when no prebuilt Slop compiler exists for this platform.${NC}"
+        exit 1
+    fi
+
+    # Stage 0: one-time Python bootstrap compiler.slop -> compiler_boot.c
+    python3 slop_boot.py compiler.slop compiler_boot.c
+    $CC -O3 -std=gnu11 -ffast-math -flto -march=native compiler_boot.c -o "$TMP_DIR/slop-compiler-bootstrap"
+
+    # Stage 1: native Slop compiler compiles the Slop compiler itself
+    "$TMP_DIR/slop-compiler-bootstrap" compiler.slop compiler_self.c
+    $CC -O3 -std=gnu11 -ffast-math -flto -march=native compiler_self.c -o "$SLOP_BIN/slop-compiler"
+
+    # Stage 2: verify the self-hosted compiler reaches a stable C fixpoint
+    "$SLOP_BIN/slop-compiler" compiler.slop compiler_self2.c
+    if cmp -s compiler_self.c compiler_self2.c; then
+        echo -e "${GREEN}Self-hosting fixpoint verified.${NC}"
+    else
+        echo -e "${RED}Error: self-hosting fixpoint check failed.${NC}"
+        exit 1
+    fi
+
+    # Build the direct native backend MVP
+    $CC -O3 -std=gnu11 slop_native_backend.c -o "$SLOP_BIN/slop-native-backend"
 fi
-
-# Stage 0: one-time Python bootstrap compiler.slop -> compiler_boot.c
-python3 slop_boot.py compiler.slop compiler_boot.c
-$CC -O3 -std=gnu11 -ffast-math -flto -march=native compiler_boot.c -o "$TMP_DIR/slop-compiler-bootstrap"
-
-# Stage 1: native Slop compiler compiles the Slop compiler itself
-"$TMP_DIR/slop-compiler-bootstrap" compiler.slop compiler_self.c
-$CC -O3 -std=gnu11 -ffast-math -flto -march=native compiler_self.c -o "$SLOP_BIN/slop-compiler"
-
-# Stage 2: verify the self-hosted compiler reaches a stable C fixpoint
-"$SLOP_BIN/slop-compiler" compiler.slop compiler_self2.c
-if cmp -s compiler_self.c compiler_self2.c; then
-    echo -e "${GREEN}Self-hosting fixpoint verified.${NC}"
-else
-    echo -e "${RED}Error: self-hosting fixpoint check failed.${NC}"
-    exit 1
-fi
-
-# Build the direct native backend MVP: .slop subset -> x86_64 Linux assembly
-$CC -O3 -std=gnu11 slop_native_backend.c -o "$SLOP_BIN/slop-native-backend"
 
 # Copy compiler source, runtime headers, REPL, and helper files
 cp compiler.slop "$SLOP_DIR/"
@@ -81,7 +102,7 @@ cp slop_fmt.py "$SLOP_BIN/"
 
 # Copy example/demo Slop programs so users can run them immediately
 mkdir -p "$SLOP_DIR/examples"
-cp hello.slop complex_syntax.slop parallel_processing.slop gpu_compute.slop \
+cp hello.slop easy_start.slop native_backend_demo.slop complex_syntax.slop parallel_processing.slop gpu_compute.slop \
    unified_parallel.slop benchmark_seq.slop benchmark_par.slop "$SLOP_DIR/examples/" 2>/dev/null || true
 
 # Create the beautiful high-level "slop" command runner script
@@ -93,14 +114,17 @@ SLOP_DIR="$HOME/.slop"
 SLOP_BIN="$SLOP_DIR/bin"
 SLOP_INCLUDE="$SLOP_DIR/include"
 
-if command -v gcc >/dev/null 2>&1; then
-    SLOP_CC="gcc"
-elif command -v clang >/dev/null 2>&1; then
-    SLOP_CC="clang"
-else
-    echo "Error: gcc or clang is required to compile native Slop programs"
-    exit 1
-fi
+SLOP_CC=""
+require_c_compiler() {
+    if command -v gcc >/dev/null 2>&1; then
+        SLOP_CC="gcc"
+    elif command -v clang >/dev/null 2>&1; then
+        SLOP_CC="clang"
+    else
+        echo "Error: gcc or clang is required for the portable C backend. Try 'slop native <file.slop>' for the native-backend subset."
+        exit 1
+    fi
+}
 
 if [ -z "$1" ]; then
     echo "Slop Programming Language Tool"
@@ -136,6 +160,7 @@ if [ "$CMD" = "run" ]; then
         fi
         BASE="${FILE%.slop}"
         "$SLOP_BIN/slop-compiler" "$FILE" "$BASE.c"
+        require_c_compiler
         "$SLOP_CC" -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
         "$BASE"
         rm -f "$BASE.c" "$BASE"
@@ -154,6 +179,7 @@ elif [ "$CMD" = "build" ]; then
         fi
         BASE="${FILE%.slop}"
         "$SLOP_BIN/slop-compiler" "$FILE" "$BASE.c"
+        require_c_compiler
         "$SLOP_CC" -O3 -std=gnu11 -ffast-math -flto -march=native -I"$SLOP_INCLUDE" "$BASE.c" -o "$BASE"
         rm -f "$BASE.c"
         echo "Successfully built native executable: $BASE"
