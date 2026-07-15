@@ -70,8 +70,8 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
    - After that, the native `slop-compiler` compiles Slop programs — including `compiler.slop` itself — with no Python in the normal compilation path.
 
 14. **Direct Native Backend MVP (`slop-native-backend`)**:
-   - Experimental direct `.slop -> x86_64 Linux assembly -> ELF` path for a small syscall-only subset.
-   - Keeps the portable C backend as the universal compatibility backend while native targets are expanded.
+   - Experimental direct `.slop -> assembly -> ELF` path for x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux.
+   - Keeps the portable C backend as the universal compatibility backend while direct native targets are expanded.
 
 15. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
    - A zero-copy header-only C++ library that lets you run C++ code inside Slop memory buckets.
@@ -190,7 +190,7 @@ We compared both the size of the final compiled executable binary (the program c
 - `slop_boot.py` - One-time bootstrap transpiler used only to build the first native compiler from Slop source.
 - `compiler.slop` - **The self-hosting native Slop compiler/lexer written in Slop itself!**
 - `compiler_v2.slop` - Current self-hosting compiler source; mirrored into `compiler.slop` for the primary install path.
-- `slop_native_backend.c` - Experimental direct native backend: Slop subset to x86_64 Linux assembly/ELF without emitting C.
+- `slop_native_backend.c` - Experimental direct native backend: Slop subset to x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux assembly/ELF without emitting C.
 - `native_backend_demo.slop` - Minimal program that demonstrates the direct native backend.
 - `hello.slop` - An example Slop script demonstrating pipeline operations and arrays.
 - `complex_syntax.slop` - Demonstrating C++ methods, Rust matches, and Python list comprehensions in Slop!
@@ -361,11 +361,11 @@ gcc -O3 -std=gnu11 -ffast-math -flto -march=native hello.c -o hello
 
 ### 15. Run the Direct Native Backend MVP
 
-The normal backend remains the portable, compatible C backend. Slop now also includes an experimental direct native backend for a small syscall-only subset:
+The normal backend remains the portable, compatible C backend. Slop now also includes an experimental multi-target direct native backend for a small syscall-only subset:
 
 ```bash
 gcc -O3 -std=gnu11 slop_native_backend.c -o slop-native-backend
-./slop-native-backend native_backend_demo.slop native_backend_demo.s
+./slop-native-backend native_backend_demo.slop native_backend_demo.s x86_64-linux
 as --64 native_backend_demo.s -o native_backend_demo.o
 ld -o native_backend_demo native_backend_demo.o
 ./native_backend_demo
@@ -379,7 +379,7 @@ Hello from Slop's direct native backend
 x86_64 Linux ELF via syscalls
 ```
 
-This is the first native target. The compatibility strategy is multi-backend: direct native backends for speed and control, plus the C backend for maximum portability and C ABI integration.
+The backend can also emit `aarch64-linux`, `armv7-linux`, and `riscv64-linux` assembly. Cross-target ELF output requires matching binutils/LLVM tools on the host. The compatibility strategy is multi-backend: direct native backends for speed and control, plus the C backend for maximum portability and C ABI integration.
 
 ### 16. Run the C++ Native Bridge Test
 

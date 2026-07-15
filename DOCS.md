@@ -397,13 +397,13 @@ Slop's stable backend is still the portable C backend, but the repository now in
 
 ```bash
 gcc -O3 -std=gnu11 slop_native_backend.c -o slop-native-backend
-./slop-native-backend native_backend_demo.slop native_backend_demo.s
+./slop-native-backend native_backend_demo.slop native_backend_demo.s x86_64-linux
 as --64 native_backend_demo.s -o native_backend_demo.o
 ld -o native_backend_demo native_backend_demo.o
 ./native_backend_demo
 ```
 
-Current MVP target: x86_64 Linux assembly using direct `write` and `exit` syscalls. Current source subset: `print("literal")`, integer/string `let`, and `print(name)`.
+Current MVP targets: `x86_64-linux`, `aarch64-linux`/`arm64-linux`, `armv7-linux`, and `riscv64-linux`. All use direct Linux `write` and `exit` syscalls. Current source subset: `print("literal")`, integer/string `let`, and `print(name)`. Cross-target assembly/linking requires matching cross-binutils or LLVM tools.
 
 The long-term compatibility model is multi-backend: native targets for platforms where Slop has direct codegen, and the C backend as the universal fallback.
 

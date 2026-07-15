@@ -112,7 +112,7 @@ if [ -z "$1" ]; then
     echo "  fmt <file.slop>    Automatically format Slop code to standard clean style"
     echo "  convert <file>     Automatically turn C/C++ (.h), Rust (.rs) or Python (.py) to Slop!"
     echo "  lex <file.slop>    Lex/tokenize a Slop program using the self-hosted compiler"
-    echo "  native <file.slop> Compile MVP native subset directly to x86_64 Linux ELF"
+    echo "  native <file.slop> [target] Compile MVP native subset directly to assembly/ELF"
     echo "  repl               Launch the interactive native compiling REPL shell"
     exit 0
 fi
@@ -173,16 +173,30 @@ elif [ "$CMD" = "native" ]; then
     if [ ! -f "$FILE" ]; then
         echo "Error: File not found '$FILE'"; exit 1
     fi
-    if ! command -v as >/dev/null 2>&1 || ! command -v ld >/dev/null 2>&1; then
-        echo "Error: GNU as and ld are required for the MVP native backend"
-        exit 1
-    fi
     BASE="${FILE%.slop}"
-    "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE.s"
-    as --64 "$BASE.s" -o "$BASE.o"
-    ld -o "$BASE" "$BASE.o"
-    rm -f "$BASE.o"
-    echo "Successfully built direct native executable: $BASE"
+    TARGET="${3:-x86_64-linux}"
+    "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE.s" "$TARGET"
+
+    AS_CMD=""
+    LD_CMD=""
+    AS_FLAGS=""
+    case "$TARGET" in
+        x86_64-linux|amd64-linux) AS_CMD="as"; LD_CMD="ld"; AS_FLAGS="--64" ;;
+        aarch64-linux|arm64-linux) AS_CMD="aarch64-linux-gnu-as"; LD_CMD="aarch64-linux-gnu-ld" ;;
+        armv7-linux|arm-linux|armhf-linux) AS_CMD="arm-linux-gnueabihf-as"; LD_CMD="arm-linux-gnueabihf-ld" ;;
+        riscv64-linux|rv64-linux) AS_CMD="riscv64-linux-gnu-as"; LD_CMD="riscv64-linux-gnu-ld" ;;
+        *) echo "Unknown target '$TARGET'"; exit 1 ;;
+    esac
+
+    if command -v "$AS_CMD" >/dev/null 2>&1 && command -v "$LD_CMD" >/dev/null 2>&1; then
+        "$AS_CMD" $AS_FLAGS "$BASE.s" -o "$BASE.o"
+        "$LD_CMD" -o "$BASE" "$BASE.o"
+        rm -f "$BASE.o"
+        echo "Successfully built direct native executable: $BASE ($TARGET)"
+    else
+        echo "Wrote $TARGET assembly: $BASE.s"
+        echo "Install $AS_CMD and $LD_CMD to assemble/link this target on this machine."
+    fi
 elif [ "$CMD" = "convert" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     python3 "$SLOP_BIN/slop_convert.py" "$FILE" "$3"
