@@ -43,7 +43,7 @@ def run_bench(name, exe):
 
 
 def main():
-    print("=== [Slop/C++/Rust/Go: 10 Billion Dead Counter Loop] ===")
+    print("=== [Slop/C++/Rust/Zig/Go: 10 Billion Dead Counter Loop] ===")
     print("The counter is intentionally not used after the loop. Optimized compilers may delete the loop entirely.\n")
 
     # C++ via GCC/G++
@@ -67,12 +67,18 @@ def main():
     else:
         print("Skipping Slop native build: gcc not found")
 
-    # Rust / Go are optional in lightweight environments.
+    # Rust / Zig / Go are optional in lightweight environments.
     if shutil.which("rustc"):
         if compile_cmd("Rust", ["rustc", "-C", "opt-level=3", "-C", "target-cpu=native", "benchmark_rust.rs", "-o", "benchmark_rust"]):
             run_bench("Rust", "./benchmark_rust")
     else:
         print("\nSkipping Rust: rustc not found")
+
+    if shutil.which("zig"):
+        if compile_cmd("Zig", ["zig", "build-exe", "-O", "ReleaseFast", "-femit-bin=benchmark_zig", "benchmark_zig.zig"]):
+            run_bench("Zig", "./benchmark_zig")
+    else:
+        print("Skipping Zig: zig not found")
 
     if shutil.which("go"):
         if compile_cmd("Go", ["go", "build", "-o", "benchmark_go", "benchmark_go.go"]):

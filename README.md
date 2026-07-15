@@ -100,8 +100,9 @@ This benchmark intentionally leaves `counter` unused after the loop. In optimize
 | :--- | :--- | :--- | :--- | :--- |
 | **Slop (`-O3`)** | **0.000000093 s (93 ns)** | **0.001603 s** | **1,052 KB (1.0 MB)** | 10B loop deleted by C optimizer |
 | **C++ (`-O3`)** | **0.000000095 s (95 ns)** | **0.002240 s** | **2,060 KB (2.0 MB)** | 10B loop deleted by optimizer |
-| **Rust (`--release`)** | nanosecond-scale expected | non-zero process time | **~3,000 KB (3.0 MB)** | Source included; `rustc` unavailable in this sandbox |
-| **Go (`-ldflags="-s -w"`)** | nanosecond-scale expected | non-zero process time | **~1,200 KB (1.2 MB)** | Source included; `go` unavailable in this sandbox |
+| **Rust (`--release`)** | measured by local toolchain | non-zero process time | **~3,000 KB (3.0 MB)** | Source included; `rustc` unavailable in this sandbox |
+| **Zig (`ReleaseFast`)** | measured by local toolchain | non-zero process time | toolchain-dependent | Source included; `zig` unavailable in this sandbox |
+| **Go (`-ldflags="-s -w"`)** | measured by local toolchain | non-zero process time | **~1,200 KB (1.2 MB)** | Source included; `go` unavailable in this sandbox |
 
 ---
 
@@ -192,7 +193,7 @@ We compared both the size of the final compiled executable binary (the program c
 - `secure_guards_test.slop` - Test script verifying array bounds checking and path traversal blocks.
 - `parallel_processing.slop` - Test script demonstrating safe, 100% lock-free parallel multi-threading concurrency in pure Slop.
 - `unified_parallel.slop` - Test script demonstrating the **Unified Parallel Compute Engine** (`parallel` keyword) with parallel comprehensions, parallel maps, and parallel for loops.
-- `benchmark_slop.slop` / `benchmark_cpp.cpp` / `benchmark_rust.rs` / `benchmark_go.go` - 10 Billion dead-counter optimized benchmark across languages.
+- `benchmark_slop.slop` / `benchmark_cpp.cpp` / `benchmark_rust.rs` / `benchmark_zig.zig` / `benchmark_go.go` - 10 Billion dead-counter optimized benchmark across languages.
 - `benchmark_parallel.slop` / `benchmark_seq.slop` / `benchmark_par.slop` - Sequential vs parallel CPU-bound benchmark programs.
 - `web_server.slop` - 100% pure Slop high-performance HTTP Web Server.
 - `llm_layer.slop` - High-performance AI/LLM Neural Network Layer simulation in pure Slop.
