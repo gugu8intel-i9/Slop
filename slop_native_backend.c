@@ -33,6 +33,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "slop_ir.h"
+
 typedef struct {
     char* name;
     char* value;
@@ -392,7 +394,7 @@ static char* parse_let_name_and_expr(char* line, char** expr_out) {
     return name;
 }
 
-static void compile_file(const char* in_path, const char* out_path, Target target) {
+static void compile_file(const char* in_path, const char* out_path, Target target, bool dump_ir) {
     char* src = read_all(in_path);
     FILE* out = fopen(out_path, "wb");
     if (!out) {
@@ -400,10 +402,9 @@ static void compile_file(const char* in_path, const char* out_path, Target targe
         exit(1);
     }
 
-    StringList messages = {0};
+    SIRModule ir;
+    sir_module_init(&ir);
     Bindings bindings = {0};
-
-    emit_header(out, target);
 
     char* save = NULL;
     for (char* line = strtok_r(src, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
@@ -444,9 +445,9 @@ static void compile_file(const char* in_path, const char* out_path, Target targe
                 memcpy(msg, sv, n);
                 msg[n] = '\n';
                 msg[n + 1] = 0;
-                size_t id = messages.len;
-                strings_push(&messages, msg);
-                emit_write(out, id, target);
+                SIRId id = sir_add_string(&ir, msg, strlen(msg));
+                sir_emit_print_string(&ir, id);
+                free(msg);
                 free(sv);
                 continue;
             }
@@ -459,9 +460,9 @@ static void compile_file(const char* in_path, const char* out_path, Target targe
                 memcpy(msg, is, n);
                 msg[n] = '\n';
                 msg[n + 1] = 0;
-                size_t id = messages.len;
-                strings_push(&messages, msg);
-                emit_write(out, id, target);
+                SIRId id = sir_add_string(&ir, msg, strlen(msg));
+                sir_emit_print_string(&ir, id);
+                free(msg);
                 free(is);
                 continue;
             }
@@ -473,9 +474,9 @@ static void compile_file(const char* in_path, const char* out_path, Target targe
                 memcpy(msg, b->value, n);
                 msg[n] = '\n';
                 msg[n + 1] = 0;
-                size_t id = messages.len;
-                strings_push(&messages, msg);
-                emit_write(out, id, target);
+                SIRId id = sir_add_string(&ir, msg, strlen(msg));
+                sir_emit_print_string(&ir, id);
+                free(msg);
                 continue;
             }
             fprintf(stderr, "slop-native-backend: unsupported print expression: %s\n", expr);
@@ -491,20 +492,42 @@ static void compile_file(const char* in_path, const char* out_path, Target targe
         exit(1);
     }
 
-    emit_exit(out, target);
+    sir_emit_exit(&ir, 0);
+
+    if (dump_ir) {
+        sir_dump(out, &ir);
+        fclose(out);
+        free(src);
+        sir_module_free(&ir);
+        for (size_t i = 0; i < bindings.len; i++) {
+            free(bindings.data[i].name);
+            free(bindings.data[i].value);
+        }
+        free(bindings.data);
+        return;
+    }
+
+    emit_header(out, target);
+    for (uint32_t i = 0; i < ir.inst_len; i++) {
+        SIRInst* inst = &ir.insts[i];
+        if (inst->op == SIR_OP_PRINT_STRING) {
+            emit_write(out, inst->a, target);
+        } else if (inst->op == SIR_OP_EXIT) {
+            emit_exit(out, target);
+        }
+    }
     fprintf(out, ".section .rodata\n");
-    for (size_t i = 0; i < messages.len; i++) {
-        char* esc = assembly_escape(messages.data[i]);
-        fprintf(out, ".Lmsg%zu:\n", i);
+    for (uint32_t i = 0; i < ir.string_len; i++) {
+        char* esc = assembly_escape(ir.strings[i].data);
+        fprintf(out, ".Lmsg%u:\n", i);
         fprintf(out, "    .ascii \"%s\"\n", esc);
-        fprintf(out, ".set .Lmsg%zu_len, . - .Lmsg%zu\n", i, i);
+        fprintf(out, ".set .Lmsg%u_len, . - .Lmsg%u\n", i, i);
         free(esc);
     }
 
     fclose(out);
     free(src);
-    for (size_t i = 0; i < messages.len; i++) free(messages.data[i]);
-    free(messages.data);
+    sir_module_free(&ir);
     for (size_t i = 0; i < bindings.len; i++) {
         free(bindings.data[i].name);
         free(bindings.data[i].value);
@@ -515,6 +538,7 @@ static void compile_file(const char* in_path, const char* out_path, Target targe
 static void usage(const char* argv0) {
     fprintf(stderr, "Usage: %s <input.slop> <output.s> [target]\n", argv0);
     fprintf(stderr, "Targets: x86_64-linux, aarch64-linux/arm64-linux, armv7-linux/arm-linux, riscv64-linux/rv64-linux.\n");
+    fprintf(stderr, "Use target 'sir' or '--emit-ir' to write the Slop IR dump instead of assembly.\n");
     fprintf(stderr, "Subset: print string/int literals, let string/int constants, print(name).\n");
 }
 
@@ -524,14 +548,23 @@ int main(int argc, char** argv) {
         return 2;
     }
     Target target = TARGET_X86_64_LINUX;
+    bool dump_ir = false;
     if (argc == 4) {
-        if (!parse_target(argv[3], &target)) {
-            fprintf(stderr, "slop-native-backend: unknown target '%s'\n", argv[3]);
-            usage(argv[0]);
-            return 2;
+        if (strcmp(argv[3], "sir") == 0 || strcmp(argv[3], "--emit-ir") == 0) {
+            dump_ir = true;
+        } else {
+            if (!parse_target(argv[3], &target)) {
+                fprintf(stderr, "slop-native-backend: unknown target '%s'\n", argv[3]);
+                usage(argv[0]);
+                return 2;
+            }
         }
     }
-    compile_file(argv[1], argv[2], target);
-    printf("Wrote native assembly %s for %s\n", argv[2], target_name(target));
+    compile_file(argv[1], argv[2], target, dump_ir);
+    if (dump_ir) {
+        printf("Wrote Slop IR %s\n", argv[2]);
+    } else {
+        printf("Wrote native assembly %s for %s\n", argv[2], target_name(target));
+    }
     return 0;
 }

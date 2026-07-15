@@ -393,7 +393,13 @@ gcc -O3 -std=gnu11 -ffast-math -flto -march=native app.c -o app
 
 ## 15. Direct Native Backend MVP
 
-Slop's stable backend is still the portable C backend, but the repository now includes an experimental direct native backend:
+Slop's stable backend is still the portable C backend, but the repository now includes SIR (`slop_ir.h`) and an experimental direct native backend. The MVP native path is now:
+
+```text
+Slop subset -> SIR -> target assembly
+```
+
+Run it:
 
 ```bash
 gcc -O3 -std=gnu11 slop_native_backend.c -o slop-native-backend
@@ -401,10 +407,13 @@ gcc -O3 -std=gnu11 slop_native_backend.c -o slop-native-backend
 as --64 native_backend_demo.s -o native_backend_demo.o
 ld -o native_backend_demo native_backend_demo.o
 ./native_backend_demo
+
+# IR dump:
+./slop-native-backend native_backend_demo.slop native_backend_demo.sir sir
 ```
 
 Current MVP targets: `x86_64-linux`, `aarch64-linux`/`arm64-linux`, `armv7-linux`, and `riscv64-linux`. All use direct Linux `write` and `exit` syscalls. Current source subset: `print("literal")`, integer/string `let`, and `print(name)`. Cross-target assembly/linking requires matching cross-binutils or LLVM tools.
 
-The long-term compatibility model is multi-backend: native targets for platforms where Slop has direct codegen, and the C backend as the universal fallback.
+The long-term compatibility model is multi-backend: native targets for platforms where Slop has direct codegen, and the C backend as the universal fallback. See `SLOP_IR.md` for the IR design and `ROADMAP.md` for the full native compiler roadmap.
 
 Happy coding in Slop! Let's write some insanely high-performance, low-memory code!

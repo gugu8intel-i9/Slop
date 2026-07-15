@@ -23,13 +23,14 @@ The token stream is encoded in compact strings and is parsed from both left and 
 
 ## Direct Native Backend Roadmap
 
-Slop now has a backend-pluggable architecture:
+Slop now has a backend-pluggable architecture centered on **SIR (Slop IR)**, a compact target-neutral intermediate representation:
 
+- **Slop IR (`slop_ir.h`)**: linear, cache-friendly, typed operation stream with small ids for values/strings and explicit side effects.
 - **Portable C backend**: the compatibility backend for every platform with GCC/Clang/MSVC-style C tooling.
 - **Direct native backend MVP**: `slop_native_backend.c` emits x86_64, AArch64/ARM64, ARMv7, and RISC-V64 Linux assembly for a small syscall-only subset, producing ELF executables without emitting C.
 - **Future native targets**: mature object emission, Windows x64 COFF, macOS Mach-O, WebAssembly, richer optimizations, and full C ABI-compatible object files.
 
-The compatibility goal is not to discard C immediately. The innovative path is a tiered backend system: emit native code where Slop has a mature target, and fall back to the portable C backend everywhere else. That keeps Slop compatible while enabling high-performance direct codegen, target-specific optimizations, and eventually linkable object files.
+The compatibility goal is not to discard C immediately. The innovative path is a tiered backend system: lower Slop once into SIR, run shared optimizations there, emit native code where Slop has a mature target, and fall back to the portable C backend everywhere else. That keeps Slop compatible while enabling high-performance direct codegen, target-specific optimizations, and eventually linkable object files.
 
 ---
 

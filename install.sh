@@ -70,6 +70,7 @@ $CC -O3 -std=gnu11 slop_native_backend.c -o "$SLOP_BIN/slop-native-backend"
 # Copy compiler source, runtime headers, REPL, and helper files
 cp compiler.slop "$SLOP_DIR/"
 cp slop_rt.h "$SLOP_INCLUDE/"
+cp slop_ir.h "$SLOP_INCLUDE/"
 cp slop_boot.py "$SLOP_BIN/"
 cp slop_repl.py "$SLOP_BIN/"
 cp slop_convert.py "$SLOP_BIN/"
@@ -175,6 +176,11 @@ elif [ "$CMD" = "native" ]; then
     fi
     BASE="${FILE%.slop}"
     TARGET="${3:-x86_64-linux}"
+    if [ "$TARGET" = "sir" ] || [ "$TARGET" = "--emit-ir" ]; then
+        "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE.sir" sir
+        echo "Wrote Slop IR: $BASE.sir"
+        exit 0
+    fi
     "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE.s" "$TARGET"
 
     AS_CMD=""

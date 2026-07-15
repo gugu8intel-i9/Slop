@@ -69,8 +69,10 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
    - `slop_boot.py` is only a one-time bootstrap bridge used to create the first native compiler binary.
    - After that, the native `slop-compiler` compiles Slop programs — including `compiler.slop` itself — with no Python in the normal compilation path.
 
-14. **Direct Native Backend MVP (`slop-native-backend`)**:
-   - Experimental direct `.slop -> assembly -> ELF` path for x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux.
+14. **Slop IR + Direct Native Backend MVP**:
+   - `slop_ir.h` introduces SIR: a compact, typed, target-neutral IR designed for optimization and multi-backend codegen.
+   - `slop-native-backend` now lowers its MVP subset through SIR before emitting assembly.
+   - Experimental direct `.slop -> SIR -> assembly -> ELF` path for x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux.
    - Keeps the portable C backend as the universal compatibility backend while direct native targets are expanded.
 
 15. **High-Performance C++ Native Bridge (`slop_bridge.hpp`)**:
@@ -190,6 +192,8 @@ We compared both the size of the final compiled executable binary (the program c
 - `slop_boot.py` - One-time bootstrap transpiler used only to build the first native compiler from Slop source.
 - `compiler.slop` - **The self-hosting native Slop compiler/lexer written in Slop itself!**
 - `compiler_v2.slop` - Current self-hosting compiler source; mirrored into `compiler.slop` for the primary install path.
+- `slop_ir.h` / `SLOP_IR.md` - Slop Intermediate Representation: compact shared IR for optimizers and all backends.
+- `ROADMAP.md` - Native compiler roadmap covering IR, optimizers, object files, ABI compatibility, and future targets.
 - `slop_native_backend.c` - Experimental direct native backend: Slop subset to x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux assembly/ELF without emitting C.
 - `native_backend_demo.slop` - Minimal program that demonstrates the direct native backend.
 - `hello.slop` - An example Slop script demonstrating pipeline operations and arrays.
@@ -361,7 +365,7 @@ gcc -O3 -std=gnu11 -ffast-math -flto -march=native hello.c -o hello
 
 ### 15. Run the Direct Native Backend MVP
 
-The normal backend remains the portable, compatible C backend. Slop now also includes an experimental multi-target direct native backend for a small syscall-only subset:
+The normal backend remains the portable, compatible C backend. Slop now also includes SIR, a shared intermediate representation, and an experimental multi-target direct native backend for a small syscall-only subset:
 
 ```bash
 gcc -O3 -std=gnu11 slop_native_backend.c -o slop-native-backend
@@ -369,6 +373,9 @@ gcc -O3 -std=gnu11 slop_native_backend.c -o slop-native-backend
 as --64 native_backend_demo.s -o native_backend_demo.o
 ld -o native_backend_demo native_backend_demo.o
 ./native_backend_demo
+
+# Or inspect SIR directly:
+./slop-native-backend native_backend_demo.slop native_backend_demo.sir sir
 ```
 
 Expected output:
@@ -379,7 +386,7 @@ Hello from Slop's direct native backend
 x86_64 Linux ELF via syscalls
 ```
 
-The backend can also emit `aarch64-linux`, `armv7-linux`, and `riscv64-linux` assembly. Cross-target ELF output requires matching binutils/LLVM tools on the host. The compatibility strategy is multi-backend: direct native backends for speed and control, plus the C backend for maximum portability and C ABI integration.
+The backend can also emit `aarch64-linux`, `armv7-linux`, and `riscv64-linux` assembly. Cross-target ELF output requires matching binutils/LLVM tools on the host. The compatibility strategy is multi-backend: direct native backends for speed and control, plus the C backend for maximum portability and C ABI integration. See `SLOP_IR.md` and `ROADMAP.md` for the full plan.
 
 ### 16. Run the C++ Native Bridge Test
 
