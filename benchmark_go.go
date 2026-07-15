@@ -39,8 +39,8 @@ func main() {
 
     // Do not print or otherwise consume counter. In optimized builds the loop
     // has no observable side effects, so it can be removed completely.
-    elapsed := time.Since(start).Seconds()
-    fmt.Printf("Execution Time: %.6f seconds\n", elapsed)
+    elapsed := time.Since(start)
+    fmt.Printf("Measured Loop Region: %.9f seconds (%d ns)\n", elapsed.Seconds(), elapsed.Nanoseconds())
 
     printRAMUsage()
 }

@@ -94,14 +94,14 @@ Resident Set Size (VmRSS) memory was measured directly from the operating system
 
 ### 📊 Benchmark 1: Dead 10,000,000,000 Counter Loop (Optimized `-O3` / `--release`)
 
-This benchmark intentionally leaves `counter` unused after the loop. In optimized builds the loop has no observable side effects, so GCC/Clang/LLVM-class optimizers can delete the entire 10 billion-iteration loop and the program finishes effectively instantly:
+This benchmark intentionally leaves `counter` unused after the loop. In optimized builds the loop has no observable side effects, so GCC/Clang/LLVM-class optimizers can delete the entire 10 billion-iteration loop. That does **not** mean the program takes literally zero time: the remaining timer calls, startup, dynamic loader, printing, and process teardown still take measurable time. Earlier `0.000000` results were just rounded display output.
 
-| Language | Execution Time | Memory Usage (VmRSS) | CPU Usage |
-| :--- | :--- | :--- | :--- |
-| **Slop (`-O3`)** | **0.000000 seconds** (Instant) | **1,068 KB (1.0 MB)** | ~0% (Instant) |
-| **C++ (`-O3`)** | **0.000000 seconds** (Instant) | **2,064 KB (2.0 MB)** | ~0% (Instant) |
-| **Rust (`--release`)** | **0.000000 seconds** (Instant) | **~3,000 KB (3.0 MB)** | ~0% (Instant) |
-| **Go (`-ldflags="-s -w"`)** | **0.000000 seconds** (Instant) | **~1,200 KB (1.2 MB)** | ~0% (Instant) |
+| Language | Measured loop region | Total harness wall time | Memory Usage (VmRSS) | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **Slop (`-O3`)** | **0.000000093 s (93 ns)** | **0.001603 s** | **1,052 KB (1.0 MB)** | 10B loop deleted by C optimizer |
+| **C++ (`-O3`)** | **0.000000095 s (95 ns)** | **0.002240 s** | **2,060 KB (2.0 MB)** | 10B loop deleted by optimizer |
+| **Rust (`--release`)** | nanosecond-scale expected | non-zero process time | **~3,000 KB (3.0 MB)** | Source included; `rustc` unavailable in this sandbox |
+| **Go (`-ldflags="-s -w"`)** | nanosecond-scale expected | non-zero process time | **~1,200 KB (1.2 MB)** | Source included; `go` unavailable in this sandbox |
 
 ---
 

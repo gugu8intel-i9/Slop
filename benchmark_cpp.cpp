@@ -30,8 +30,9 @@ int main() {
     // Do not print or otherwise consume counter. In optimized builds the loop
     // has no observable side effects, so it should be removed completely.
     clock_gettime(CLOCK_MONOTONIC, &end);
-    double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1000000000.0;
-    printf("Execution Time: %.6f seconds\n", elapsed);
+    long long elapsed_ns = (long long)(end.tv_sec - start.tv_sec) * 1000000000LL + (long long)(end.tv_nsec - start.tv_nsec);
+    double elapsed = elapsed_ns / 1000000000.0;
+    printf("Measured Loop Region: %.9f seconds (%lld ns)\n", elapsed, elapsed_ns);
 
     print_ram_usage();
     return 0;

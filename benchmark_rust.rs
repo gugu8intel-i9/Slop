@@ -26,8 +26,8 @@ fn main() {
 
     // Do not print or otherwise consume counter. In optimized builds the loop
     // has no observable side effects, so it should be removed completely.
-    let elapsed = start.elapsed().as_secs_f64();
-    println!("Execution Time: {:.6} seconds", elapsed);
+    let elapsed = start.elapsed();
+    println!("Measured Loop Region: {:.9} seconds ({} ns)", elapsed.as_secs_f64(), elapsed.as_nanos());
 
     print_ram_usage();
 }
