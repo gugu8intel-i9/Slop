@@ -22,6 +22,8 @@ Slop is an insanely high-performance, lightweight, and low learning-curve langua
 13. [Bridging with C++ & Rust](#13-bridging-with-c--rust)
 14. [Self-Hosting Compiler](#14-self-hosting-compiler)
 15. [Direct Native Backend MVP](#15-direct-native-backend-mvp)
+16. [Slop IR and Full-Language Lowering](#16-slop-ir-and-full-language-lowering)
+17. [Easier-than-Python Learning Path](#17-easier-than-python-learning-path)
 
 ---
 
@@ -415,5 +417,44 @@ ld -o native_backend_demo native_backend_demo.o
 Current MVP targets: `x86_64-linux`, `aarch64-linux`/`arm64-linux`, `armv7-linux`, and `riscv64-linux`. All use direct Linux `write` and `exit` syscalls. Current source subset: `print("literal")`, integer/string `let`, and `print(name)`. Cross-target assembly/linking requires matching cross-binutils or LLVM tools.
 
 The long-term compatibility model is multi-backend: native targets for platforms where Slop has direct codegen, and the C backend as the universal fallback. See `SLOP_IR.md` for the IR design and `ROADMAP.md` for the full native compiler roadmap.
+
+---
+
+## 16. Slop IR and Full-Language Lowering
+
+Slop now has a full-language lowering contract: `slop_lowering.h` and `FULL_LANGUAGE_LOWERING.md`. The goal is to lower every Slop construct into SIR before backend emission:
+
+```text
+Slop syntax -> typed AST -> SIR -> optimizer -> C/native/WASM/object backend
+```
+
+Current implementation pieces:
+
+- `slop_ir.h`: expanded opcode set for locals, arithmetic, control flow, arrays, strings, structs, arena operations, bounds checks, parallel hooks, tensor hooks, and effects.
+- `slop_lowering.h`: inline helper API for lowering full Slop constructs into SIR.
+- `slop_native_backend.c`: MVP native backend already emits assembly from SIR.
+
+See `FULL_LANGUAGE_LOWERING.md` for the lowering table and `ROADMAP.md` for remaining backend milestones.
+
+---
+
+## 17. Easier-than-Python Learning Path
+
+For beginners, start with:
+
+```bash
+cat LEARN_SLOP_IN_10_MINUTES.md
+slop run easy_start.slop
+```
+
+The beginner model is intentionally tiny:
+
+1. `let` creates variables.
+2. `fn` creates functions.
+3. `{ }` creates blocks.
+4. `array[type]` means a list.
+5. Slop compiles to native code.
+
+The compiler/IR handles performance details like arena lifetimes, bounds checks, lowering, and backend selection.
 
 Happy coding in Slop! Let's write some insanely high-performance, low-memory code!

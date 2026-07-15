@@ -1,0 +1,12 @@
+fn greet(name: string) {
+    print("Hello " + name)
+}
+
+fn main(args: array[string]) {
+    let names: array[string] = ["Gugu", "Slop", "World"]
+    let i = 0
+    while i < length(names) {
+        greet(names[i])
+        i = i + 1
+    }
+}

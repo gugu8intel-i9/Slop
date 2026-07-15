@@ -186,6 +186,19 @@ We compared both the size of the final compiled executable binary (the program c
 
 ---
 
+## Learn Slop Fast
+
+Start here if you are new:
+
+```bash
+cat LEARN_SLOP_IN_10_MINUTES.md
+slop run easy_start.slop
+```
+
+Slop's learning rule is: **write simple code; the compiler makes it fast**. The language intentionally avoids JavaScript-style `var`/`let`/`const` confusion and Python runtime type surprises while keeping syntax tiny.
+
+---
+
 ## Directory Structure
 
 - `slop_rt.h` / `slop_rt.c` - The core runtime library containing the Bucket allocator, FFI exports, and print/IO builtins.
@@ -193,6 +206,8 @@ We compared both the size of the final compiled executable binary (the program c
 - `compiler.slop` - **The self-hosting native Slop compiler/lexer written in Slop itself!**
 - `compiler_v2.slop` - Current self-hosting compiler source; mirrored into `compiler.slop` for the primary install path.
 - `slop_ir.h` / `SLOP_IR.md` - Slop Intermediate Representation: compact shared IR for optimizers and all backends.
+- `slop_lowering.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering contract from Slop constructs into SIR.
+- `LEARN_SLOP_IN_10_MINUTES.md` / `easy_start.slop` - beginner-first learning path designed to be easier than Python/JS.
 - `ROADMAP.md` - Native compiler roadmap covering IR, optimizers, object files, ABI compatibility, and future targets.
 - `slop_native_backend.c` - Experimental direct native backend: Slop subset to x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux assembly/ELF without emitting C.
 - `native_backend_demo.slop` - Minimal program that demonstrates the direct native backend.

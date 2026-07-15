@@ -35,9 +35,13 @@ Goal: make every backend consume the same IR.
 - [x] Add compact SIR module structure
 - [x] Add initial SIR opcodes
 - [x] Route native-backend MVP through SIR
-- [ ] Add typed locals and values
-- [ ] Add basic blocks and control-flow graph
-- [ ] Add function IR
+- [x] Add expanded full-language opcode vocabulary
+- [x] Add full-language lowering helper contract (`slop_lowering.h`)
+- [x] Add beginner-first docs and examples
+- [ ] Wire self-hosted compiler parser into SIR lowering
+- [ ] Add typed locals and values to production compiler path
+- [ ] Add basic blocks and control-flow graph to production compiler path
+- [ ] Add function IR in production compiler path
 - [ ] Add textual `.sir` dump/load format
 - [ ] Add IR verifier
 - [ ] Make C backend consume SIR
@@ -48,12 +52,18 @@ Goal: make every backend consume the same IR.
 
 Goal: lower real Slop programs into SIR.
 
-- [ ] Integer arithmetic
-- [ ] Float arithmetic
-- [ ] Boolean ops
-- [ ] `if` / `else`
-- [ ] `while`
-- [ ] functions
+- [x] Lowering contract for integer arithmetic
+- [x] Lowering contract for float arithmetic
+- [x] Lowering contract for Boolean ops
+- [x] Lowering contract for `if` / `else`
+- [x] Lowering contract for `while`
+- [x] Lowering contract for functions
+- [ ] Production parser-to-SIR implementation for integer arithmetic
+- [ ] Production parser-to-SIR implementation for float arithmetic
+- [ ] Production parser-to-SIR implementation for Boolean ops
+- [ ] Production parser-to-SIR implementation for `if` / `else`
+- [ ] Production parser-to-SIR implementation for `while`
+- [ ] Production parser-to-SIR implementation for functions
 - [ ] returns
 - [ ] arrays
 - [ ] strings
