@@ -34,6 +34,7 @@
 #include <string.h>
 
 #include "slop_ir.h"
+#include "slop_ir_tools.h"
 
 typedef struct {
     char* name;
@@ -494,8 +495,14 @@ static void compile_file(const char* in_path, const char* out_path, Target targe
 
     sir_emit_exit(&ir, 0);
 
+    SIRVerifyResult verify = sir_verify_module(&ir, stderr);
+    if (verify.errors) {
+        fprintf(stderr, "slop-native-backend: refusing to emit invalid SIR (%u errors)\n", verify.errors);
+        exit(1);
+    }
+
     if (dump_ir) {
-        sir_dump(out, &ir);
+        sir_write_text(out, &ir);
         fclose(out);
         free(src);
         sir_module_free(&ir);

@@ -28,7 +28,7 @@ Not done yet:
 
 ---
 
-## Phase 1: Shared IR foundation
+## Phase 1: Shared IR foundation ✅ COMPLETE
 
 Goal: make every backend consume the same IR.
 
@@ -38,13 +38,16 @@ Goal: make every backend consume the same IR.
 - [x] Add expanded full-language opcode vocabulary
 - [x] Add full-language lowering helper contract (`slop_lowering.h`)
 - [x] Add beginner-first docs and examples
-- [ ] Wire self-hosted compiler parser into SIR lowering
-- [ ] Add typed locals and values to production compiler path
-- [ ] Add basic blocks and control-flow graph to production compiler path
-- [ ] Add function IR in production compiler path
-- [ ] Add textual `.sir` dump/load format
-- [ ] Add IR verifier
-- [ ] Make C backend consume SIR
+- [x] Add typed locals and values to SIR foundation
+- [x] Add basic block and function IR operations
+- [x] Add textual `.sir` dump/load format with escaped string data
+- [x] Add single-pass IR verifier
+- [x] Add SIR effect/terminator classifier for optimization safety
+- [x] Add stable SIR fingerprinting for cache/reproducibility checks
+- [x] Add MVP SIR C backend emitter (`slop_sir_c_backend.h`)
+- [x] Keep native backend consuming SIR before assembly emission
+
+Phase 1 is complete as the shared IR foundation. Production migration of the full self-hosted compiler into SIR is tracked in Phase 2 because it is full-language lowering work, not foundation work.
 
 ---
 

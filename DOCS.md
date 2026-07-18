@@ -431,6 +431,8 @@ Slop syntax -> typed AST -> SIR -> optimizer -> C/native/WASM/object backend
 Current implementation pieces:
 
 - `slop_ir.h`: expanded opcode set for locals, arithmetic, control flow, arrays, strings, structs, arena operations, bounds checks, parallel hooks, tensor hooks, and effects.
+- `slop_ir_tools.h`: verifier, textual `.sir` dump/load, effect classification, terminator classification, and stable fingerprints.
+- `slop_sir_c_backend.h`: MVP C backend emitter that consumes SIR.
 - `slop_lowering.h`: inline helper API for lowering full Slop constructs into SIR.
 - `slop_native_backend.c`: MVP native backend already emits assembly from SIR.
 

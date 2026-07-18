@@ -21,6 +21,22 @@ The goal is to stop every backend from becoming its own compiler. The long-term 
        WebAssembly/WASI
 ```
 
+## Phase 1 completion
+
+Phase 1 now includes:
+
+- expanded full-language opcode vocabulary
+- typed values through instruction result types and lowering helpers
+- function/block IR operations
+- single-pass verifier (`sir_verify_module`)
+- side-effect and terminator classification
+- stable FNV-1a module fingerprinting
+- textual `.sir` writer/loader with escaped string data
+- MVP SIR -> C backend emitter
+- native backend validation before assembly emission
+
+This gives Slop a real backend contract: C/native/WASM/object emitters can consume SIR instead of duplicating frontend logic.
+
 ## What exists now
 
 `slop_ir.h` provides the first compact IR module:

@@ -221,8 +221,8 @@ Slop's learning rule is: **write simple code; the compiler makes it fast**. The 
 - `slop_boot.py` - One-time bootstrap transpiler used only as fallback when no prebuilt compiler exists for the platform.
 - `compiler.slop` - **The self-hosting native Slop compiler/lexer written in Slop itself!**
 - `compiler_v2.slop` - Current self-hosting compiler source; mirrored into `compiler.slop` for the primary install path.
-- `slop_ir.h` / `SLOP_IR.md` - Slop Intermediate Representation: compact shared IR for optimizers and all backends.
-- `slop_lowering.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering contract from Slop constructs into SIR.
+- `slop_ir.h` / `slop_ir_tools.h` / `SLOP_IR.md` - Slop Intermediate Representation, verifier, textual dump/load, fingerprints, and backend-safe effect classification.
+- `slop_lowering.h` / `slop_sir_c_backend.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering contract and MVP SIR-consuming C backend.
 - `LEARN_SLOP_IN_10_MINUTES.md` / `easy_start.slop` - beginner-first learning path designed to be easier than Python/JS.
 - `ROADMAP.md` - Native compiler roadmap covering IR, optimizers, object files, ABI compatibility, and future targets.
 - `slop_native_backend.c` - Experimental direct native backend: Slop subset to x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux assembly/ELF without emitting C.
