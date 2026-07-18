@@ -27,6 +27,8 @@ static inline bool sir_op_has_side_effect(SIROp op) {
         case SIR_OP_FIELD_SET:
         case SIR_OP_PARALLEL_FOR:
         case SIR_OP_TENSOR_OP:
+        case SIR_OP_GPU_KERNEL:
+        case SIR_OP_RAW_EMIT:
         case SIR_OP_PRINT_I64:
         case SIR_OP_PRINT_F64:
         case SIR_OP_PRINT_BOOL:
@@ -238,6 +240,12 @@ static inline bool sir_op_from_name(const char* name, SIROp* out) {
     if (strcmp(name, "field.set") == 0) { *out = SIR_OP_FIELD_SET; return true; }
     if (strcmp(name, "parallel.for") == 0) { *out = SIR_OP_PARALLEL_FOR; return true; }
     if (strcmp(name, "tensor.op") == 0) { *out = SIR_OP_TENSOR_OP; return true; }
+    if (strcmp(name, "gpu.kernel") == 0) { *out = SIR_OP_GPU_KERNEL; return true; }
+    if (strcmp(name, "match.begin") == 0) { *out = SIR_OP_MATCH_BEGIN; return true; }
+    if (strcmp(name, "match.case") == 0) { *out = SIR_OP_MATCH_CASE; return true; }
+    if (strcmp(name, "match.end") == 0) { *out = SIR_OP_MATCH_END; return true; }
+    if (strcmp(name, "list.comprehension") == 0) { *out = SIR_OP_LIST_COMPREHENSION; return true; }
+    if (strcmp(name, "raw.emit") == 0) { *out = SIR_OP_RAW_EMIT; return true; }
     if (strcmp(name, "print.i64") == 0) { *out = SIR_OP_PRINT_I64; return true; }
     if (strcmp(name, "print.f64") == 0) { *out = SIR_OP_PRINT_F64; return true; }
     if (strcmp(name, "print.bool") == 0) { *out = SIR_OP_PRINT_BOOL; return true; }
@@ -247,7 +255,6 @@ static inline bool sir_op_from_name(const char* name, SIROp* out) {
     if (strcmp(name, "exit") == 0) { *out = SIR_OP_EXIT; return true; }
     return false;
 }
-
 static inline char* sir_unescape_quoted(const char* q, uint32_t* out_len) {
     if (!q || *q != '"') return NULL;
     q++;

@@ -113,6 +113,14 @@ typedef enum {
     // Parallel/tensor hooks
     SIR_OP_PARALLEL_FOR,
     SIR_OP_TENSOR_OP,
+    SIR_OP_GPU_KERNEL,
+
+    // High-level lowering markers retained for tools/debug until lowered away
+    SIR_OP_MATCH_BEGIN,
+    SIR_OP_MATCH_CASE,
+    SIR_OP_MATCH_END,
+    SIR_OP_LIST_COMPREHENSION,
+    SIR_OP_RAW_EMIT,
 
     // Effects
     SIR_OP_PRINT_I64,
@@ -314,6 +322,12 @@ static inline const char* sir_op_name(SIROp op) {
         case SIR_OP_FIELD_SET: return "field.set";
         case SIR_OP_PARALLEL_FOR: return "parallel.for";
         case SIR_OP_TENSOR_OP: return "tensor.op";
+        case SIR_OP_GPU_KERNEL: return "gpu.kernel";
+        case SIR_OP_MATCH_BEGIN: return "match.begin";
+        case SIR_OP_MATCH_CASE: return "match.case";
+        case SIR_OP_MATCH_END: return "match.end";
+        case SIR_OP_LIST_COMPREHENSION: return "list.comprehension";
+        case SIR_OP_RAW_EMIT: return "raw.emit";
         case SIR_OP_PRINT_I64: return "print.i64";
         case SIR_OP_PRINT_F64: return "print.f64";
         case SIR_OP_PRINT_BOOL: return "print.bool";

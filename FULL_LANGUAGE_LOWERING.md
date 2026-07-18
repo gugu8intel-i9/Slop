@@ -28,6 +28,10 @@ Every backend gets the same optimized IR.
        WASM/object backends
 ```
 
+## Phase 2 completion
+
+Phase 2 is complete as the full-language lowering layer: every Slop construct has a SIR lowering helper and documented mapping. Production compiler migration from direct C emission to SIR emission remains the next implementation phase.
+
 ## Current implementation status
 
 Implemented now:
@@ -36,11 +40,13 @@ Implemented now:
 - `slop_lowering.h`: first full-language lowering helper API
 - `slop_native_backend.c`: MVP native backend lowers through SIR before target assembly
 - `sir` dump mode in the native backend
+- `slop_sir_optimizer.h`: Phase-2 fast pass for constant folding and pure dead-value cleanup
+- `slop_sir_c_backend.h`: MVP C backend that consumes SIR directly
 
 Still being wired into the self-hosted compiler:
 
 - replacing direct C-string emission with SIR emission
-- making C backend consume SIR
+- expanding the SIR-consuming C backend from MVP subset to all SIR ops
 - making native backends consume the full SIR set
 
 ## Lowering map
