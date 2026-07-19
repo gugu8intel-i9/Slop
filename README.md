@@ -201,6 +201,24 @@ Important distinction: the stable portable backend still emits C, so compiling g
 
 ---
 
+## Optional Unsafe Low-Level Mode
+
+Slop stays safe and easy by default, but systems programmers can opt into explicit low-level hardware control. These APIs are intentionally named with `unsafe_`, `mmio_`, `cpu_`, `gpu_`, `device_`, and `ram_` prefixes so dangerous code is obvious.
+
+```slop
+let cell = 0
+let addr = addr_of(cell)
+unsafe_store64(addr, 1337)
+print(unsafe_load64(addr))
+cpu_fence()
+cpu_prefetch(addr)
+gpu_fence()
+```
+
+Available controls include raw RAM loads/stores, MMIO register reads/writes, CPU cycle counters, fences, spin-loop relax hints, prefetch, RAM copy/zero, and device/GPU fences. See `LOW_LEVEL.md` and `low_level_demo.slop`.
+
+---
+
 ## Native Toolchain Phase 4-7 MVP
 
 Slop now includes the implementation surface for the remaining native toolchain phases:
@@ -251,6 +269,7 @@ Slop's learning rule is: **write simple code; the compiler makes it fast**. The 
 - `slop_ir.h` / `slop_ir_tools.h` / `SLOP_IR.md` - Slop Intermediate Representation, verifier, textual dump/load, fingerprints, and backend-safe effect classification.
 - `slop_lowering.h` / `slop_sir_optimizer.h` / `slop_sir_c_backend.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering layer, phase-3 high-performance optimizer, and MVP SIR-consuming C backend.
 - `LEARN_SLOP_IN_10_MINUTES.md` / `SLOP_CHEATSHEET.md` / `easy_start.slop` - beginner-first learning path designed to be easier than Python/JS.
+- `LOW_LEVEL.md` / `slop_lowlevel.h` / `low_level_demo.slop` - optional unsafe low-level RAM/MMIO/CPU/GPU/device control layer.
 - `SIR_OPTIMIZER.md` - Phase-3 optimizer docs: linear folding, DCE, hash CSE, string fusion, branch folding, jump cleanup, bounds-check cleanup, SEAA compression, fixed-point rounds, direct ELF fast path, and parallel safety.
 - `slop_native_codegen.h` / `slop_object_link.h` / `slop_runtime_abi.h` / `slop_phase4_7.h` - Phase 4-7 native backend, object/link, ABI, and tooling surface.
 - `ROADMAP.md` - Native compiler roadmap covering IR, optimizers, object files, ABI compatibility, and future targets.

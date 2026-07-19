@@ -193,6 +193,20 @@ static inline void slop_lower_print_string_value(SlopLowering* l, SIRId value) {
 static inline SIRId slop_lower_read_file(SlopLowering* l, SIRId path) { SIRId dst = sir_new_value(l->module); SIRInst* inst = sir_emit(l->module, SIR_OP_READ_FILE); inst->type = SIR_TYPE_STRING; inst->dst = dst; inst->a = path; return dst; }
 static inline void slop_lower_write_file(SlopLowering* l, SIRId path, SIRId content) { SIRInst* inst = sir_emit(l->module, SIR_OP_WRITE_FILE); inst->a = path; inst->b = content; }
 
+// ---------- Optional unsafe low-level lowering ----------
+static inline SIRId slop_lower_unsafe_load(SlopLowering* l, SIRId addr, uint32_t bits) { SIRId dst = sir_new_value(l->module); SIRInst* inst = sir_emit(l->module, SIR_OP_UNSAFE_LOAD); inst->type = SIR_TYPE_I64; inst->dst = dst; inst->a = addr; inst->imm = bits; return dst; }
+static inline void slop_lower_unsafe_store(SlopLowering* l, SIRId addr, SIRId value, uint32_t bits) { SIRInst* inst = sir_emit(l->module, SIR_OP_UNSAFE_STORE); inst->a = addr; inst->b = value; inst->imm = bits; }
+static inline SIRId slop_lower_mmio_read32(SlopLowering* l, SIRId addr) { SIRId dst = sir_new_value(l->module); SIRInst* inst = sir_emit(l->module, SIR_OP_MMIO_READ); inst->type = SIR_TYPE_I64; inst->dst = dst; inst->a = addr; inst->imm = 32; return dst; }
+static inline void slop_lower_mmio_write32(SlopLowering* l, SIRId addr, SIRId value) { SIRInst* inst = sir_emit(l->module, SIR_OP_MMIO_WRITE); inst->a = addr; inst->b = value; inst->imm = 32; }
+static inline void slop_lower_cpu_fence(SlopLowering* l) { sir_emit(l->module, SIR_OP_CPU_FENCE); }
+static inline void slop_lower_cpu_relax(SlopLowering* l) { sir_emit(l->module, SIR_OP_CPU_RELAX); }
+static inline void slop_lower_cpu_prefetch(SlopLowering* l, SIRId addr) { SIRInst* inst = sir_emit(l->module, SIR_OP_CPU_PREFETCH); inst->a = addr; }
+static inline SIRId slop_lower_cpu_cycles(SlopLowering* l) { SIRId dst = sir_new_value(l->module); SIRInst* inst = sir_emit(l->module, SIR_OP_CPU_CYCLES); inst->type = SIR_TYPE_I64; inst->dst = dst; return dst; }
+static inline void slop_lower_device_fence(SlopLowering* l) { sir_emit(l->module, SIR_OP_DEVICE_FENCE); }
+static inline void slop_lower_gpu_fence(SlopLowering* l) { sir_emit(l->module, SIR_OP_GPU_FENCE); }
+static inline void slop_lower_ram_copy(SlopLowering* l, SIRId dst, SIRId src, SIRId bytes) { SIRInst* inst = sir_emit(l->module, SIR_OP_RAM_COPY); inst->a = dst; inst->b = src; inst->c = bytes; }
+static inline void slop_lower_ram_zero(SlopLowering* l, SIRId dst, SIRId bytes) { SIRInst* inst = sir_emit(l->module, SIR_OP_RAM_ZERO); inst->a = dst; inst->b = bytes; }
+
 // ---------- SEAA arenas ----------
 static inline SIRId slop_lower_arena_save(SlopLowering* l) { SIRId dst = sir_new_value(l->module); SIRInst* inst = sir_emit(l->module, SIR_OP_ARENA_SAVE); inst->dst = dst; l->current_arena_scope = dst; return dst; }
 static inline void slop_lower_arena_restore(SlopLowering* l, SIRId scope) { SIRInst* inst = sir_emit(l->module, SIR_OP_ARENA_RESTORE); inst->a = scope; }

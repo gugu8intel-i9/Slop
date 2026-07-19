@@ -122,6 +122,20 @@ typedef enum {
     SIR_OP_LIST_COMPREHENSION,
     SIR_OP_RAW_EMIT,
 
+    // Explicit unsafe/hardware effects
+    SIR_OP_UNSAFE_LOAD,
+    SIR_OP_UNSAFE_STORE,
+    SIR_OP_MMIO_READ,
+    SIR_OP_MMIO_WRITE,
+    SIR_OP_CPU_FENCE,
+    SIR_OP_CPU_RELAX,
+    SIR_OP_CPU_PREFETCH,
+    SIR_OP_CPU_CYCLES,
+    SIR_OP_DEVICE_FENCE,
+    SIR_OP_GPU_FENCE,
+    SIR_OP_RAM_COPY,
+    SIR_OP_RAM_ZERO,
+
     // Effects
     SIR_OP_PRINT_I64,
     SIR_OP_PRINT_F64,
@@ -328,6 +342,18 @@ static inline const char* sir_op_name(SIROp op) {
         case SIR_OP_MATCH_END: return "match.end";
         case SIR_OP_LIST_COMPREHENSION: return "list.comprehension";
         case SIR_OP_RAW_EMIT: return "raw.emit";
+        case SIR_OP_UNSAFE_LOAD: return "unsafe.load";
+        case SIR_OP_UNSAFE_STORE: return "unsafe.store";
+        case SIR_OP_MMIO_READ: return "mmio.read";
+        case SIR_OP_MMIO_WRITE: return "mmio.write";
+        case SIR_OP_CPU_FENCE: return "cpu.fence";
+        case SIR_OP_CPU_RELAX: return "cpu.relax";
+        case SIR_OP_CPU_PREFETCH: return "cpu.prefetch";
+        case SIR_OP_CPU_CYCLES: return "cpu.cycles";
+        case SIR_OP_DEVICE_FENCE: return "device.fence";
+        case SIR_OP_GPU_FENCE: return "gpu.fence";
+        case SIR_OP_RAM_COPY: return "ram.copy";
+        case SIR_OP_RAM_ZERO: return "ram.zero";
         case SIR_OP_PRINT_I64: return "print.i64";
         case SIR_OP_PRINT_F64: return "print.f64";
         case SIR_OP_PRINT_BOOL: return "print.bool";

@@ -29,6 +29,18 @@ static inline bool sir_op_has_side_effect(SIROp op) {
         case SIR_OP_TENSOR_OP:
         case SIR_OP_GPU_KERNEL:
         case SIR_OP_RAW_EMIT:
+        case SIR_OP_UNSAFE_LOAD:
+        case SIR_OP_UNSAFE_STORE:
+        case SIR_OP_MMIO_READ:
+        case SIR_OP_MMIO_WRITE:
+        case SIR_OP_CPU_FENCE:
+        case SIR_OP_CPU_RELAX:
+        case SIR_OP_CPU_PREFETCH:
+        case SIR_OP_CPU_CYCLES:
+        case SIR_OP_DEVICE_FENCE:
+        case SIR_OP_GPU_FENCE:
+        case SIR_OP_RAM_COPY:
+        case SIR_OP_RAM_ZERO:
         case SIR_OP_PRINT_I64:
         case SIR_OP_PRINT_F64:
         case SIR_OP_PRINT_BOOL:
@@ -246,6 +258,18 @@ static inline bool sir_op_from_name(const char* name, SIROp* out) {
     if (strcmp(name, "match.end") == 0) { *out = SIR_OP_MATCH_END; return true; }
     if (strcmp(name, "list.comprehension") == 0) { *out = SIR_OP_LIST_COMPREHENSION; return true; }
     if (strcmp(name, "raw.emit") == 0) { *out = SIR_OP_RAW_EMIT; return true; }
+    if (strcmp(name, "unsafe.load") == 0) { *out = SIR_OP_UNSAFE_LOAD; return true; }
+    if (strcmp(name, "unsafe.store") == 0) { *out = SIR_OP_UNSAFE_STORE; return true; }
+    if (strcmp(name, "mmio.read") == 0) { *out = SIR_OP_MMIO_READ; return true; }
+    if (strcmp(name, "mmio.write") == 0) { *out = SIR_OP_MMIO_WRITE; return true; }
+    if (strcmp(name, "cpu.fence") == 0) { *out = SIR_OP_CPU_FENCE; return true; }
+    if (strcmp(name, "cpu.relax") == 0) { *out = SIR_OP_CPU_RELAX; return true; }
+    if (strcmp(name, "cpu.prefetch") == 0) { *out = SIR_OP_CPU_PREFETCH; return true; }
+    if (strcmp(name, "cpu.cycles") == 0) { *out = SIR_OP_CPU_CYCLES; return true; }
+    if (strcmp(name, "device.fence") == 0) { *out = SIR_OP_DEVICE_FENCE; return true; }
+    if (strcmp(name, "gpu.fence") == 0) { *out = SIR_OP_GPU_FENCE; return true; }
+    if (strcmp(name, "ram.copy") == 0) { *out = SIR_OP_RAM_COPY; return true; }
+    if (strcmp(name, "ram.zero") == 0) { *out = SIR_OP_RAM_ZERO; return true; }
     if (strcmp(name, "print.i64") == 0) { *out = SIR_OP_PRINT_I64; return true; }
     if (strcmp(name, "print.f64") == 0) { *out = SIR_OP_PRINT_F64; return true; }
     if (strcmp(name, "print.bool") == 0) { *out = SIR_OP_PRINT_BOOL; return true; }
@@ -254,8 +278,7 @@ static inline bool sir_op_from_name(const char* name, SIROp* out) {
     if (strcmp(name, "write.file") == 0) { *out = SIR_OP_WRITE_FILE; return true; }
     if (strcmp(name, "exit") == 0) { *out = SIR_OP_EXIT; return true; }
     return false;
-}
-static inline char* sir_unescape_quoted(const char* q, uint32_t* out_len) {
+}static inline char* sir_unescape_quoted(const char* q, uint32_t* out_len) {
     if (!q || *q != '"') return NULL;
     q++;
     size_t cap = strlen(q) + 1;

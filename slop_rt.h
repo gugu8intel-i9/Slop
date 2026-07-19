@@ -1009,4 +1009,6 @@ static inline void slop_print_bool(bool val) {
     printf("%s\n", val ? "true" : "false");
 }
 
+#include "slop_lowlevel.h"
+
 #endif

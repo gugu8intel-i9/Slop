@@ -1,0 +1,20 @@
+fn main(args: array[string]) {
+    print("Optional unsafe low-level mode")
+
+    let cell = 0
+    let addr = addr_of(cell)
+
+    unsafe_store64(addr, 1337)
+    print(unsafe_load64(addr))
+
+    cpu_prefetch(addr)
+    cpu_fence()
+
+    ram_zero(addr, 8)
+    print(unsafe_load64(addr))
+
+    let start = cpu_cycles()
+    cpu_relax()
+    let stop = cpu_cycles()
+    print(stop - start)
+}

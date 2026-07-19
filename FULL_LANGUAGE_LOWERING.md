@@ -80,6 +80,7 @@ Still being wired into the self-hosted compiler:
 | `parallel` | `parallel.for` / runtime worker lowering |
 | SEAA arena scope | `arena.save`, `arena.alloc`, `arena.restore` |
 | file IO | `read.file`, `write.file` effects |
+| unsafe low-level | `unsafe.load/store`, `mmio.read/write`, `cpu.*`, `gpu.fence`, `ram.copy/zero` effects |
 | tensors/GPU | `tensor.op` / backend runtime hook |
 
 ## High-performance lowering principles

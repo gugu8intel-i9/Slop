@@ -794,6 +794,26 @@ class CodeGenerator:
             "peek_int": ("int", ["int"]),
             "poke_int": ("void", ["int", "int"]),
             "get_address": ("int", ["int"]),
+            "addr_of": ("int", ["int"]),
+            "unsafe_load8": ("int", ["int"]),
+            "unsafe_load16": ("int", ["int"]),
+            "unsafe_load32": ("int", ["int"]),
+            "unsafe_load64": ("int", ["int"]),
+            "unsafe_store8": ("void", ["int", "int"]),
+            "unsafe_store16": ("void", ["int", "int"]),
+            "unsafe_store32": ("void", ["int", "int"]),
+            "unsafe_store64": ("void", ["int", "int"]),
+            "mmio_read32": ("int", ["int"]),
+            "mmio_write32": ("void", ["int", "int"]),
+            "cpu_cycles": ("int", []),
+            "cpu_fence": ("void", []),
+            "cpu_relax": ("void", []),
+            "cpu_prefetch": ("void", ["int"]),
+            "device_fence": ("void", []),
+            "gpu_fence": ("void", []),
+            "ram_copy": ("void", ["int", "int", "int"]),
+            "ram_zero": ("void", ["int", "int"]),
+            "component_base": ("int", ["int"]),
             "slop_pack": ("string", ["array[string]"]),
             "slop_unpack": ("array[string]", ["string"]),
             "spawn": ("void", ["string"]),
@@ -1471,9 +1491,32 @@ int main(int argc, char** argv) {
                 addr_code, _ = self.generate_expression(expr.args[0])
                 val_code, _ = self.generate_expression(expr.args[1])
                 return f"(*(volatile uint64_t*)({addr_code}) = (uint64_t)({val_code}))", "void"
-            elif expr.name == "get_address":
+            elif expr.name == "get_address" or expr.name == "addr_of":
                 arg_code, _ = self.generate_expression(expr.args[0])
                 return f"((int64_t)&({arg_code}))", "int"
+            elif expr.name in ["unsafe_load8", "unsafe_load16", "unsafe_load32", "unsafe_load64", "mmio_read32", "component_base"]:
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_{expr.name}((uintptr_t)({arg_code}))", "int"
+            elif expr.name in ["unsafe_store8", "unsafe_store16", "unsafe_store32", "unsafe_store64", "mmio_write32"]:
+                addr_code, _ = self.generate_expression(expr.args[0])
+                val_code, _ = self.generate_expression(expr.args[1])
+                return f"slop_{expr.name}((uintptr_t)({addr_code}), (uint64_t)({val_code}))", "void"
+            elif expr.name == "cpu_cycles":
+                return "((int64_t)slop_cpu_cycles())", "int"
+            elif expr.name in ["cpu_fence", "cpu_relax", "device_fence", "gpu_fence"]:
+                return f"slop_{expr.name}()", "void"
+            elif expr.name == "cpu_prefetch":
+                arg_code, _ = self.generate_expression(expr.args[0])
+                return f"slop_cpu_prefetch((uintptr_t)({arg_code}))", "void"
+            elif expr.name == "ram_copy":
+                dst_code, _ = self.generate_expression(expr.args[0])
+                src_code, _ = self.generate_expression(expr.args[1])
+                n_code, _ = self.generate_expression(expr.args[2])
+                return f"slop_ram_copy((uintptr_t)({dst_code}), (uintptr_t)({src_code}), (uint64_t)({n_code}))", "void"
+            elif expr.name == "ram_zero":
+                dst_code, _ = self.generate_expression(expr.args[0])
+                n_code, _ = self.generate_expression(expr.args[1])
+                return f"slop_ram_zero((uintptr_t)({dst_code}), (uint64_t)({n_code}))", "void"
                 
             elif expr.name == "print":
                 arg_code, arg_type = self.generate_expression(expr.args[0])

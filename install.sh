@@ -91,6 +91,7 @@ fi
 # Copy compiler source, runtime headers, REPL, and helper files
 cp compiler.slop "$SLOP_DIR/"
 cp slop_rt.h "$SLOP_INCLUDE/"
+cp slop_lowlevel.h "$SLOP_INCLUDE/"
 cp slop_ir.h "$SLOP_INCLUDE/"
 cp slop_lowering.h "$SLOP_INCLUDE/"
 cp slop_ir_tools.h "$SLOP_INCLUDE/"
@@ -110,7 +111,7 @@ cp slop_fmt.py "$SLOP_BIN/"
 
 # Copy example/demo Slop programs so users can run them immediately
 mkdir -p "$SLOP_DIR/examples"
-cp hello.slop easy_start.slop native_backend_demo.slop complex_syntax.slop parallel_processing.slop gpu_compute.slop \
+cp hello.slop easy_start.slop low_level_demo.slop native_backend_demo.slop complex_syntax.slop parallel_processing.slop gpu_compute.slop \
    unified_parallel.slop benchmark_seq.slop benchmark_par.slop "$SLOP_DIR/examples/" 2>/dev/null || true
 
 # Create the beautiful high-level "slop" command runner script

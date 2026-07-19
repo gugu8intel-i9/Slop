@@ -1094,6 +1094,154 @@ fn gen_primary(tokens: array[string], pos: int, var_types: string, func_names: s
                 push(result, int_to_string(pos))
                 return result
             }
+            if name == "addr_of" {
+                let result: array[string] = []
+                push(result, "((int64_t)&(" + args + "))")
+                push(result, "int")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "unsafe_load8" {
+                let result: array[string] = []
+                push(result, "((int64_t)slop_unsafe_load8((uintptr_t)(" + args + ")))")
+                push(result, "int")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "unsafe_load16" {
+                let result: array[string] = []
+                push(result, "((int64_t)slop_unsafe_load16((uintptr_t)(" + args + ")))")
+                push(result, "int")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "unsafe_load32" {
+                let result: array[string] = []
+                push(result, "((int64_t)slop_unsafe_load32((uintptr_t)(" + args + ")))")
+                push(result, "int")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "unsafe_load64" {
+                let result: array[string] = []
+                push(result, "((int64_t)slop_unsafe_load64((uintptr_t)(" + args + ")))")
+                push(result, "int")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "mmio_read32" {
+                let result: array[string] = []
+                push(result, "((int64_t)slop_mmio_read32((uintptr_t)(" + args + ")))")
+                push(result, "int")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "component_base" {
+                let result: array[string] = []
+                push(result, "((int64_t)slop_component_base((uintptr_t)(" + args + ")))")
+                push(result, "int")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "unsafe_store8" {
+                let parts = split_first(args, ", ")
+                let result: array[string] = []
+                push(result, "slop_unsafe_store8((uintptr_t)(" + parts[0] + "), (uint8_t)(" + parts[1] + "))")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "unsafe_store16" {
+                let parts = split_first(args, ", ")
+                let result: array[string] = []
+                push(result, "slop_unsafe_store16((uintptr_t)(" + parts[0] + "), (uint16_t)(" + parts[1] + "))")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "unsafe_store32" {
+                let parts = split_first(args, ", ")
+                let result: array[string] = []
+                push(result, "slop_unsafe_store32((uintptr_t)(" + parts[0] + "), (uint32_t)(" + parts[1] + "))")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "unsafe_store64" {
+                let parts = split_first(args, ", ")
+                let result: array[string] = []
+                push(result, "slop_unsafe_store64((uintptr_t)(" + parts[0] + "), (uint64_t)(" + parts[1] + "))")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "mmio_write32" {
+                let parts = split_first(args, ", ")
+                let result: array[string] = []
+                push(result, "slop_mmio_write32((uintptr_t)(" + parts[0] + "), (uint32_t)(" + parts[1] + "))")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "cpu_cycles" {
+                let result: array[string] = []
+                push(result, "((int64_t)slop_cpu_cycles())")
+                push(result, "int")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "cpu_fence" {
+                let result: array[string] = []
+                push(result, "slop_cpu_fence()")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "cpu_relax" {
+                let result: array[string] = []
+                push(result, "slop_cpu_relax()")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "cpu_prefetch" {
+                let result: array[string] = []
+                push(result, "slop_cpu_prefetch((uintptr_t)(" + args + "))")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "device_fence" {
+                let result: array[string] = []
+                push(result, "slop_device_fence()")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "gpu_fence" {
+                let result: array[string] = []
+                push(result, "slop_gpu_fence()")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "ram_copy" {
+                let p1 = split_first(args, ", ")
+                let p2 = split_first(p1[1], ", ")
+                let result: array[string] = []
+                push(result, "slop_ram_copy((uintptr_t)(" + p1[0] + "), (uintptr_t)(" + p2[0] + "), (uint64_t)(" + p2[1] + "))")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
+            if name == "ram_zero" {
+                let parts = split_first(args, ", ")
+                let result: array[string] = []
+                push(result, "slop_ram_zero((uintptr_t)(" + parts[0] + "), (uint64_t)(" + parts[1] + "))")
+                push(result, "void")
+                push(result, int_to_string(pos))
+                return result
+            }
             # struct constructor
             if arr_find(struct_names, name) >= 0 {
                 let fields = arr_get(struct_fields, arr_find(struct_names, name))

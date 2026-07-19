@@ -477,4 +477,22 @@ slop native native_backend_demo.slop x86_64-linux-elf
 
 The `x86_64-linux-elf` target emits executable bytes directly for the current syscall subset. Other targets emit assembly and use cross-binutils when installed.
 
+---
+
+## 19. Optional Unsafe Low-Level Mode
+
+Normal Slop is safe and beginner-friendly. Low-level control is opt-in through explicitly named functions:
+
+```slop
+let cell = 0
+let addr = addr_of(cell)
+unsafe_store64(addr, 1337)
+print(unsafe_load64(addr))
+cpu_fence()
+cpu_prefetch(addr)
+gpu_fence()
+```
+
+Use this for drivers, embedded/MMIO experiments, allocators, hardware labs, and runtime/GPU synchronization. See `LOW_LEVEL.md`.
+
 Happy coding in Slop! Let's write some insanely high-performance, low-memory code!
