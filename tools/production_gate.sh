@@ -76,6 +76,13 @@ $CC -O3 -std=gnu11 "$TMP/sir_pipeline_demo.c" -o "$TMP/sir_pipeline_demo_c"
 grep -q "SIR pipeline direct from Slop" "$TMP/sir_pipeline_demo_c.out"
 grep -q "C and ELF backends" "$TMP/sir_pipeline_demo_elf.out"
 
+
+printf '\n== SIR-first core control-flow pipeline ==\n'
+"$PREBUILT_PIPELINE" sir_core_demo.slop "$TMP/sir_core_demo.c" c
+$CC -O3 -std=gnu11 "$TMP/sir_core_demo.c" -o "$TMP/sir_core_demo_c"
+"$TMP/sir_core_demo_c" > "$TMP/sir_core_demo_c.out"
+grep -q "99" "$TMP/sir_core_demo_c.out"
+
 printf '\n== phase 4-7 smoke ==\n'
 tools/phase4_7_smoke.sh
 

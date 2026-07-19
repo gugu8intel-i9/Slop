@@ -1,0 +1,12 @@
+fn main(args: array[string]) {
+    let x = 0
+    while x < 3 {
+        print(x)
+        x = x + 1
+    }
+    if x == 3 {
+        print(99)
+    } else {
+        print(0)
+    }
+}

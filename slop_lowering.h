@@ -119,6 +119,16 @@ static inline SIRId slop_lower_let(SlopLowering* l, const char* name, SIRType ty
     return sir_emit_local_declare(l->module, name_id, type, init);
 }
 
+
+static inline SIRId slop_lower_local_get(SlopLowering* l, SIRId local, SIRType type) {
+    SIRId dst = sir_new_value(l->module);
+    SIRInst* inst = sir_emit(l->module, SIR_OP_LOCAL_GET);
+    inst->type = type;
+    inst->dst = dst;
+    inst->a = local;
+    return dst;
+}
+
 static inline void slop_lower_assign(SlopLowering* l, SIRId local, SIRId value) { sir_emit_local_set(l->module, local, value); }
 
 // ---------- Arithmetic / logic ----------
