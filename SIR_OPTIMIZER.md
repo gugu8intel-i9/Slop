@@ -13,13 +13,17 @@ Slop -> SIR -> optimizer -> C/native/WASM/object backend
 `slop_sir_optimizer.h` implements:
 
 - constant folding
-- algebraic simplification
+- algebraic simplification / strength reduction
 - copy propagation
-- common subexpression elimination
+- common subexpression elimination, including commutative expressions
+- string literal fusion (`"a" + "b" -> "ab"`)
+- branch folding when conditions are compile-time constants
 - side-effect-safe dead pure value cleanup
 - NOP compaction
 - duplicate bounds-check elimination
+- proven constant bounds-check elimination
 - empty SEAA arena scope compression
+- fixed-point optimization rounds
 - parallel-safety classification
 
 ## Why this is novel for Slop
@@ -72,7 +76,11 @@ copies_propagated
 pure_nops_inserted
 nops_compacted
 bounds_checks_removed
+proven_bounds_removed
+branches_folded
+strings_fused
 arena_scopes_compressed
+fixed_point_rounds
 ```
 
 ## Example
@@ -102,13 +110,19 @@ Verified optimizer stats from the Phase-3 test:
 
 ```text
 folded=4 algebra=0 cse=3 copies=0 dce=3 compact=9 bounds=1 arena=1 parallel_safe=1
+
+Additional Phase-3 completion test:
+
+```text
+folded=1 strings=1 branches=1 proven_bounds=1 rounds=2
+```
 ```
 
 ## Next optimizer expansions
 
-- loop-invariant code motion on CFG-backed SIR
+- deeper loop-invariant code motion on CFG-backed SIR
 - function inlining once full function bodies are emitted as SIR
-- stronger bounds proof engine using loop facts
+- stronger bounds proof engine using loop facts and array length facts
 - string/array fusion across comprehension pipelines
 - target vectorization hints
 - target-specific cost models

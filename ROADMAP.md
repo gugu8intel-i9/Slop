@@ -92,6 +92,9 @@ Goal: make SIR the shared place where Slop becomes fast before any backend emits
 - [x] Escape-analysis foundation through explicit SEAA arena ops
 - [x] Arena lifetime compression for empty scopes
 - [x] Bounds-check elimination for duplicate/proven-redundant checks
+- [x] Compile-time branch folding
+- [x] String literal fusion
+- [x] Fixed-point optimization driver
 - [x] Loop-invariant-code-motion readiness through block/control-flow SIR
 - [x] Vectorization hook readiness through typed SIR ops and target-neutral values
 - [x] Parallel lowering safety classifier
