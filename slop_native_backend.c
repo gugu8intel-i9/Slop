@@ -35,6 +35,7 @@
 
 #include "slop_ir.h"
 #include "slop_ir_tools.h"
+#include "slop_elf64_x86_64.h"
 
 typedef struct {
     char* name;
@@ -56,6 +57,7 @@ typedef struct {
 
 typedef enum {
     TARGET_X86_64_LINUX,
+    TARGET_X86_64_LINUX_ELF,
     TARGET_AARCH64_LINUX,
     TARGET_ARMV7_LINUX,
     TARGET_RISCV64_LINUX
@@ -64,6 +66,7 @@ typedef enum {
 static const char* target_name(Target t) {
     switch (t) {
         case TARGET_X86_64_LINUX: return "x86_64-linux";
+        case TARGET_X86_64_LINUX_ELF: return "x86_64-linux-elf";
         case TARGET_AARCH64_LINUX: return "aarch64-linux";
         case TARGET_ARMV7_LINUX: return "armv7-linux";
         case TARGET_RISCV64_LINUX: return "riscv64-linux";
@@ -74,6 +77,10 @@ static const char* target_name(Target t) {
 static bool parse_target(const char* s, Target* out) {
     if (strcmp(s, "x86_64-linux") == 0 || strcmp(s, "amd64-linux") == 0) {
         *out = TARGET_X86_64_LINUX;
+        return true;
+    }
+    if (strcmp(s, "x86_64-linux-elf") == 0 || strcmp(s, "amd64-linux-elf") == 0 || strcmp(s, "elf64-x86_64") == 0) {
+        *out = TARGET_X86_64_LINUX_ELF;
         return true;
     }
     if (strcmp(s, "aarch64-linux") == 0 || strcmp(s, "arm64-linux") == 0) {
@@ -290,6 +297,7 @@ static void emit_header(FILE* out, Target target) {
 static void emit_write(FILE* out, size_t label_id, Target target) {
     switch (target) {
         case TARGET_X86_64_LINUX:
+        case TARGET_X86_64_LINUX_ELF:
             fprintf(out, "    mov $1, %%rax\n");
             fprintf(out, "    mov $1, %%rdi\n");
             fprintf(out, "    lea .Lmsg%zu(%%rip), %%rsi\n", label_id);
@@ -323,6 +331,7 @@ static void emit_write(FILE* out, size_t label_id, Target target) {
 static void emit_exit(FILE* out, Target target) {
     switch (target) {
         case TARGET_X86_64_LINUX:
+        case TARGET_X86_64_LINUX_ELF:
             fprintf(out, "    mov $60, %%rax\n");
             fprintf(out, "    xor %%rdi, %%rdi\n");
             fprintf(out, "    syscall\n\n");
@@ -514,6 +523,20 @@ static void compile_file(const char* in_path, const char* out_path, Target targe
         return;
     }
 
+    if (target == TARGET_X86_64_LINUX_ELF) {
+        int rc = sir_emit_elf64_x86_64(out, &ir);
+        fclose(out);
+        free(src);
+        sir_module_free(&ir);
+        for (size_t i = 0; i < bindings.len; i++) {
+            free(bindings.data[i].name);
+            free(bindings.data[i].value);
+        }
+        free(bindings.data);
+        if (rc != 0) exit(1);
+        return;
+    }
+
     emit_header(out, target);
     for (uint32_t i = 0; i < ir.inst_len; i++) {
         SIRInst* inst = &ir.insts[i];
@@ -544,7 +567,7 @@ static void compile_file(const char* in_path, const char* out_path, Target targe
 
 static void usage(const char* argv0) {
     fprintf(stderr, "Usage: %s <input.slop> <output.s> [target]\n", argv0);
-    fprintf(stderr, "Targets: x86_64-linux, aarch64-linux/arm64-linux, armv7-linux/arm-linux, riscv64-linux/rv64-linux.\n");
+    fprintf(stderr, "Targets: x86_64-linux, x86_64-linux-elf, aarch64-linux/arm64-linux, armv7-linux/arm-linux, riscv64-linux/rv64-linux.\n");
     fprintf(stderr, "Use target 'sir' or '--emit-ir' to write the Slop IR dump instead of assembly.\n");
     fprintf(stderr, "Subset: print string/int literals, let string/int constants, print(name).\n");
 }
@@ -571,7 +594,11 @@ int main(int argc, char** argv) {
     if (dump_ir) {
         printf("Wrote Slop IR %s\n", argv[2]);
     } else {
-        printf("Wrote native assembly %s for %s\n", argv[2], target_name(target));
+        if (target == TARGET_X86_64_LINUX_ELF) {
+            printf("Wrote native ELF executable %s for %s\n", argv[2], target_name(target));
+        } else {
+            printf("Wrote native assembly %s for %s\n", argv[2], target_name(target));
+        }
     }
     return 0;
 }

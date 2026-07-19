@@ -225,7 +225,7 @@ Slop's learning rule is: **write simple code; the compiler makes it fast**. The 
 - `slop_ir.h` / `slop_ir_tools.h` / `SLOP_IR.md` - Slop Intermediate Representation, verifier, textual dump/load, fingerprints, and backend-safe effect classification.
 - `slop_lowering.h` / `slop_sir_optimizer.h` / `slop_sir_c_backend.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering layer, phase-3 high-performance optimizer, and MVP SIR-consuming C backend.
 - `LEARN_SLOP_IN_10_MINUTES.md` / `SLOP_CHEATSHEET.md` / `easy_start.slop` - beginner-first learning path designed to be easier than Python/JS.
-- `SIR_OPTIMIZER.md` - Phase-3 optimizer docs: linear folding, DCE, hash CSE, string fusion, branch folding, jump cleanup, bounds-check cleanup, SEAA compression, fixed-point rounds, and parallel safety.
+- `SIR_OPTIMIZER.md` - Phase-3 optimizer docs: linear folding, DCE, hash CSE, string fusion, branch folding, jump cleanup, bounds-check cleanup, SEAA compression, fixed-point rounds, direct ELF fast path, and parallel safety.
 - `ROADMAP.md` - Native compiler roadmap covering IR, optimizers, object files, ABI compatibility, and future targets.
 - `slop_native_backend.c` - Experimental direct native backend: Slop subset to x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux assembly/ELF without emitting C.
 - `native_backend_demo.slop` - Minimal program that demonstrates the direct native backend.
@@ -419,7 +419,7 @@ Hello from Slop's direct native backend
 x86_64 Linux ELF via syscalls
 ```
 
-The backend can also emit `aarch64-linux`, `armv7-linux`, and `riscv64-linux` assembly. Cross-target ELF output requires matching binutils/LLVM tools on the host. The compatibility strategy is multi-backend: direct native backends for speed and control, plus the C backend for maximum portability and C ABI integration. See `SLOP_IR.md` and `ROADMAP.md` for the full plan.
+The backend can also emit `aarch64-linux`, `armv7-linux`, and `riscv64-linux` assembly, and `x86_64-linux-elf` direct executable bytes for the current subset. Cross-target ELF output requires matching binutils/LLVM tools on the host. The compatibility strategy is multi-backend: direct native backends for speed and control, plus the C backend for maximum portability and C ABI integration. See `SLOP_IR.md` and `ROADMAP.md` for the full plan.
 
 ### 16. Run the C++ Native Bridge Test
 

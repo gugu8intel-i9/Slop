@@ -96,6 +96,7 @@ cp slop_lowering.h "$SLOP_INCLUDE/"
 cp slop_ir_tools.h "$SLOP_INCLUDE/"
 cp slop_sir_c_backend.h "$SLOP_INCLUDE/"
 cp slop_sir_optimizer.h "$SLOP_INCLUDE/"
+cp slop_elf64_x86_64.h "$SLOP_INCLUDE/"
 cp slop_boot.py "$SLOP_BIN/"
 cp slop_repl.py "$SLOP_BIN/"
 cp slop_convert.py "$SLOP_BIN/"
@@ -211,6 +212,13 @@ elif [ "$CMD" = "native" ]; then
         echo "Wrote Slop IR: $BASE.sir"
         exit 0
     fi
+    if [ "$TARGET" = "x86_64-linux-elf" ] || [ "$TARGET" = "amd64-linux-elf" ] || [ "$TARGET" = "elf64-x86_64" ]; then
+        "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE" "$TARGET"
+        chmod +x "$BASE"
+        echo "Successfully built direct native ELF executable without assembler/linker: $BASE"
+        exit 0
+    fi
+
     "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE.s" "$TARGET"
 
     AS_CMD=""

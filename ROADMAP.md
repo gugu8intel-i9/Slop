@@ -101,6 +101,7 @@ Goal: make SIR the shared place where Slop becomes fast before any backend emits
 - [x] Vectorization hook readiness through typed SIR ops and target-neutral values
 - [x] Parallel lowering safety classifier
 - [x] Target feature selection readiness through backend-independent optimized SIR
+- [x] Direct ELF64 x86_64 fast path for optimized SIR syscall subset
 
 Innovative Slop-specific passes:
 

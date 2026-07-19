@@ -140,3 +140,21 @@ The optimizer now avoids obvious quadratic behavior in hot passes:
 - compaction is one linear write pass
 
 This keeps optimization fast while preserving deterministic output and small implementation size.
+
+## Direct ELF fast path
+
+Phase 3 now also proves optimized SIR can feed a no-assembler/no-linker backend for the native subset:
+
+```text
+Slop subset -> SIR -> optimizer/verify -> ELF64 executable bytes
+```
+
+Use:
+
+```bash
+./slop-native-backend native_backend_demo.slop native_backend_demo x86_64-linux-elf
+chmod +x native_backend_demo
+./native_backend_demo
+```
+
+This is not the full object-file phase yet, but it is a high-performance native fast path that removes `as` and `ld` for the current x86_64 syscall subset.
