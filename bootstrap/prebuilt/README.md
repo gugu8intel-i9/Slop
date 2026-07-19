@@ -7,6 +7,7 @@ Currently included:
 ```text
 linux-x86_64/slop-compiler
 linux-x86_64/slop-native-backend
+linux-x86_64/slop-pipeline
 linux-x86_64/SHA256SUMS
 ```
 

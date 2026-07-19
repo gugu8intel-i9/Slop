@@ -15,7 +15,8 @@ It verifies:
 1. prebuilt compiler checksums
 2. self-hosting without Python
 3. stage1/stage2 self-host fixpoint
-4. portable C backend examples
+4. SIR production pipeline to C and direct ELF
+5. portable C backend examples
 5. unsafe low-level demo
 6. direct x86_64 ELF executable backend for the supported native subset
 7. Phase 4-7 smoke test: SIR, optimizer, regalloc, ABI, direct ELF

@@ -40,11 +40,12 @@ if [ "$OS_NAME" = "Linux" ] && { [ "$ARCH_NAME" = "x86_64" ] || [ "$ARCH_NAME" =
     PREBUILT_DIR="bootstrap/prebuilt/linux-x86_64"
 fi
 
-if [ -n "$PREBUILT_DIR" ] && [ -x "$PREBUILT_DIR/slop-compiler" ] && [ -x "$PREBUILT_DIR/slop-native-backend" ]; then
+if [ -n "$PREBUILT_DIR" ] && [ -x "$PREBUILT_DIR/slop-compiler" ] && [ -x "$PREBUILT_DIR/slop-native-backend" ] && [ -x "$PREBUILT_DIR/slop-pipeline" ]; then
     echo -e "${GREEN}Using prebuilt Slop compiler for $OS_NAME/$ARCH_NAME.${NC}"
     cp "$PREBUILT_DIR/slop-compiler" "$SLOP_BIN/slop-compiler"
     cp "$PREBUILT_DIR/slop-native-backend" "$SLOP_BIN/slop-native-backend"
-    chmod +x "$SLOP_BIN/slop-compiler" "$SLOP_BIN/slop-native-backend"
+    cp "$PREBUILT_DIR/slop-pipeline" "$SLOP_BIN/slop-pipeline"
+    chmod +x "$SLOP_BIN/slop-compiler" "$SLOP_BIN/slop-native-backend" "$SLOP_BIN/slop-pipeline"
     if command -v sha256sum >/dev/null 2>&1 && [ -f "$PREBUILT_DIR/SHA256SUMS" ]; then
         (cd "$PREBUILT_DIR" && sha256sum -c SHA256SUMS)
     fi
@@ -86,6 +87,7 @@ else
 
     # Build the direct native backend MVP
     $CC -O3 -std=gnu11 slop_native_backend.c -o "$SLOP_BIN/slop-native-backend"
+    $CC -O3 -std=gnu11 slop_pipeline_cli.c -o "$SLOP_BIN/slop-pipeline"
 fi
 
 # Copy compiler source, runtime headers, REPL, and helper files
@@ -102,6 +104,7 @@ cp slop_native_codegen.h "$SLOP_INCLUDE/"
 cp slop_object_link.h "$SLOP_INCLUDE/"
 cp slop_runtime_abi.h "$SLOP_INCLUDE/"
 cp slop_phase4_7.h "$SLOP_INCLUDE/"
+cp slop_pipeline_cli.c "$SLOP_INCLUDE/"
 cp slop_pipeline.h "$SLOP_INCLUDE/"
 cp slop_diagnostics.h "$SLOP_INCLUDE/"
 cp slop_boot.py "$SLOP_BIN/"
@@ -155,6 +158,8 @@ if [ -z "$1" ]; then
     echo "  native <file.slop> [target] Compile MVP native subset directly to assembly/ELF"
     echo "  emit-ir <file.slop> Emit SIR for native-backend subset"
     echo "  emit-asm <file.slop> [target] Emit target assembly for native-backend subset"
+    echo "  sir-to-c <file.sir> <out.c> Compile SIR to C through production pipeline"
+    echo "  sir-to-elf <file.sir> <out> Compile SIR to direct x86_64 ELF"
     echo "  targets            List native backend targets"
     echo "  test [files...]    Run Slop example/test files"
     echo "  repl               Launch the interactive native compiling REPL shell"
@@ -230,6 +235,12 @@ elif [ "$CMD" = "emit-asm" ]; then
     TARGET="${3:-x86_64-linux}"
     "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE.s" "$TARGET"
     echo "Wrote target assembly: $BASE.s"
+elif [ "$CMD" = "sir-to-c" ]; then
+    if [ -z "$FILE" ] || [ -z "$3" ]; then echo "Usage: slop sir-to-c <file.sir> <out.c>"; exit 1; fi
+    "$SLOP_BIN/slop-pipeline" "$FILE" "$3" c
+elif [ "$CMD" = "sir-to-elf" ]; then
+    if [ -z "$FILE" ] || [ -z "$3" ]; then echo "Usage: slop sir-to-elf <file.sir> <out>"; exit 1; fi
+    "$SLOP_BIN/slop-pipeline" "$FILE" "$3" elf x86_64-linux-elf
 elif [ "$CMD" = "native" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     if [ "$FILE" = "${FILE#/}" ]; then

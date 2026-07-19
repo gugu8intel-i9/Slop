@@ -193,6 +193,7 @@ Linux x86_64 installs now ship a prebuilt stage0 compiler:
 ```text
 bootstrap/prebuilt/linux-x86_64/slop-compiler
 bootstrap/prebuilt/linux-x86_64/slop-native-backend
+bootstrap/prebuilt/linux-x86_64/slop-pipeline
 ```
 
 That means a normal Linux x86_64 install no longer needs Python or GCC just to obtain `slop-compiler`. Python/GCC are only fallback requirements when a platform does not have a prebuilt yet.

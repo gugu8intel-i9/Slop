@@ -11,6 +11,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 PREBUILT_COMPILER="bootstrap/prebuilt/linux-x86_64/slop-compiler"
 PREBUILT_NATIVE="bootstrap/prebuilt/linux-x86_64/slop-native-backend"
+PREBUILT_PIPELINE="bootstrap/prebuilt/linux-x86_64/slop-pipeline"
 
 if [ ! -x "$PREBUILT_COMPILER" ]; then
   echo "missing executable $PREBUILT_COMPILER" >&2
@@ -18,6 +19,10 @@ if [ ! -x "$PREBUILT_COMPILER" ]; then
 fi
 if [ ! -x "$PREBUILT_NATIVE" ]; then
   echo "missing executable $PREBUILT_NATIVE" >&2
+  exit 1
+fi
+if [ ! -x "$PREBUILT_PIPELINE" ]; then
+  echo "missing executable $PREBUILT_PIPELINE" >&2
   exit 1
 fi
 
@@ -49,6 +54,17 @@ chmod +x "$TMP/native_demo"
 "$TMP/native_demo" > "$TMP/native_demo.out"
 cat "$TMP/native_demo.out"
 grep -q "Hello from Slop's direct native backend" "$TMP/native_demo.out"
+
+
+printf '\n== SIR production pipeline ==\n'
+"$PREBUILT_NATIVE" native_backend_demo.slop "$TMP/native_demo.sir" sir
+"$PREBUILT_PIPELINE" "$TMP/native_demo.sir" "$TMP/native_demo_pipeline.c" c
+$CC -O3 -std=gnu11 "$TMP/native_demo_pipeline.c" -o "$TMP/native_demo_pipeline_c"
+"$TMP/native_demo_pipeline_c" > "$TMP/native_demo_pipeline_c.out"
+"$PREBUILT_PIPELINE" "$TMP/native_demo.sir" "$TMP/native_demo_pipeline_elf" elf x86_64-linux-elf
+"$TMP/native_demo_pipeline_elf" > "$TMP/native_demo_pipeline_elf.out"
+grep -q "Hello from Slop's direct native backend" "$TMP/native_demo_pipeline_c.out"
+grep -q "Hello from Slop's direct native backend" "$TMP/native_demo_pipeline_elf.out"
 
 printf '\n== phase 4-7 smoke ==\n'
 tools/phase4_7_smoke.sh
