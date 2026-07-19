@@ -12,10 +12,10 @@ Slop -> SIR -> optimizer -> C/native/WASM/object backend
 
 `slop_sir_optimizer.h` implements:
 
-- constant folding
+- linear-time constant folding with value facts
 - algebraic simplification / strength reduction
 - copy propagation
-- common subexpression elimination, including commutative expressions
+- hash-table common subexpression elimination, including commutative expressions
 - string literal fusion (`"a" + "b" -> "ab"`)
 - branch folding when conditions are compile-time constants
 - side-effect-safe dead pure value cleanup
@@ -24,6 +24,8 @@ Slop -> SIR -> optimizer -> C/native/WASM/object backend
 - proven constant bounds-check elimination
 - empty SEAA arena scope compression
 - fixed-point optimization rounds
+- jump-to-next-block cleanup
+- unreachable pure-code cleanup after terminators
 - parallel-safety classification
 
 ## Why this is novel for Slop
@@ -111,10 +113,11 @@ Verified optimizer stats from the Phase-3 test:
 ```text
 folded=4 algebra=0 cse=3 copies=0 dce=3 compact=9 bounds=1 arena=1 parallel_safe=1
 
-Additional Phase-3 completion test:
+Additional Phase-3 completion tests:
 
 ```text
 folded=1 strings=1 branches=1 proven_bounds=1 rounds=2
+fold=3 cse=1 str=1 br=1 proven=1 jump=0 unreach=1 compact=8 rounds=2
 ```
 ```
 
@@ -126,3 +129,14 @@ folded=1 strings=1 branches=1 proven_bounds=1 rounds=2
 - string/array fusion across comprehension pipelines
 - target vectorization hints
 - target-specific cost models
+
+## Performance model
+
+The optimizer now avoids obvious quadratic behavior in hot passes:
+
+- constant folding uses a value-id fact table instead of rescanning the whole module for every operand
+- CSE uses an open-addressed hash table instead of pairwise comparison for every instruction
+- DCE uses dense bitsets keyed by compact SIR value IDs
+- compaction is one linear write pass
+
+This keeps optimization fast while preserving deterministic output and small implementation size.

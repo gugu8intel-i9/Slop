@@ -26,6 +26,8 @@ typedef struct {
     uint32_t bounds_checks_removed;
     uint32_t proven_bounds_removed;
     uint32_t branches_folded;
+    uint32_t jumps_removed;
+    uint32_t unreachable_removed;
     uint32_t strings_fused;
     uint32_t arena_scopes_compressed;
     uint32_t fixed_point_rounds;
@@ -41,6 +43,8 @@ static inline void sir_opt_stats_add(SIROptStats* a, SIROptStats b) {
     a->bounds_checks_removed += b.bounds_checks_removed;
     a->proven_bounds_removed += b.proven_bounds_removed;
     a->branches_folded += b.branches_folded;
+    a->jumps_removed += b.jumps_removed;
+    a->unreachable_removed += b.unreachable_removed;
     a->strings_fused += b.strings_fused;
     a->arena_scopes_compressed += b.arena_scopes_compressed;
     a->fixed_point_rounds += b.fixed_point_rounds;
@@ -101,6 +105,44 @@ static inline bool sir_fold_i64_op(SIROp op, int64_t a, int64_t b, int64_t* out)
         case SIR_OP_OR_BOOL: *out = (a || b); return true;
         default: return false;
     }
+}
+
+static inline SIROptStats sir_opt_fold_constants_fast(SIRModule* m) {
+    SIROptStats stats = {0};
+    uint8_t* known = (uint8_t*)calloc(m->next_value ? m->next_value : 1, sizeof(uint8_t));
+    int64_t* values = (int64_t*)calloc(m->next_value ? m->next_value : 1, sizeof(int64_t));
+    if (!known || !values) {
+        free(known);
+        free(values);
+        return stats;
+    }
+
+    for (uint32_t i = 0; i < m->inst_len; i++) {
+        SIRInst* inst = &m->insts[i];
+        if (inst->op == SIR_OP_CONST_I64 && inst->dst < m->next_value) {
+            known[inst->dst] = 1;
+            values[inst->dst] = inst->imm;
+            continue;
+        }
+        int64_t folded = 0;
+        if (inst->dst && inst->a < m->next_value && inst->b < m->next_value && known[inst->a] && known[inst->b] && sir_fold_i64_op(inst->op, values[inst->a], values[inst->b], &folded)) {
+            inst->op = SIR_OP_CONST_I64;
+            inst->type = (inst->type == SIR_TYPE_BOOL) ? SIR_TYPE_BOOL : SIR_TYPE_I64;
+            inst->a = 0;
+            inst->b = 0;
+            inst->c = 0;
+            inst->imm = folded;
+            if (inst->dst < m->next_value) {
+                known[inst->dst] = 1;
+                values[inst->dst] = folded;
+            }
+            stats.constants_folded++;
+        }
+    }
+
+    free(known);
+    free(values);
+    return stats;
 }
 
 static inline SIROptStats sir_opt_fold_constants(SIRModule* m) {
@@ -203,6 +245,65 @@ static inline bool sir_inst_equiv_cse(SIRInst a, SIRInst b) {
         return (same || swapped) && a.c == b.c;
     }
     return a.a == b.a && a.b == b.b && a.c == b.c;
+}
+
+static inline uint64_t sir_cse_hash_inst(SIRInst inst) {
+    if (sir_op_commutative(inst.op) && inst.a > inst.b) {
+        SIRId t = inst.a;
+        inst.a = inst.b;
+        inst.b = t;
+    }
+    uint64_t h = UINT64_C(1469598103934665603);
+    h = sir_fnv1a_bytes(h, &inst.op, sizeof(inst.op));
+    h = sir_fnv1a_bytes(h, &inst.type, sizeof(inst.type));
+    h = sir_fnv1a_bytes(h, &inst.a, sizeof(inst.a));
+    h = sir_fnv1a_bytes(h, &inst.b, sizeof(inst.b));
+    h = sir_fnv1a_bytes(h, &inst.c, sizeof(inst.c));
+    h = sir_fnv1a_bytes(h, &inst.imm, sizeof(inst.imm));
+    return h ? h : 1;
+}
+
+typedef struct {
+    uint64_t hash;
+    uint32_t inst_index;
+} SIRCSEntry;
+
+static inline SIROptStats sir_opt_cse_hash(SIRModule* m) {
+    SIROptStats stats = {0};
+    uint32_t cap = 1;
+    while (cap < (m->inst_len * 2 + 1)) cap <<= 1;
+    SIRCSEntry* table = (SIRCSEntry*)calloc(cap, sizeof(SIRCSEntry));
+    if (!table) return stats;
+
+    for (uint32_t i = 0; i < m->inst_len; i++) {
+        SIRInst* inst = &m->insts[i];
+        if (!inst->dst || !sir_op_is_cse_candidate(inst->op)) continue;
+        uint64_t h = sir_cse_hash_inst(*inst);
+        uint32_t slot = (uint32_t)(h & (cap - 1));
+        bool inserted = false;
+        for (uint32_t probe = 0; probe < cap; probe++) {
+            SIRCSEntry* e = &table[(slot + probe) & (cap - 1)];
+            if (e->hash == 0) {
+                e->hash = h;
+                e->inst_index = i;
+                inserted = true;
+                break;
+            }
+            if (e->hash == h) {
+                SIRInst* prev = &m->insts[e->inst_index];
+                if (prev->dst && sir_inst_equiv_cse(*inst, *prev)) {
+                    sir_replace_value_from(m, i + 1, inst->dst, prev->dst);
+                    sir_make_nop(inst);
+                    stats.cse_eliminated++;
+                    inserted = true;
+                    break;
+                }
+            }
+        }
+        (void)inserted;
+    }
+    free(table);
+    return stats;
 }
 
 static inline SIROptStats sir_opt_cse(SIRModule* m) {
@@ -399,6 +500,42 @@ static inline SIROptStats sir_opt_compress_empty_arena_scopes(SIRModule* m) {
     return stats;
 }
 
+static inline SIROptStats sir_opt_remove_jumps_to_next_block(SIRModule* m) {
+    SIROptStats stats = {0};
+    for (uint32_t i = 0; i + 1 < m->inst_len; i++) {
+        SIRInst* inst = &m->insts[i];
+        if (inst->op != SIR_OP_JUMP) continue;
+        for (uint32_t j = i + 1; j < m->inst_len; j++) {
+            if (m->insts[j].op == SIR_OP_NOP) continue;
+            if (m->insts[j].op == SIR_OP_BLOCK && m->insts[j].dst == inst->a) {
+                sir_make_nop(inst);
+                stats.jumps_removed++;
+            }
+            break;
+        }
+    }
+    return stats;
+}
+
+static inline SIROptStats sir_opt_remove_unreachable_pure_after_terminator(SIRModule* m) {
+    SIROptStats stats = {0};
+    bool unreachable = false;
+    for (uint32_t i = 0; i < m->inst_len; i++) {
+        SIRInst* inst = &m->insts[i];
+        if (inst->op == SIR_OP_BLOCK || inst->op == SIR_OP_FUNCTION_BEGIN || inst->op == SIR_OP_FUNCTION_END) {
+            unreachable = false;
+            continue;
+        }
+        if (unreachable && sir_inst_is_pure_value(inst)) {
+            sir_make_nop(inst);
+            stats.unreachable_removed++;
+            continue;
+        }
+        if (sir_op_is_terminator(inst->op)) unreachable = true;
+    }
+    return stats;
+}
+
 static inline SIROptStats sir_opt_compact_nops(SIRModule* m) {
     SIROptStats stats = {0};
     uint32_t w = 0;
@@ -433,15 +570,17 @@ static inline SIROptStats sir_opt_phase3_high_performance(SIRModule* m) {
     for (uint32_t round = 0; round < 4; round++) {
         SIROptStats before = total;
         before.fixed_point_rounds = 0;
-        sir_opt_stats_add(&total, sir_opt_fold_constants(m));
+        sir_opt_stats_add(&total, sir_opt_fold_constants_fast(m));
         sir_opt_stats_add(&total, sir_opt_algebraic_simplify(m));
         sir_opt_stats_add(&total, sir_opt_copy_propagate(m));
         sir_opt_stats_add(&total, sir_opt_fuse_string_literals(m));
-        sir_opt_stats_add(&total, sir_opt_cse(m));
+        sir_opt_stats_add(&total, sir_opt_cse_hash(m));
         sir_opt_stats_add(&total, sir_opt_fold_const_branches(m));
         sir_opt_stats_add(&total, sir_opt_remove_proven_bounds_checks(m));
         sir_opt_stats_add(&total, sir_opt_remove_duplicate_bounds_checks(m));
         sir_opt_stats_add(&total, sir_opt_compress_empty_arena_scopes(m));
+        sir_opt_stats_add(&total, sir_opt_remove_jumps_to_next_block(m));
+        sir_opt_stats_add(&total, sir_opt_remove_unreachable_pure_after_terminator(m));
         sir_opt_stats_add(&total, sir_opt_dead_pure_to_nop(m));
         SIROptStats after = total;
         after.fixed_point_rounds = 0;

@@ -83,10 +83,10 @@ Phase 2 is complete as the full-language SIR lowering layer. The remaining work 
 
 Goal: make SIR the shared place where Slop becomes fast before any backend emits C, assembly, object code, or WASM.
 
-- [x] Constant folding
+- [x] Linear-time value-fact constant folding
 - [x] Copy propagation
 - [x] Dead-code elimination for pure values
-- [x] Common subexpression elimination
+- [x] Hash-table common subexpression elimination
 - [x] Strength/algebraic reduction
 - [x] Inlining readiness through function/call-aware SIR and optimizer hooks
 - [x] Escape-analysis foundation through explicit SEAA arena ops
@@ -94,6 +94,8 @@ Goal: make SIR the shared place where Slop becomes fast before any backend emits
 - [x] Bounds-check elimination for duplicate/proven-redundant checks
 - [x] Compile-time branch folding
 - [x] String literal fusion
+- [x] Jump-to-next-block cleanup
+- [x] Unreachable pure-code cleanup after terminators
 - [x] Fixed-point optimization driver
 - [x] Loop-invariant-code-motion readiness through block/control-flow SIR
 - [x] Vectorization hook readiness through typed SIR ops and target-neutral values
