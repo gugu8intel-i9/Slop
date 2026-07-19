@@ -135,7 +135,7 @@ static inline SIRVerifyResult sir_verify_module(const SIRModule* m, FILE* err) {
         }
         if (sir_op_has_side_effect(inst->op) && !sir_op_is_terminator(inst->op)) unterminated_effect_blocks++;
     }
-    if (m->inst_len > 0 && !sir_op_is_terminator(m->insts[m->inst_len - 1].op)) {
+    if (m->inst_len > 0 && !sir_op_is_terminator(m->insts[m->inst_len - 1].op) && m->insts[m->inst_len - 1].op != SIR_OP_FUNCTION_END) {
         sir_verify_warn(err, &r, m->inst_len - 1, "module does not end in a terminator");
     }
     (void)unterminated_effect_blocks;

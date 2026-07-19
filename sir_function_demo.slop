@@ -1,0 +1,7 @@
+fn answer() -> int {
+    return 42
+}
+
+fn main(args: array[string]) {
+    print(answer())
+}

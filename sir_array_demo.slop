@@ -1,0 +1,7 @@
+fn main(args: array[string]) {
+    let nums = [1, 2, 3]
+    push(nums, 4)
+    print(length(nums))
+    print(nums[0])
+    print(nums[3])
+}

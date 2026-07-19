@@ -83,6 +83,21 @@ $CC -O3 -std=gnu11 "$TMP/sir_core_demo.c" -o "$TMP/sir_core_demo_c"
 "$TMP/sir_core_demo_c" > "$TMP/sir_core_demo_c.out"
 grep -q "99" "$TMP/sir_core_demo_c.out"
 
+
+printf '\n== SIR-first arrays pipeline ==\n'
+"$PREBUILT_PIPELINE" sir_array_demo.slop "$TMP/sir_array_demo.c" c
+$CC -O3 -std=gnu11 "$TMP/sir_array_demo.c" -o "$TMP/sir_array_demo_c"
+"$TMP/sir_array_demo_c" > "$TMP/sir_array_demo_c.out"
+grep -q "4" "$TMP/sir_array_demo_c.out"
+grep -q "1" "$TMP/sir_array_demo_c.out"
+
+
+printf '\n== SIR-first functions pipeline ==\n'
+"$PREBUILT_PIPELINE" sir_function_demo.slop "$TMP/sir_function_demo.c" c
+$CC -O3 -std=gnu11 "$TMP/sir_function_demo.c" -o "$TMP/sir_function_demo_c"
+"$TMP/sir_function_demo_c" > "$TMP/sir_function_demo_c.out"
+grep -q "42" "$TMP/sir_function_demo_c.out"
+
 printf '\n== phase 4-7 smoke ==\n'
 tools/phase4_7_smoke.sh
 

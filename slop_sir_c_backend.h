@@ -15,8 +15,21 @@ static inline const char* sir_c_type_name(SIRType t) {
         case SIR_TYPE_I64: return "int64_t";
         case SIR_TYPE_F64: return "double";
         case SIR_TYPE_STRING: return "const char*";
+        case SIR_TYPE_ARRAY: return "SirArrayI64";
         default: return "int64_t";
     }
+}
+
+static inline bool sir_c_id_is_local(const SIRModule* m, SIRId id) {
+    for (uint32_t i = 0; i < m->inst_len; i++) {
+        if (m->insts[i].op == SIR_OP_LOCAL_DECLARE && m->insts[i].dst == id) return true;
+    }
+    return false;
+}
+
+static inline void sir_c_ref(FILE* out, const SIRModule* m, SIRId id) {
+    fputc(sir_c_id_is_local(m, id) ? 'l' : 'v', out);
+    fprintf(out, "%u", id);
 }
 
 static inline void sir_c_escape(FILE* out, const char* s, uint32_t len) {
@@ -38,11 +51,29 @@ static inline int sir_emit_c_backend(FILE* out, const SIRModule* m) {
 
     fprintf(out, "// Generated from Slop SIR by the SIR C backend MVP\n");
     fprintf(out, "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+    fprintf(out, "typedef struct { int64_t* data; uint64_t length; uint64_t capacity; } SirArrayI64;\n");
+    fprintf(out, "static void sir_array_i64_push(SirArrayI64* a, int64_t v) { if (a->length == a->capacity) { a->capacity = a->capacity ? a->capacity * 2 : 8; a->data = (int64_t*)realloc(a->data, a->capacity * sizeof(int64_t)); if (!a->data) exit(1); } a->data[a->length++] = v; }\n");
+    fprintf(out, "static int64_t sir_array_i64_get(SirArrayI64* a, int64_t i) { if (i < 0 || (uint64_t)i >= a->length) { fprintf(stderr, \"SIR array bounds error: index %%lld length %%llu\\n\", (long long)i, (unsigned long long)a->length); exit(1); } return a->data[i]; }\n");
     fprintf(out, "static char* slop_sir_c_concat(const char* a, const char* b) { size_t la=strlen(a), lb=strlen(b); char* o=(char*)malloc(la+lb+1); memcpy(o,a,la); memcpy(o+la,b,lb); o[la+lb]=0; return o; }\n\n");
-    fprintf(out, "int main(void) {\n");
+    bool has_functions = false;
+    for (uint32_t i = 0; i < m->inst_len; i++) if (m->insts[i].op == SIR_OP_FUNCTION_BEGIN) has_functions = true;
+    if (!has_functions) fprintf(out, "int main(void) {\n");
     for (uint32_t i = 0; i < m->inst_len; i++) {
         const SIRInst* inst = &m->insts[i];
         switch (inst->op) {
+            case SIR_OP_FUNCTION_BEGIN:
+                if (inst->a < m->string_len) {
+                    const char* name = m->strings[inst->a].data;
+                    if (strcmp(name, "main") == 0) fprintf(out, "int main(void) {\n");
+                    else fprintf(out, "int64_t fn_%s(void) {\n", name);
+                }
+                break;
+            case SIR_OP_FUNCTION_END:
+                fprintf(out, "}\n\n");
+                break;
+            case SIR_OP_CALL:
+                if (inst->a < m->string_len) fprintf(out, "    int64_t v%u = fn_%s();\n", inst->dst, m->strings[inst->a].data);
+                break;
             case SIR_OP_CONST_STRING:
                 if (inst->a < m->string_len) {
                     fprintf(out, "    const char* v%u = \"", inst->dst);
@@ -110,6 +141,21 @@ static inline int sir_emit_c_backend(FILE* out, const SIRModule* m) {
             case SIR_OP_RETURN:
                 if (inst->a) fprintf(out, "    return (int)v%u;\n", inst->a); else fprintf(out, "    return 0;\n");
                 break;
+            case SIR_OP_ARRAY_NEW:
+                fprintf(out, "    SirArrayI64 v%u = {0};\n", inst->dst);
+                break;
+            case SIR_OP_ARRAY_PUSH:
+                fprintf(out, "    sir_array_i64_push(&"); sir_c_ref(out, m, inst->a); fprintf(out, ", v%u);\n", inst->b);
+                break;
+            case SIR_OP_ARRAY_LEN:
+                fprintf(out, "    int64_t v%u = (int64_t)", inst->dst); sir_c_ref(out, m, inst->a); fprintf(out, ".length;\n");
+                break;
+            case SIR_OP_ARRAY_GET:
+                fprintf(out, "    int64_t v%u = sir_array_i64_get(&", inst->dst); sir_c_ref(out, m, inst->a); fprintf(out, ", v%u);\n", inst->b);
+                break;
+            case SIR_OP_ARRAY_SET:
+                fprintf(out, "    "); sir_c_ref(out, m, inst->a); fprintf(out, ".data[v%u] = v%u;\n", inst->b, inst->c);
+                break;
             case SIR_OP_PRINT_I64:
                 fprintf(out, "    printf(\"%%lld\\n\", (long long)v%u);\n", inst->a);
                 break;
@@ -135,7 +181,7 @@ static inline int sir_emit_c_backend(FILE* out, const SIRModule* m) {
                 break;
         }
     }
-    fprintf(out, "    return 0;\n}\n");
+    if (!has_functions) fprintf(out, "    return 0;\n}\n");
     return 0;
 }
 
