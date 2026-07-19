@@ -219,3 +219,9 @@ self-hosted frontend
 ```
 
 That gives Slop both compatibility and a path to independent high-performance native code generation.
+
+## Production hardening status
+
+The repo now includes MVP implementation surfaces for the 14 remaining production areas: SIR-first pipeline, full backend infrastructure, regalloc, object/link metadata, linker strategy, runtime ABI descriptors, starter stdlib, package/test tooling, diagnostics, LSP/editor skeleton, smoke tests, CI, unsafe policy, and compatibility docs.
+
+The most important next engineering task is still deep integration: make `compiler.slop` emit SIR as its primary internal format for all normal programs, then route C/native/object/WASM emission through the shared pipeline.

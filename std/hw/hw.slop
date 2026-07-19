@@ -1,0 +1,9 @@
+# std/hw - optional unsafe hardware layer facade
+# This package intentionally exposes only explicit unsafe names.
+fn cycles() -> int {
+    return cpu_cycles()
+}
+
+fn fence() {
+    cpu_fence()
+}

@@ -1,0 +1,8 @@
+# std/io - beginner-first IO helpers
+fn println(s: string) {
+    print(s)
+}
+
+fn print_int_line(n: int) {
+    print(n)
+}

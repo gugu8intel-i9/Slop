@@ -201,6 +201,29 @@ Important distinction: the stable portable backend still emits C, so compiling g
 
 ---
 
+## Production Hardening Bundle
+
+The repo now includes MVP implementations for the 14 major remaining production needs:
+
+1. SIR-first pipeline contract (`slop_pipeline.h`)
+2. broader native backend infrastructure (`slop_native_codegen.h`)
+3. register allocation / stack-frame scaffolding
+4. object/link metadata and direct ELF fast path
+5. linker strategy hooks (`slop_object_link.h`)
+6. runtime ABI descriptors (`slop_runtime_abi.h`)
+7. starter standard library (`std/`)
+8. package/test tooling (`tools/slop_test.py`)
+9. beginner diagnostics (`slop_diagnostics.h`)
+10. editor/LSP skeleton (`tools/slop_lsp.py`)
+11. smoke tests (`tools/phase4_7_smoke.sh`)
+12. GitHub Actions CI (`.github/workflows/ci.yml`)
+13. unsafe hardware policy (`UNSAFE_POLICY.md`)
+14. compatibility roadmap and docs (`ROADMAP.md`, `STDLIB.md`, `LOW_LEVEL.md`)
+
+These are MVP surfaces, not the end of engineering work. The next deep task is replacing the self-hosted compiler's direct C-string emission with the SIR-first pipeline everywhere.
+
+---
+
 ## Optional Unsafe Low-Level Mode
 
 Slop stays safe and easy by default, but systems programmers can opt into explicit low-level hardware control. These APIs are intentionally named with `unsafe_`, `mmio_`, `cpu_`, `gpu_`, `device_`, and `ram_` prefixes so dangerous code is obvious.
@@ -270,6 +293,9 @@ Slop's learning rule is: **write simple code; the compiler makes it fast**. The 
 - `slop_lowering.h` / `slop_sir_optimizer.h` / `slop_sir_c_backend.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering layer, phase-3 high-performance optimizer, and MVP SIR-consuming C backend.
 - `LEARN_SLOP_IN_10_MINUTES.md` / `SLOP_CHEATSHEET.md` / `easy_start.slop` - beginner-first learning path designed to be easier than Python/JS.
 - `LOW_LEVEL.md` / `slop_lowlevel.h` / `low_level_demo.slop` - optional unsafe low-level RAM/MMIO/CPU/GPU/device control layer.
+- `slop_pipeline.h` / `slop_diagnostics.h` - SIR-first pipeline contract and beginner-first diagnostic helpers.
+- `std/` / `STDLIB.md` - starter standard library layout and package plan.
+- `.github/workflows/ci.yml` / `tools/slop_test.py` / `tools/slop_lsp.py` - CI, test runner, and language-server skeleton.
 - `SIR_OPTIMIZER.md` - Phase-3 optimizer docs: linear folding, DCE, hash CSE, string fusion, branch folding, jump cleanup, bounds-check cleanup, SEAA compression, fixed-point rounds, direct ELF fast path, and parallel safety.
 - `slop_native_codegen.h` / `slop_object_link.h` / `slop_runtime_abi.h` / `slop_phase4_7.h` - Phase 4-7 native backend, object/link, ABI, and tooling surface.
 - `ROADMAP.md` - Native compiler roadmap covering IR, optimizers, object files, ABI compatibility, and future targets.

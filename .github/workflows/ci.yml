@@ -1,0 +1,18 @@
+name: Slop CI
+on: [push, pull_request]
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify prebuilt checksums
+        run: cd bootstrap/prebuilt/linux-x86_64 && sha256sum -c SHA256SUMS
+      - name: Phase 4-7 smoke
+        run: tools/phase4_7_smoke.sh
+      - name: Compile beginner and low-level examples
+        run: tools/slop_test.py easy_start.slop low_level_demo.slop
+      - name: Native direct ELF smoke
+        run: |
+          bootstrap/prebuilt/linux-x86_64/slop-native-backend native_backend_demo.slop /tmp/native_demo x86_64-linux-elf
+          chmod +x /tmp/native_demo
+          /tmp/native_demo

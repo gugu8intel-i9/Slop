@@ -1,0 +1,8 @@
+# std/test - tiny assertion helpers
+fn assert_int_eq(a: int, b: int) {
+    if a != b {
+        print("assert_int_eq failed")
+        print(a)
+        print(b)
+    }
+}

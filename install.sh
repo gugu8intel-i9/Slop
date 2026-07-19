@@ -102,15 +102,21 @@ cp slop_native_codegen.h "$SLOP_INCLUDE/"
 cp slop_object_link.h "$SLOP_INCLUDE/"
 cp slop_runtime_abi.h "$SLOP_INCLUDE/"
 cp slop_phase4_7.h "$SLOP_INCLUDE/"
+cp slop_pipeline.h "$SLOP_INCLUDE/"
+cp slop_diagnostics.h "$SLOP_INCLUDE/"
 cp slop_boot.py "$SLOP_BIN/"
 cp slop_repl.py "$SLOP_BIN/"
 cp slop_convert.py "$SLOP_BIN/"
 cp slop_translate.py "$SLOP_BIN/"
 cp slop_builder.py "$SLOP_BIN/"
 cp slop_fmt.py "$SLOP_BIN/"
+cp tools/slop_test.py "$SLOP_BIN/"
+cp tools/slop_lsp.py "$SLOP_BIN/"
 
 # Copy example/demo Slop programs so users can run them immediately
 mkdir -p "$SLOP_DIR/examples"
+mkdir -p "$SLOP_DIR/std"
+cp -r std/* "$SLOP_DIR/std/" 2>/dev/null || true
 cp hello.slop easy_start.slop low_level_demo.slop native_backend_demo.slop complex_syntax.slop parallel_processing.slop gpu_compute.slop \
    unified_parallel.slop benchmark_seq.slop benchmark_par.slop "$SLOP_DIR/examples/" 2>/dev/null || true
 
@@ -151,6 +157,8 @@ if [ -z "$1" ]; then
     echo "  emit-ir <file.slop> Emit SIR for native-backend subset"
     echo "  emit-asm <file.slop> [target] Emit target assembly for native-backend subset"
     echo "  targets            List native backend targets"
+    echo "  test [files...]    Run Slop example/test files"
+    echo "  lsp                Launch minimal Slop language server"
     echo "  repl               Launch the interactive native compiling REPL shell"
     exit 0
 fi
@@ -271,6 +279,11 @@ elif [ "$CMD" = "native" ]; then
 elif [ "$CMD" = "convert" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     python3 "$SLOP_BIN/slop_convert.py" "$FILE" "$3"
+elif [ "$CMD" = "test" ]; then
+    shift
+    python3 "$SLOP_BIN/slop_test.py" "$@"
+elif [ "$CMD" = "lsp" ]; then
+    python3 "$SLOP_BIN/slop_lsp.py"
 elif [ "$CMD" = "repl" ]; then
     python3 "$SLOP_BIN/slop_repl.py"
 else
