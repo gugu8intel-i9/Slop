@@ -201,6 +201,32 @@ Important distinction: the stable portable backend still emits C, so compiling g
 
 ---
 
+## Native Toolchain Phase 4-7 MVP
+
+Slop now includes the implementation surface for the remaining native toolchain phases:
+
+- `slop_native_codegen.h` — target descriptors, liveness, virtual registers, linear-scan register allocation, stack frames.
+- `slop_object_link.h` — object/link metadata, symbols, relocations, link plans, direct executable hook.
+- `slop_runtime_abi.h` — stable string/array/arena ABI layouts, C ABI classification, syscall ABI tables.
+- `slop_phase4_7.h` — aggregate native toolchain surface.
+- `tools/phase4_7_smoke.sh` — local smoke test for IR, optimizer, regalloc, ABI, and direct ELF.
+
+Fast no-linker subset path:
+
+```bash
+slop native native_backend_demo.slop x86_64-linux-elf
+```
+
+Tooling:
+
+```bash
+slop targets
+slop emit-ir native_backend_demo.slop
+slop emit-asm native_backend_demo.slop x86_64-linux
+```
+
+---
+
 ## Learn Slop Fast
 
 Start here if you are new:
@@ -226,6 +252,7 @@ Slop's learning rule is: **write simple code; the compiler makes it fast**. The 
 - `slop_lowering.h` / `slop_sir_optimizer.h` / `slop_sir_c_backend.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering layer, phase-3 high-performance optimizer, and MVP SIR-consuming C backend.
 - `LEARN_SLOP_IN_10_MINUTES.md` / `SLOP_CHEATSHEET.md` / `easy_start.slop` - beginner-first learning path designed to be easier than Python/JS.
 - `SIR_OPTIMIZER.md` - Phase-3 optimizer docs: linear folding, DCE, hash CSE, string fusion, branch folding, jump cleanup, bounds-check cleanup, SEAA compression, fixed-point rounds, direct ELF fast path, and parallel safety.
+- `slop_native_codegen.h` / `slop_object_link.h` / `slop_runtime_abi.h` / `slop_phase4_7.h` - Phase 4-7 native backend, object/link, ABI, and tooling surface.
 - `ROADMAP.md` - Native compiler roadmap covering IR, optimizers, object files, ABI compatibility, and future targets.
 - `slop_native_backend.c` - Experimental direct native backend: Slop subset to x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux assembly/ELF without emitting C.
 - `native_backend_demo.slop` - Minimal program that demonstrates the direct native backend.

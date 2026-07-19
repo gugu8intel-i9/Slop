@@ -97,6 +97,10 @@ cp slop_ir_tools.h "$SLOP_INCLUDE/"
 cp slop_sir_c_backend.h "$SLOP_INCLUDE/"
 cp slop_sir_optimizer.h "$SLOP_INCLUDE/"
 cp slop_elf64_x86_64.h "$SLOP_INCLUDE/"
+cp slop_native_codegen.h "$SLOP_INCLUDE/"
+cp slop_object_link.h "$SLOP_INCLUDE/"
+cp slop_runtime_abi.h "$SLOP_INCLUDE/"
+cp slop_phase4_7.h "$SLOP_INCLUDE/"
 cp slop_boot.py "$SLOP_BIN/"
 cp slop_repl.py "$SLOP_BIN/"
 cp slop_convert.py "$SLOP_BIN/"
@@ -143,6 +147,9 @@ if [ -z "$1" ]; then
     echo "  convert <file>     Automatically turn C/C++ (.h), Rust (.rs) or Python (.py) to Slop!"
     echo "  lex <file.slop>    Lex/tokenize a Slop program using the self-hosted compiler"
     echo "  native <file.slop> [target] Compile MVP native subset directly to assembly/ELF"
+    echo "  emit-ir <file.slop> Emit SIR for native-backend subset"
+    echo "  emit-asm <file.slop> [target] Emit target assembly for native-backend subset"
+    echo "  targets            List native backend targets"
     echo "  repl               Launch the interactive native compiling REPL shell"
     exit 0
 fi
@@ -197,6 +204,25 @@ elif [ "$CMD" = "fmt" ]; then
 elif [ "$CMD" = "lex" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     "$SLOP_BIN/slop-compiler" "$FILE"
+elif [ "$CMD" = "targets" ]; then
+    echo "x86_64-linux"
+    echo "x86_64-linux-elf"
+    echo "aarch64-linux"
+    echo "armv7-linux"
+    echo "riscv64-linux"
+elif [ "$CMD" = "emit-ir" ]; then
+    if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
+    if [ "$FILE" = "${FILE#/}" ]; then FILE="$(pwd)/$FILE"; fi
+    BASE="${FILE%.slop}"
+    "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE.sir" sir
+    echo "Wrote Slop IR: $BASE.sir"
+elif [ "$CMD" = "emit-asm" ]; then
+    if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
+    if [ "$FILE" = "${FILE#/}" ]; then FILE="$(pwd)/$FILE"; fi
+    BASE="${FILE%.slop}"
+    TARGET="${3:-x86_64-linux}"
+    "$SLOP_BIN/slop-native-backend" "$FILE" "$BASE.s" "$TARGET"
+    echo "Wrote target assembly: $BASE.s"
 elif [ "$CMD" = "native" ]; then
     if [ -z "$FILE" ]; then echo "Error: No file specified"; exit 1; fi
     if [ "$FILE" = "${FILE#/}" ]; then

@@ -461,4 +461,20 @@ The beginner model is intentionally tiny:
 
 The compiler/IR handles performance details like arena lifetimes, bounds checks, lowering, and backend selection.
 
+---
+
+## 18. Native Toolchain Phase 4-7 MVP
+
+The native toolchain now has implementation headers for backend maturity, object/link planning, runtime ABI compatibility, and smoke-test tooling.
+
+```bash
+tools/phase4_7_smoke.sh
+slop targets
+slop emit-ir native_backend_demo.slop
+slop emit-asm native_backend_demo.slop x86_64-linux
+slop native native_backend_demo.slop x86_64-linux-elf
+```
+
+The `x86_64-linux-elf` target emits executable bytes directly for the current syscall subset. Other targets emit assembly and use cross-binutils when installed.
+
 Happy coding in Slop! Let's write some insanely high-performance, low-memory code!
