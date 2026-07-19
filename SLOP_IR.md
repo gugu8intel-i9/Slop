@@ -102,6 +102,12 @@ SIR is designed for high-performance compilation and high-performance output:
    - arena lifetime compression
    - target-specific instruction selection
 
+## Phase 3 optimizer completion
+
+Phase 3 adds `slop_sir_optimizer.h`, a backend-independent optimizer over SIR. It performs constant folding, algebraic simplification, CSE, pure dead-value cleanup, duplicate bounds-check removal, empty SEAA arena scope compression, and parallel-safety classification.
+
+See `SIR_OPTIMIZER.md`.
+
 ## Near-term IR expansion
 
 The next SIR milestones are:

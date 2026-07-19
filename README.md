@@ -223,8 +223,9 @@ Slop's learning rule is: **write simple code; the compiler makes it fast**. The 
 - `compiler.slop` - **The self-hosting native Slop compiler/lexer written in Slop itself!**
 - `compiler_v2.slop` - Current self-hosting compiler source; mirrored into `compiler.slop` for the primary install path.
 - `slop_ir.h` / `slop_ir_tools.h` / `SLOP_IR.md` - Slop Intermediate Representation, verifier, textual dump/load, fingerprints, and backend-safe effect classification.
-- `slop_lowering.h` / `slop_sir_optimizer.h` / `slop_sir_c_backend.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering layer, phase-2 fast optimizer, and MVP SIR-consuming C backend.
+- `slop_lowering.h` / `slop_sir_optimizer.h` / `slop_sir_c_backend.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering layer, phase-3 high-performance optimizer, and MVP SIR-consuming C backend.
 - `LEARN_SLOP_IN_10_MINUTES.md` / `SLOP_CHEATSHEET.md` / `easy_start.slop` - beginner-first learning path designed to be easier than Python/JS.
+- `SIR_OPTIMIZER.md` - Phase-3 optimizer docs: folding, DCE, CSE, bounds-check cleanup, SEAA compression, and parallel safety.
 - `ROADMAP.md` - Native compiler roadmap covering IR, optimizers, object files, ABI compatibility, and future targets.
 - `slop_native_backend.c` - Experimental direct native backend: Slop subset to x86_64, ARM64/AArch64, ARMv7, and RISC-V64 Linux assembly/ELF without emitting C.
 - `native_backend_demo.slop` - Minimal program that demonstrates the direct native backend.
