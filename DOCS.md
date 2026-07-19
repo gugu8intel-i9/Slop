@@ -468,6 +468,7 @@ The compiler/IR handles performance details like arena lifetimes, bounds checks,
 The native toolchain now has implementation headers for backend maturity, object/link planning, runtime ABI compatibility, and smoke-test tooling.
 
 ```bash
+tools/production_gate.sh
 tools/phase4_7_smoke.sh
 slop targets
 slop emit-ir native_backend_demo.slop

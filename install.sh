@@ -111,7 +111,6 @@ cp slop_translate.py "$SLOP_BIN/"
 cp slop_builder.py "$SLOP_BIN/"
 cp slop_fmt.py "$SLOP_BIN/"
 cp tools/slop_test.py "$SLOP_BIN/"
-cp tools/slop_lsp.py "$SLOP_BIN/"
 
 # Copy example/demo Slop programs so users can run them immediately
 mkdir -p "$SLOP_DIR/examples"
@@ -158,7 +157,6 @@ if [ -z "$1" ]; then
     echo "  emit-asm <file.slop> [target] Emit target assembly for native-backend subset"
     echo "  targets            List native backend targets"
     echo "  test [files...]    Run Slop example/test files"
-    echo "  lsp                Launch minimal Slop language server"
     echo "  repl               Launch the interactive native compiling REPL shell"
     exit 0
 fi
@@ -282,8 +280,6 @@ elif [ "$CMD" = "convert" ]; then
 elif [ "$CMD" = "test" ]; then
     shift
     python3 "$SLOP_BIN/slop_test.py" "$@"
-elif [ "$CMD" = "lsp" ]; then
-    python3 "$SLOP_BIN/slop_lsp.py"
 elif [ "$CMD" = "repl" ]; then
     python3 "$SLOP_BIN/slop_repl.py"
 else

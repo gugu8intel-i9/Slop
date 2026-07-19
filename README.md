@@ -203,6 +203,9 @@ Important distinction: the stable portable backend still emits C, so compiling g
 
 ## Production Hardening Bundle
 
+See `PRODUCTION.md` for the exact production-gated surface. Anything not covered by `tools/production_gate.sh` is not claimed as production-ready.
+
+
 The repo now includes MVP implementations for the 14 major remaining production needs:
 
 1. SIR-first pipeline contract (`slop_pipeline.h`)
@@ -214,7 +217,7 @@ The repo now includes MVP implementations for the 14 major remaining production 
 7. starter standard library (`std/`)
 8. package/test tooling (`tools/slop_test.py`)
 9. beginner diagnostics (`slop_diagnostics.h`)
-10. editor/LSP skeleton (`tools/slop_lsp.py`)
+10. editor support policy/docs; real LSP is not shipped until production-ready
 11. smoke tests (`tools/phase4_7_smoke.sh`)
 12. GitHub Actions CI (`.github/workflows/ci.yml`)
 13. unsafe hardware policy (`UNSAFE_POLICY.md`)
@@ -251,6 +254,7 @@ Slop now includes the implementation surface for the remaining native toolchain 
 - `slop_runtime_abi.h` — stable string/array/arena ABI layouts, C ABI classification, syscall ABI tables.
 - `slop_phase4_7.h` — aggregate native toolchain surface.
 - `tools/phase4_7_smoke.sh` — local smoke test for IR, optimizer, regalloc, ABI, and direct ELF.
+- `tools/production_gate.sh` — real verification gate for the current supported production surface.
 
 Fast no-linker subset path:
 
@@ -295,7 +299,7 @@ Slop's learning rule is: **write simple code; the compiler makes it fast**. The 
 - `LOW_LEVEL.md` / `slop_lowlevel.h` / `low_level_demo.slop` - optional unsafe low-level RAM/MMIO/CPU/GPU/device control layer.
 - `slop_pipeline.h` / `slop_diagnostics.h` - SIR-first pipeline contract and beginner-first diagnostic helpers.
 - `std/` / `STDLIB.md` - starter standard library layout and package plan.
-- `.github/workflows/ci.yml` / `tools/slop_test.py` / `tools/slop_lsp.py` - CI, test runner, and language-server skeleton.
+- `.github/workflows/ci.yml` / `tools/slop_test.py` / `tools/production_gate.sh` - CI, test runner, and production gate.
 - `SIR_OPTIMIZER.md` - Phase-3 optimizer docs: linear folding, DCE, hash CSE, string fusion, branch folding, jump cleanup, bounds-check cleanup, SEAA compression, fixed-point rounds, direct ELF fast path, and parallel safety.
 - `slop_native_codegen.h` / `slop_object_link.h` / `slop_runtime_abi.h` / `slop_phase4_7.h` - Phase 4-7 native backend, object/link, ABI, and tooling surface.
 - `ROADMAP.md` - Native compiler roadmap covering IR, optimizers, object files, ABI compatibility, and future targets.
