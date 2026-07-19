@@ -19,7 +19,8 @@ It verifies:
 5. portable C backend examples
 5. unsafe low-level demo
 6. direct x86_64 ELF executable backend for the supported native subset
-7. Phase 4-7 smoke test: SIR, optimizer, regalloc, ABI, direct ELF
+7. SIR-first `.slop -> C/ELF` pipeline subset
+8. Phase 4-7 smoke test: SIR, optimizer, regalloc, ABI, direct ELF
 
 ## Supported production surface today
 

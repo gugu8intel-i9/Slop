@@ -65,13 +65,19 @@ static inline int sir_emit_elf64_x86_64(FILE* out, const SIRModule* m) {
 
     for (uint32_t i = 0; i < m->inst_len; i++) {
         const SIRInst* inst = &m->insts[i];
-        if (inst->op == SIR_OP_PRINT_STRING && inst->a < m->string_len) {
-            slop_x64_mov_rax_imm32(&code, 1);       // write
-            slop_x64_mov_rdi_imm32(&code, 1);       // stdout
-            size_t disp = slop_x64_lea_rsi_rip_patch(&code);
-            ADD_PATCH(disp, inst->a, code.len);
-            slop_x64_mov_rdx_imm32(&code, m->strings[inst->a].len);
-            slop_x64_syscall(&code);
+        if (inst->op == SIR_OP_PRINT_STRING) {
+            SIRId sid = inst->a;
+            for (uint32_t j = 0; j < m->inst_len; j++) {
+                if (m->insts[j].dst == inst->a && m->insts[j].op == SIR_OP_CONST_STRING) { sid = m->insts[j].a; break; }
+            }
+            if (sid < m->string_len) {
+                slop_x64_mov_rax_imm32(&code, 1);       // write
+                slop_x64_mov_rdi_imm32(&code, 1);       // stdout
+                size_t disp = slop_x64_lea_rsi_rip_patch(&code);
+                ADD_PATCH(disp, sid, code.len);
+                slop_x64_mov_rdx_imm32(&code, m->strings[sid].len);
+                slop_x64_syscall(&code);
+            }
         } else if (inst->op == SIR_OP_EXIT) {
             slop_x64_mov_rax_imm32(&code, 60);      // exit
             slop_bb_u8(&code, 0x48); slop_bb_u8(&code, 0x31); slop_bb_u8(&code, 0xff); // xor rdi,rdi

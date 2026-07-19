@@ -5,6 +5,7 @@
 
 #define _GNU_SOURCE
 #include "slop_pipeline.h"
+#include "slop_sir_frontend.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,18 +39,32 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    FILE* in = fopen(argv[1], "rb");
-    if (!in) {
-        fprintf(stderr, "failed to open %s: %s\n", argv[1], strerror(errno));
-        return 1;
-    }
-
     SIRModule module;
-    if (!sir_load_text(in, &module, stderr)) {
+    const char* ext = strrchr(argv[1], '.');
+    if (ext && strcmp(ext, ".slop") == 0) {
+        FILE* sf = fopen(argv[1], "rb");
+        if (!sf) { fprintf(stderr, "failed to open %s: %s\n", argv[1], strerror(errno)); return 1; }
+        fseek(sf, 0, SEEK_END);
+        long n = ftell(sf);
+        rewind(sf);
+        char* src = (char*)calloc((size_t)n + 1, 1);
+        if (!src) return 1;
+        fread(src, 1, (size_t)n, sf);
+        fclose(sf);
+        if (!slop_sir_lower_source(argv[1], src, &module, stderr)) { free(src); return 1; }
+        free(src);
+    } else {
+        FILE* in = fopen(argv[1], "rb");
+        if (!in) {
+            fprintf(stderr, "failed to open %s: %s\n", argv[1], strerror(errno));
+            return 1;
+        }
+        if (!sir_load_text(in, &module, stderr)) {
+            fclose(in);
+            return 1;
+        }
         fclose(in);
-        return 1;
     }
-    fclose(in);
 
     SlopPipelineOptions opt = slop_pipeline_default();
     if (!parse_backend(argv[3], &opt.backend)) {

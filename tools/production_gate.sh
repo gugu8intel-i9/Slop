@@ -66,6 +66,16 @@ $CC -O3 -std=gnu11 "$TMP/native_demo_pipeline.c" -o "$TMP/native_demo_pipeline_c
 grep -q "Hello from Slop's direct native backend" "$TMP/native_demo_pipeline_c.out"
 grep -q "Hello from Slop's direct native backend" "$TMP/native_demo_pipeline_elf.out"
 
+
+printf '\n== SIR-first Slop frontend pipeline ==\n'
+"$PREBUILT_PIPELINE" sir_pipeline_demo.slop "$TMP/sir_pipeline_demo.c" c
+$CC -O3 -std=gnu11 "$TMP/sir_pipeline_demo.c" -o "$TMP/sir_pipeline_demo_c"
+"$TMP/sir_pipeline_demo_c" > "$TMP/sir_pipeline_demo_c.out"
+"$PREBUILT_PIPELINE" sir_pipeline_demo.slop "$TMP/sir_pipeline_demo_elf" elf x86_64-linux-elf
+"$TMP/sir_pipeline_demo_elf" > "$TMP/sir_pipeline_demo_elf.out"
+grep -q "SIR pipeline direct from Slop" "$TMP/sir_pipeline_demo_c.out"
+grep -q "C and ELF backends" "$TMP/sir_pipeline_demo_elf.out"
+
 printf '\n== phase 4-7 smoke ==\n'
 tools/phase4_7_smoke.sh
 

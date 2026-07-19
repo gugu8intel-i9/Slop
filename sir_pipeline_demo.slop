@@ -1,0 +1,5 @@
+fn main(args: array[string]) {
+    print("SIR pipeline direct from Slop")
+    let target = "C and ELF"
+    print(target + " backends")
+}

@@ -47,15 +47,20 @@ static inline int sir_emit_c_backend(FILE* out, const SIRModule* m) {
             case SIR_OP_PRINT_I64:
                 fprintf(out, "    printf(\"%%lld\\n\", (long long)v%u);\n", inst->a);
                 break;
-            case SIR_OP_PRINT_STRING:
-                if (inst->a < m->string_len) {
+            case SIR_OP_PRINT_STRING: {
+                SIRId sid = inst->a;
+                for (uint32_t j = 0; j < m->inst_len; j++) {
+                    if (m->insts[j].dst == inst->a && m->insts[j].op == SIR_OP_CONST_STRING) { sid = m->insts[j].a; break; }
+                }
+                if (sid < m->string_len) {
                     fprintf(out, "    fputs(\"");
-                    sir_c_escape(out, m->strings[inst->a].data, m->strings[inst->a].len);
+                    sir_c_escape(out, m->strings[sid].data, m->strings[sid].len);
                     fprintf(out, "\", stdout);\n");
                 } else {
                     fprintf(out, "    // print.string value v%u requires runtime string lowering\n", inst->a);
                 }
                 break;
+            }
             case SIR_OP_EXIT:
                 fprintf(out, "    return %lld;\n", (long long)inst->imm);
                 break;
