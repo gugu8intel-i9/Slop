@@ -18,7 +18,7 @@
 typedef struct { char* name; SIRId local; SIRType type; char* struct_name; } SlopSIRBinding;
 typedef struct { SlopSIRBinding* data; uint32_t len; uint32_t cap; } SlopSIRBindings;
 
-typedef struct { char* name; char* fields[32]; uint32_t field_count; } SlopSIRStructDef;
+typedef struct { char* name; char* fields[32]; SIRType field_types[32]; uint32_t field_count; } SlopSIRStructDef;
 typedef struct { SlopSIRStructDef data[64]; uint32_t len; } SlopSIRStructs;
 
 typedef enum { SLOP_CTX_IF, SLOP_CTX_WHILE } SlopSIRCtxKind;
@@ -58,6 +58,24 @@ static inline char* slop_sir_find_op(char* expr,const char** ops,uint32_t op_cou
 static inline SlopSIRStructDef* slop_sir_find_struct(SlopSIRStructs* structs, const char* name) {
     for (uint32_t i=0;i<structs->len;i++) if (strcmp(structs->data[i].name,name)==0) return &structs->data[i];
     return NULL;
+}
+
+static inline SIRType slop_sir_type_from_name(char* t, SlopSIRStructs* structs) {
+    t = slop_sir_trim(t);
+    size_t tn = strlen(t);
+    while (tn && (t[tn-1] == ',' || isspace((unsigned char)t[tn-1]))) t[--tn] = 0;
+    if (strcmp(t, "string") == 0) return SIR_TYPE_STRING;
+    if (strcmp(t, "bool") == 0) return SIR_TYPE_BOOL;
+    if (strcmp(t, "float") == 0) return SIR_TYPE_F64;
+    if (slop_sir_find_struct(structs, t)) return SIR_TYPE_STRUCT;
+    return SIR_TYPE_I64;
+}
+
+static inline SIRType slop_sir_struct_field_type(SlopSIRStructs* structs, const char* struct_name, const char* field) {
+    SlopSIRStructDef* sd = slop_sir_find_struct(structs, struct_name);
+    if (!sd) return SIR_TYPE_I64;
+    for (uint32_t i=0;i<sd->field_count;i++) if (strcmp(sd->fields[i], field)==0) return sd->field_types[i];
+    return SIR_TYPE_I64;
 }
 
 static inline void slop_sir_structs_free(SlopSIRStructs* structs) {
@@ -138,7 +156,8 @@ static inline SIRId slop_sir_lower_expr(SlopLowering* l,SlopSIRBindings* binding
     const char* mul_ops[]={"*","/","%"}; op=slop_sir_find_op(expr,mul_ops,3);
     if(op){char opc=*op; *op=0; SIRType lt,rt; SIRId a=slop_sir_lower_expr(l,bindings,structs,expr,&lt,NULL); SIRId b=slop_sir_lower_expr(l,bindings,structs,op+1,&rt,NULL); *out_type=SIR_TYPE_I64; if(opc=='*')return slop_lower_mul_i64(l,a,b); if(opc=='/')return slop_lower_div_i64(l,a,b); return slop_lower_mod_i64(l,a,b);}
 
-    char* dot = strchr(expr, '.'); if (dot) { *dot = 0; char* objn = slop_sir_trim(expr); char* fld = slop_sir_trim(dot + 1); SlopSIRBinding* ob = slop_sir_find(bindings, objn); if (ob) { SIRId obj = slop_lower_local_get(l, ob->local, ob->type); *out_type = SIR_TYPE_I64; return slop_lower_field_get(l, obj, fld, SIR_TYPE_I64); } }
+    char* mdot = strchr(expr, '.'); char* mcall = mdot ? strchr(mdot, '(') : NULL; char* mend = mdot ? strrchr(mdot, ')') : NULL; if (mdot && mcall && mend && mend[1] == 0) { *mdot = 0; *mcall = 0; *mend = 0; char* objn = slop_sir_trim(expr); char* mn = slop_sir_trim(mdot + 1); SlopSIRBinding* ob = slop_sir_find(bindings, objn); if (ob && ob->struct_name) { SIRId obj = slop_lower_local_get(l, ob->local, ob->type); SIRId extra[1]={0}; uint32_t ec=slop_sir_lower_call_args(l, bindings, structs, mcall+1, extra, 1); char fname[256]; snprintf(fname, sizeof(fname), "%s_%s", ob->struct_name, mn); SIRId dst=sir_new_value(l->module); SIRInst* inst=sir_emit(l->module,SIR_OP_CALL); inst->type=SIR_TYPE_I64; inst->dst=dst; inst->a=slop_lower_named_id(l,fname); inst->b=obj; inst->c=ec?extra[0]:0; inst->imm=1+ec; *out_type=SIR_TYPE_I64; return dst; } }
+    char* dot = strchr(expr, '.'); if (dot) { *dot = 0; char* objn = slop_sir_trim(expr); char* fld = slop_sir_trim(dot + 1); SlopSIRBinding* ob = slop_sir_find(bindings, objn); if (ob) { SIRId obj = slop_lower_local_get(l, ob->local, ob->type); SIRType ft = ob->struct_name ? slop_sir_struct_field_type(structs, ob->struct_name, fld) : SIR_TYPE_I64; *out_type = ft; return slop_lower_field_get(l, obj, fld, ft); } }
     char* callp = strchr(expr, '('); char* calle = strrchr(expr, ')'); if (callp && calle && calle > callp && calle[1] == 0) { *callp = 0; char* cname = slop_sir_trim(expr); SlopSIRStructDef* sd = slop_sir_find_struct(structs, cname); if (sd) { *calle = 0; SIRId obj = slop_lower_struct_new(l, cname, 0); SIRId cargs[16]={0}; uint32_t argc=slop_sir_lower_call_args(l, bindings, structs, callp+1, cargs, 16); for(uint32_t fi=0; fi<argc && fi<sd->field_count; fi++){ slop_lower_field_set(l, obj, sd->fields[fi], cargs[fi]); } *out_type = SIR_TYPE_STRUCT; if(out_struct_name)*out_struct_name=cname; return obj; } *calle = 0; SIRId cargs[2]={0}; uint32_t argc=slop_sir_lower_call_args(l, bindings, structs, callp+1, cargs, 2); SIRId dst = sir_new_value(l->module); SIRInst* inst = sir_emit(l->module, SIR_OP_CALL); inst->type = SIR_TYPE_I64; inst->dst = dst; inst->a = slop_lower_named_id(l, cname); inst->b = argc > 0 ? cargs[0] : 0; inst->c = argc > 1 ? cargs[1] : 0; inst->imm = argc; *out_type = SIR_TYPE_I64; return dst; }
     if(strcmp(expr,"true")==0){*out_type=SIR_TYPE_BOOL;return slop_lower_bool(l,true);} if(strcmp(expr,"false")==0){*out_type=SIR_TYPE_BOOL;return slop_lower_bool(l,false);}
     char* str=slop_sir_parse_string(expr); if(str){SIRId id=slop_lower_string_literal(l,str); free(str); *out_type=SIR_TYPE_STRING; return id;}
@@ -172,9 +191,9 @@ static inline bool slop_sir_lower_source(const char* filename,const char* source
     char* copy=strdup(source); if(!copy)return false; char* save=NULL; uint32_t line_no=0;
     for(char* line=strtok_r(copy,"\n",&save);line;line=strtok_r(NULL,"\n",&save)){
         line_no++; slop_sir_strip_comment(line); char* t=slop_sir_trim(line); if(!*t||strcmp(t,"{")==0)continue;
-        if(in_struct){ if(strcmp(t,"}")==0){in_struct=false;current_struct=NULL;continue;} char* colon=strchr(t, ':'); if(colon && current_struct && current_struct->field_count<32){*colon=0; current_struct->fields[current_struct->field_count++]=strdup(slop_sir_trim(t));} continue; }
+        if(in_struct){ if(strcmp(t,"}")==0){in_struct=false;current_struct=NULL;continue;} char* colon=strchr(t, ':'); if(colon && current_struct && current_struct->field_count<32){*colon=0; uint32_t fi=current_struct->field_count; current_struct->fields[fi]=strdup(slop_sir_trim(t)); current_struct->field_types[fi]=slop_sir_type_from_name(colon+1,&structs); current_struct->field_count++;} continue; }
         if(slop_sir_starts(t,"struct ")){char* p=t+7;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;if(structs.len<64){current_struct=&structs.data[structs.len++];memset(current_struct,0,sizeof(*current_struct));current_struct->name=slop_sir_strdup_len(ns,(size_t)(p-ns));in_struct=true;}continue;}
-        if(slop_sir_starts(t,"fn ")){char* p=t+3;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;char* name=slop_sir_strdup_len(ns,(size_t)(p-ns));slop_sir_bindings_free(&bindings);memset(&bindings,0,sizeof(bindings));slop_lower_function_begin(&lowering,name);in_function=true;current_main=(strcmp(name,"main")==0);char* lp=strchr(p,'(');char* rp=strchr(p,')');if(lp&&rp&&rp>lp&&!current_main){*rp=0;char* savep=NULL;for(char* prm=strtok_r(lp+1,",",&savep);prm;prm=strtok_r(NULL,",",&savep)){char* colon=strchr(prm,':');if(colon)*colon=0;char* pn=slop_sir_trim(prm);if(*pn){SIRId name_id=slop_lower_named_id(&lowering,pn);SIRId local=sir_emit_local_declare(lowering.module,name_id,SIR_TYPE_I64,0);slop_sir_bind(&bindings,pn,local,SIR_TYPE_I64);}}}slop_lower_block(&lowering,"entry");free(name);continue;}
+        if(slop_sir_starts(t,"fn ")){char* p=t+3;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;char* name=slop_sir_strdup_len(ns,(size_t)(p-ns));slop_sir_bindings_free(&bindings);memset(&bindings,0,sizeof(bindings));slop_lower_function_begin(&lowering,name);in_function=true;current_main=(strcmp(name,"main")==0);char* lp=strchr(p,'(');char* rp=strchr(p,')');if(lp&&rp&&rp>lp&&!current_main){*rp=0;char* savep=NULL;for(char* prm=strtok_r(lp+1,",",&savep);prm;prm=strtok_r(NULL,",",&savep)){char* colon=strchr(prm,':');SIRType pt=SIR_TYPE_I64;char* stn=NULL;if(colon){*colon=0;pt=slop_sir_type_from_name(colon+1,&structs); if(pt==SIR_TYPE_STRUCT) stn=slop_sir_trim(colon+1);}char* pn=slop_sir_trim(prm);if(*pn){SIRId name_id=slop_lower_named_id(&lowering,pn);SIRId local=sir_emit_local_declare(lowering.module,name_id,pt,0);slop_sir_bind_ex(&bindings,pn,local,pt,stn);}}}slop_lower_block(&lowering,"entry");free(name);continue;}
         if(slop_sir_line_is_close_else(t)){
             if(!stack.len||stack.data[stack.len-1].kind!=SLOP_CTX_IF){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"else without matching if","put else immediately after an if block",t});goto fail;}
             SlopSIRCtx* c=&stack.data[stack.len-1]; slop_lower_jump(&lowering,c->end_block); slop_sir_emit_block_id(&lowering,c->else_block,"if_else"); c->in_else=true; continue;

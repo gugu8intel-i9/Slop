@@ -1,0 +1,15 @@
+struct Person {
+    name: string,
+    age: int
+}
+
+fn Person_score(this: Person, bonus: int) -> int {
+    return this.age + bonus
+}
+
+fn main(args: array[string]) {
+    let p = Person("Gugu", 40)
+    print(p.name)
+    print(p.age)
+    print(p.score(2))
+}

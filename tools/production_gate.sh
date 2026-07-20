@@ -114,6 +114,15 @@ grep -q "7" "$TMP/sir_struct_demo_c.out"
 grep -q "35" "$TMP/sir_struct_demo_c.out"
 grep -q "43" "$TMP/sir_struct_demo_c.out"
 
+
+printf '\n== SIR-first methods and string fields pipeline ==\n'
+"$PREBUILT_PIPELINE" sir_method_demo.slop "$TMP/sir_method_demo.c" c
+$CC -O3 -std=gnu11 "$TMP/sir_method_demo.c" -o "$TMP/sir_method_demo_c"
+"$TMP/sir_method_demo_c" > "$TMP/sir_method_demo_c.out"
+grep -q "Gugu" "$TMP/sir_method_demo_c.out"
+grep -q "40" "$TMP/sir_method_demo_c.out"
+grep -q "42" "$TMP/sir_method_demo_c.out"
+
 printf '\n== phase 4-7 smoke ==\n'
 tools/phase4_7_smoke.sh
 
