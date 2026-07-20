@@ -46,6 +46,23 @@ static inline void sir_c_escape(FILE* out, const char* s, uint32_t len) {
     }
 }
 
+static inline void sir_c_emit_function_signature(FILE* out, const SIRModule* m, uint32_t fn_index) {
+    const SIRInst* fn = &m->insts[fn_index];
+    const char* name = fn->a < m->string_len ? m->strings[fn->a].data : "unknown";
+    if (strcmp(name, "main") == 0) {
+        fprintf(out, "int main(void)");
+        return;
+    }
+    fprintf(out, "int64_t fn_%s(", name);
+    bool first = true;
+    for (uint32_t j = fn_index + 1; j < m->inst_len && m->insts[j].op == SIR_OP_LOCAL_DECLARE && m->insts[j].b == 0; j++) {
+        if (!first) fprintf(out, ", ");
+        fprintf(out, "%s l%u", sir_c_type_name(m->insts[j].type), m->insts[j].dst);
+        first = false;
+    }
+    fprintf(out, ")");
+}
+
 static inline int sir_emit_c_backend(FILE* out, const SIRModule* m) {
     SIRVerifyResult vr = sir_verify_module(m, stderr);
     if (vr.errors) return 1;
@@ -66,17 +83,19 @@ static inline int sir_emit_c_backend(FILE* out, const SIRModule* m) {
         const SIRInst* inst = &m->insts[i];
         switch (inst->op) {
             case SIR_OP_FUNCTION_BEGIN:
-                if (inst->a < m->string_len) {
-                    const char* name = m->strings[inst->a].data;
-                    if (strcmp(name, "main") == 0) fprintf(out, "int main(void) {\n");
-                    else fprintf(out, "int64_t fn_%s(void) {\n", name);
-                }
+                sir_c_emit_function_signature(out, m, i);
+                fprintf(out, " {\n");
                 break;
             case SIR_OP_FUNCTION_END:
                 fprintf(out, "}\n\n");
                 break;
             case SIR_OP_CALL:
-                if (inst->a < m->string_len) fprintf(out, "    int64_t v%u = fn_%s();\n", inst->dst, m->strings[inst->a].data);
+                if (inst->a < m->string_len) {
+                    fprintf(out, "    int64_t v%u = fn_%s(", inst->dst, m->strings[inst->a].data);
+                    if (inst->imm > 0) fprintf(out, "v%u", inst->b);
+                    if (inst->imm > 1) fprintf(out, ", v%u", inst->c);
+                    fprintf(out, ");\n");
+                }
                 break;
             case SIR_OP_CONST_STRING:
                 if (inst->a < m->string_len) {
@@ -125,7 +144,7 @@ static inline int sir_emit_c_backend(FILE* out, const SIRModule* m) {
                 fprintf(out, "    int64_t v%u = (v%u >= v%u);\n", inst->dst, inst->a, inst->b);
                 break;
             case SIR_OP_LOCAL_DECLARE:
-                fprintf(out, "    %s l%u = v%u;\n", sir_c_type_name(inst->type), inst->dst, inst->b);
+                if (inst->b != 0) fprintf(out, "    %s l%u = v%u;\n", sir_c_type_name(inst->type), inst->dst, inst->b);
                 break;
             case SIR_OP_LOCAL_GET:
                 fprintf(out, "    %s v%u = l%u;\n", sir_c_type_name(inst->type), inst->dst, inst->a);

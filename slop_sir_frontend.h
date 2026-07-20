@@ -70,6 +70,38 @@ static inline void slop_sir_structs_free(SlopSIRStructs* structs) {
 
 static inline SIRId slop_sir_lower_expr(SlopLowering* l,SlopSIRBindings* bindings,SlopSIRStructs* structs,char* expr,SIRType* out_type,char** out_struct_name);
 
+static inline uint32_t slop_sir_lower_call_args(SlopLowering* l, SlopSIRBindings* bindings, SlopSIRStructs* structs, char* args, SIRId* out_args, uint32_t max_args) {
+    uint32_t count = 0;
+    int depth = 0;
+    bool in_str = false, esc = false;
+    char* start = args;
+    for (char* p = args; ; p++) {
+        char c = *p;
+        if (esc) { esc = false; continue; }
+        if (c == '\\' && in_str) { esc = true; continue; }
+        if (c == '"') { in_str = !in_str; continue; }
+        if (!in_str) {
+            if (c == '(' || c == '[') depth++;
+            if (c == ')' || c == ']') depth--;
+            if ((c == ',' && depth == 0) || c == 0) {
+                char saved = *p;
+                *p = 0;
+                char* part = slop_sir_trim(start);
+                if (*part && count < max_args) {
+                    SIRType t;
+                    out_args[count++] = slop_sir_lower_expr(l, bindings, structs, part, &t, NULL);
+                }
+                *p = saved;
+                if (c == 0) break;
+                start = p + 1;
+            }
+        }
+        if (c == 0) break;
+    }
+    return count;
+}
+
+
 static inline bool slop_sir_is_wrapped(char* expr, char open, char close) {
     expr = slop_sir_trim(expr);
     size_t n = strlen(expr);
@@ -107,7 +139,7 @@ static inline SIRId slop_sir_lower_expr(SlopLowering* l,SlopSIRBindings* binding
     if(op){char opc=*op; *op=0; SIRType lt,rt; SIRId a=slop_sir_lower_expr(l,bindings,structs,expr,&lt,NULL); SIRId b=slop_sir_lower_expr(l,bindings,structs,op+1,&rt,NULL); *out_type=SIR_TYPE_I64; if(opc=='*')return slop_lower_mul_i64(l,a,b); if(opc=='/')return slop_lower_div_i64(l,a,b); return slop_lower_mod_i64(l,a,b);}
 
     char* dot = strchr(expr, '.'); if (dot) { *dot = 0; char* objn = slop_sir_trim(expr); char* fld = slop_sir_trim(dot + 1); SlopSIRBinding* ob = slop_sir_find(bindings, objn); if (ob) { SIRId obj = slop_lower_local_get(l, ob->local, ob->type); *out_type = SIR_TYPE_I64; return slop_lower_field_get(l, obj, fld, SIR_TYPE_I64); } }
-    char* callp = strchr(expr, '('); char* calle = strrchr(expr, ')'); if (callp && calle && calle > callp && calle[1] == 0) { *callp = 0; char* cname = slop_sir_trim(expr); SlopSIRStructDef* sd = slop_sir_find_struct(structs, cname); if (sd) { *calle = 0; SIRId obj = slop_lower_struct_new(l, cname, 0); char* save_args=NULL; uint32_t fi=0; for(char* part=strtok_r(callp+1, ",", &save_args); part && fi<sd->field_count; part=strtok_r(NULL, ",", &save_args), fi++){ SIRType at; SIRId av=slop_sir_lower_expr(l, bindings, structs, part, &at, NULL); slop_lower_field_set(l, obj, sd->fields[fi], av); } *out_type = SIR_TYPE_STRUCT; if(out_struct_name)*out_struct_name=cname; return obj; } *out_type = SIR_TYPE_I64; return slop_lower_call(l, cname, 0, 0, SIR_TYPE_I64); }
+    char* callp = strchr(expr, '('); char* calle = strrchr(expr, ')'); if (callp && calle && calle > callp && calle[1] == 0) { *callp = 0; char* cname = slop_sir_trim(expr); SlopSIRStructDef* sd = slop_sir_find_struct(structs, cname); if (sd) { *calle = 0; SIRId obj = slop_lower_struct_new(l, cname, 0); SIRId cargs[16]={0}; uint32_t argc=slop_sir_lower_call_args(l, bindings, structs, callp+1, cargs, 16); for(uint32_t fi=0; fi<argc && fi<sd->field_count; fi++){ slop_lower_field_set(l, obj, sd->fields[fi], cargs[fi]); } *out_type = SIR_TYPE_STRUCT; if(out_struct_name)*out_struct_name=cname; return obj; } *calle = 0; SIRId cargs[2]={0}; uint32_t argc=slop_sir_lower_call_args(l, bindings, structs, callp+1, cargs, 2); SIRId dst = sir_new_value(l->module); SIRInst* inst = sir_emit(l->module, SIR_OP_CALL); inst->type = SIR_TYPE_I64; inst->dst = dst; inst->a = slop_lower_named_id(l, cname); inst->b = argc > 0 ? cargs[0] : 0; inst->c = argc > 1 ? cargs[1] : 0; inst->imm = argc; *out_type = SIR_TYPE_I64; return dst; }
     if(strcmp(expr,"true")==0){*out_type=SIR_TYPE_BOOL;return slop_lower_bool(l,true);} if(strcmp(expr,"false")==0){*out_type=SIR_TYPE_BOOL;return slop_lower_bool(l,false);}
     char* str=slop_sir_parse_string(expr); if(str){SIRId id=slop_lower_string_literal(l,str); free(str); *out_type=SIR_TYPE_STRING; return id;}
     int64_t iv=0; if(slop_sir_parse_i64(expr,&iv)){*out_type=SIR_TYPE_I64;return slop_lower_i64(l,iv);}
@@ -142,7 +174,7 @@ static inline bool slop_sir_lower_source(const char* filename,const char* source
         line_no++; slop_sir_strip_comment(line); char* t=slop_sir_trim(line); if(!*t||strcmp(t,"{")==0)continue;
         if(in_struct){ if(strcmp(t,"}")==0){in_struct=false;current_struct=NULL;continue;} char* colon=strchr(t, ':'); if(colon && current_struct && current_struct->field_count<32){*colon=0; current_struct->fields[current_struct->field_count++]=strdup(slop_sir_trim(t));} continue; }
         if(slop_sir_starts(t,"struct ")){char* p=t+7;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;if(structs.len<64){current_struct=&structs.data[structs.len++];memset(current_struct,0,sizeof(*current_struct));current_struct->name=slop_sir_strdup_len(ns,(size_t)(p-ns));in_struct=true;}continue;}
-        if(slop_sir_starts(t,"fn ")){char* p=t+3;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;char* name=slop_sir_strdup_len(ns,(size_t)(p-ns));slop_sir_bindings_free(&bindings);memset(&bindings,0,sizeof(bindings));slop_lower_function_begin(&lowering,name);slop_lower_block(&lowering,"entry");in_function=true;current_main=(strcmp(name,"main")==0);free(name);continue;}
+        if(slop_sir_starts(t,"fn ")){char* p=t+3;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;char* name=slop_sir_strdup_len(ns,(size_t)(p-ns));slop_sir_bindings_free(&bindings);memset(&bindings,0,sizeof(bindings));slop_lower_function_begin(&lowering,name);in_function=true;current_main=(strcmp(name,"main")==0);char* lp=strchr(p,'(');char* rp=strchr(p,')');if(lp&&rp&&rp>lp&&!current_main){*rp=0;char* savep=NULL;for(char* prm=strtok_r(lp+1,",",&savep);prm;prm=strtok_r(NULL,",",&savep)){char* colon=strchr(prm,':');if(colon)*colon=0;char* pn=slop_sir_trim(prm);if(*pn){SIRId name_id=slop_lower_named_id(&lowering,pn);SIRId local=sir_emit_local_declare(lowering.module,name_id,SIR_TYPE_I64,0);slop_sir_bind(&bindings,pn,local,SIR_TYPE_I64);}}}slop_lower_block(&lowering,"entry");free(name);continue;}
         if(slop_sir_line_is_close_else(t)){
             if(!stack.len||stack.data[stack.len-1].kind!=SLOP_CTX_IF){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"else without matching if","put else immediately after an if block",t});goto fail;}
             SlopSIRCtx* c=&stack.data[stack.len-1]; slop_lower_jump(&lowering,c->end_block); slop_sir_emit_block_id(&lowering,c->else_block,"if_else"); c->in_else=true; continue;

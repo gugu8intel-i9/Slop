@@ -1,0 +1,7 @@
+fn add(a: int, b: int) -> int {
+    return a + b
+}
+
+fn main(args: array[string]) {
+    print(add(20, 22))
+}
