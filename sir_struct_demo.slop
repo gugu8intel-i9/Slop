@@ -1,0 +1,12 @@
+struct Point {
+    x: int,
+    y: int
+}
+
+fn main(args: array[string]) {
+    let p = Point(7, 35)
+    print(p.x)
+    print(p.y)
+    p.x = 8
+    print(p.x + p.y)
+}

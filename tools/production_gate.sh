@@ -98,6 +98,15 @@ $CC -O3 -std=gnu11 "$TMP/sir_function_demo.c" -o "$TMP/sir_function_demo_c"
 "$TMP/sir_function_demo_c" > "$TMP/sir_function_demo_c.out"
 grep -q "42" "$TMP/sir_function_demo_c.out"
 
+
+printf '\n== SIR-first structs pipeline ==\n'
+"$PREBUILT_PIPELINE" sir_struct_demo.slop "$TMP/sir_struct_demo.c" c
+$CC -O3 -std=gnu11 "$TMP/sir_struct_demo.c" -o "$TMP/sir_struct_demo_c"
+"$TMP/sir_struct_demo_c" > "$TMP/sir_struct_demo_c.out"
+grep -q "7" "$TMP/sir_struct_demo_c.out"
+grep -q "35" "$TMP/sir_struct_demo_c.out"
+grep -q "43" "$TMP/sir_struct_demo_c.out"
+
 printf '\n== phase 4-7 smoke ==\n'
 tools/phase4_7_smoke.sh
 

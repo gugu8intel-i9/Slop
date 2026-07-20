@@ -15,8 +15,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct { char* name; SIRId local; SIRType type; } SlopSIRBinding;
+typedef struct { char* name; SIRId local; SIRType type; char* struct_name; } SlopSIRBinding;
 typedef struct { SlopSIRBinding* data; uint32_t len; uint32_t cap; } SlopSIRBindings;
+
+typedef struct { char* name; char* fields[32]; uint32_t field_count; } SlopSIRStructDef;
+typedef struct { SlopSIRStructDef data[64]; uint32_t len; } SlopSIRStructs;
 
 typedef enum { SLOP_CTX_IF, SLOP_CTX_WHILE } SlopSIRCtxKind;
 typedef struct { SlopSIRCtxKind kind; SIRId cond_block; SIRId then_or_body; SIRId else_block; SIRId end_block; bool in_else; } SlopSIRCtx;
@@ -27,13 +30,15 @@ static inline char* slop_sir_trim(char* s) { while (*s && isspace((unsigned char
 static inline bool slop_sir_starts(const char* s,const char* p){return strncmp(s,p,strlen(p))==0;}
 static inline char* slop_sir_strdup_len(const char* s,size_t n){char* o=(char*)malloc(n+1); if(!o) return NULL; memcpy(o,s,n); o[n]=0; return o;}
 
-static inline void slop_sir_bind(SlopSIRBindings* b,const char* name,SIRId local,SIRType type){
-    for(uint32_t i=0;i<b->len;i++) if(strcmp(b->data[i].name,name)==0){b->data[i].local=local;b->data[i].type=type;return;}
+static inline void slop_sir_bind_ex(SlopSIRBindings* b,const char* name,SIRId local,SIRType type,const char* struct_name){
+    for(uint32_t i=0;i<b->len;i++) if(strcmp(b->data[i].name,name)==0){b->data[i].local=local;b->data[i].type=type;free(b->data[i].struct_name);b->data[i].struct_name=struct_name?strdup(struct_name):NULL;return;}
     if(b->len==b->cap){b->cap=b->cap?b->cap*2:16;b->data=(SlopSIRBinding*)realloc(b->data,(size_t)b->cap*sizeof(SlopSIRBinding));if(!b->data)exit(1);}
-    b->data[b->len].name=strdup(name); b->data[b->len].local=local; b->data[b->len].type=type; b->len++;
+    b->data[b->len].name=strdup(name); b->data[b->len].local=local; b->data[b->len].type=type; b->data[b->len].struct_name=struct_name?strdup(struct_name):NULL; b->len++;
 }
+static inline void slop_sir_bind(SlopSIRBindings* b,const char* name,SIRId local,SIRType type){ slop_sir_bind_ex(b,name,local,type,NULL); }
+
 static inline SlopSIRBinding* slop_sir_find(SlopSIRBindings* b,const char* name){for(uint32_t i=0;i<b->len;i++) if(strcmp(b->data[i].name,name)==0) return &b->data[i]; return NULL;}
-static inline void slop_sir_bindings_free(SlopSIRBindings* b){for(uint32_t i=0;i<b->len;i++) free(b->data[i].name); free(b->data); memset(b,0,sizeof(*b));}
+static inline void slop_sir_bindings_free(SlopSIRBindings* b){for(uint32_t i=0;i<b->len;i++){ free(b->data[i].name); free(b->data[i].struct_name); } free(b->data); memset(b,0,sizeof(*b));}
 
 static inline void slop_sir_strip_comment(char* s){bool in=false,esc=false;for(size_t i=0;s[i];i++){char c=s[i];if(esc){esc=false;continue;} if(c=='\\'&&in){esc=true;continue;} if(c=='"'){in=!in;continue;} if(c=='#'&&!in){s[i]=0;return;}}}
 
@@ -50,7 +55,20 @@ static inline char* slop_sir_find_op(char* expr,const char** ops,uint32_t op_cou
     return found;
 }
 
-static inline SIRId slop_sir_lower_expr(SlopLowering* l,SlopSIRBindings* bindings,char* expr,SIRType* out_type);
+static inline SlopSIRStructDef* slop_sir_find_struct(SlopSIRStructs* structs, const char* name) {
+    for (uint32_t i=0;i<structs->len;i++) if (strcmp(structs->data[i].name,name)==0) return &structs->data[i];
+    return NULL;
+}
+
+static inline void slop_sir_structs_free(SlopSIRStructs* structs) {
+    for (uint32_t i=0;i<structs->len;i++) {
+        free(structs->data[i].name);
+        for (uint32_t j=0;j<structs->data[i].field_count;j++) free(structs->data[i].fields[j]);
+    }
+    structs->len=0;
+}
+
+static inline SIRId slop_sir_lower_expr(SlopLowering* l,SlopSIRBindings* bindings,SlopSIRStructs* structs,char* expr,SIRType* out_type,char** out_struct_name);
 
 static inline bool slop_sir_is_wrapped(char* expr, char open, char close) {
     expr = slop_sir_trim(expr);
@@ -58,7 +76,7 @@ static inline bool slop_sir_is_wrapped(char* expr, char open, char close) {
     return n >= 2 && expr[0] == open && expr[n - 1] == close;
 }
 
-static inline SIRId slop_sir_lower_array_literal(SlopLowering* l, SlopSIRBindings* bindings, char* expr, SIRType* out_type) {
+static inline SIRId slop_sir_lower_array_literal(SlopLowering* l, SlopSIRBindings* bindings, SlopSIRStructs* structs, char* expr, SIRType* out_type) {
     expr = slop_sir_trim(expr);
     size_t n = strlen(expr);
     if (n < 2 || expr[0] != '[' || expr[n - 1] != ']') return 0;
@@ -68,30 +86,32 @@ static inline SIRId slop_sir_lower_array_literal(SlopLowering* l, SlopSIRBinding
     char* save = NULL;
     for (char* part = strtok_r(body, ",", &save); part; part = strtok_r(NULL, ",", &save)) {
         SIRType et = SIR_TYPE_VOID;
-        SIRId v = slop_sir_lower_expr(l, bindings, part, &et);
+        SIRId v = slop_sir_lower_expr(l, bindings, structs, part, &et, NULL);
         if (v) slop_lower_array_push(l, arr, v);
     }
     *out_type = SIR_TYPE_ARRAY;
     return arr;
 }
 
-static inline SIRId slop_sir_lower_expr(SlopLowering* l,SlopSIRBindings* bindings,char* expr,SIRType* out_type){
+static inline SIRId slop_sir_lower_expr(SlopLowering* l,SlopSIRBindings* bindings,SlopSIRStructs* structs,char* expr,SIRType* out_type,char** out_struct_name){
     expr=slop_sir_trim(expr);
-    if (slop_sir_starts(expr, "length(")) { char* p = strchr(expr, '('); char* e = strrchr(expr, ')'); if (p && e && e > p) { *e = 0; SIRType at; SIRId av = slop_sir_lower_expr(l, bindings, p + 1, &at); *out_type = SIR_TYPE_I64; return slop_lower_array_len(l, av); } }
-    SIRId arrlit = slop_sir_lower_array_literal(l, bindings, expr, out_type); if (arrlit) return arrlit;
-    char* lb = strchr(expr, '['); char* rb = strrchr(expr, ']'); if (lb && rb && rb > lb) { *lb = 0; *rb = 0; char* nm = slop_sir_trim(expr); SlopSIRBinding* bind = slop_sir_find(bindings, nm); if (bind) { SIRType it; SIRId idx = slop_sir_lower_expr(l, bindings, lb + 1, &it); *out_type = SIR_TYPE_I64; return slop_lower_array_get(l, bind->local, idx, SIR_TYPE_I64); } }
+    if (slop_sir_starts(expr, "length(")) { char* p = strchr(expr, '('); char* e = strrchr(expr, ')'); if (p && e && e > p) { *e = 0; SIRType at; SIRId av = slop_sir_lower_expr(l, bindings, structs, p + 1, &at, NULL); *out_type = SIR_TYPE_I64; return slop_lower_array_len(l, av); } }
+    SIRId arrlit = slop_sir_lower_array_literal(l, bindings, structs, expr, out_type); if (arrlit) return arrlit;
+    char* lb = strchr(expr, '['); char* rb = strrchr(expr, ']'); if (lb && rb && rb > lb) { *lb = 0; *rb = 0; char* nm = slop_sir_trim(expr); SlopSIRBinding* bind = slop_sir_find(bindings, nm); if (bind) { SIRType it; SIRId idx = slop_sir_lower_expr(l, bindings, structs, lb + 1, &it, NULL); *out_type = SIR_TYPE_I64; return slop_lower_array_get(l, bind->local, idx, SIR_TYPE_I64); } }
     const char* cmp_ops[]={"==","!=","<=",">=","<",">"};
     char* op=slop_sir_find_op(expr,cmp_ops,6);
-    if(op){char opbuf[3]={0}; opbuf[0]=op[0]; if(op[1]=='='||op[0]=='!'||op[0]=='=') opbuf[1]=op[1]; size_t oplen=strlen(opbuf); *op=0; if(oplen==2) op[1]=0; SIRType lt,rt; SIRId a=slop_sir_lower_expr(l,bindings,expr,&lt); SIRId b=slop_sir_lower_expr(l,bindings,op+oplen,&rt); *out_type=SIR_TYPE_BOOL; if(strcmp(opbuf,"==")==0)return slop_lower_cmp_eq(l,a,b); if(strcmp(opbuf,"!=")==0)return slop_lower_cmp_ne(l,a,b); if(strcmp(opbuf,"<=")==0)return slop_lower_cmp_le_i64(l,a,b); if(strcmp(opbuf,">=")==0)return slop_lower_cmp_ge_i64(l,a,b); if(strcmp(opbuf,"<")==0)return slop_lower_cmp_lt_i64(l,a,b); return slop_lower_cmp_gt_i64(l,a,b);}
+    if(op){char opbuf[3]={0}; opbuf[0]=op[0]; if(op[1]=='='||op[0]=='!'||op[0]=='=') opbuf[1]=op[1]; size_t oplen=strlen(opbuf); *op=0; if(oplen==2) op[1]=0; SIRType lt,rt; SIRId a=slop_sir_lower_expr(l,bindings,structs,expr,&lt,NULL); SIRId b=slop_sir_lower_expr(l,bindings,structs,op+oplen,&rt,NULL); *out_type=SIR_TYPE_BOOL; if(strcmp(opbuf,"==")==0)return slop_lower_cmp_eq(l,a,b); if(strcmp(opbuf,"!=")==0)return slop_lower_cmp_ne(l,a,b); if(strcmp(opbuf,"<=")==0)return slop_lower_cmp_le_i64(l,a,b); if(strcmp(opbuf,">=")==0)return slop_lower_cmp_ge_i64(l,a,b); if(strcmp(opbuf,"<")==0)return slop_lower_cmp_lt_i64(l,a,b); return slop_lower_cmp_gt_i64(l,a,b);}
     const char* add_ops[]={"+","-"}; op=slop_sir_find_op(expr,add_ops,2);
-    if(op && op!=expr){char opc=*op; *op=0; SIRType lt,rt; SIRId a=slop_sir_lower_expr(l,bindings,expr,&lt); SIRId b=slop_sir_lower_expr(l,bindings,op+1,&rt); if(opc=='+'&&(lt==SIR_TYPE_STRING||rt==SIR_TYPE_STRING)){*out_type=SIR_TYPE_STRING;return slop_lower_string_concat(l,a,b);} *out_type=SIR_TYPE_I64; return opc=='+'?slop_lower_add_i64(l,a,b):slop_lower_sub_i64(l,a,b);}
+    if(op && op!=expr){char opc=*op; *op=0; SIRType lt,rt; SIRId a=slop_sir_lower_expr(l,bindings,structs,expr,&lt,NULL); SIRId b=slop_sir_lower_expr(l,bindings,structs,op+1,&rt,NULL); if(opc=='+'&&(lt==SIR_TYPE_STRING||rt==SIR_TYPE_STRING)){*out_type=SIR_TYPE_STRING;return slop_lower_string_concat(l,a,b);} *out_type=SIR_TYPE_I64; return opc=='+'?slop_lower_add_i64(l,a,b):slop_lower_sub_i64(l,a,b);}
     const char* mul_ops[]={"*","/","%"}; op=slop_sir_find_op(expr,mul_ops,3);
-    if(op){char opc=*op; *op=0; SIRType lt,rt; SIRId a=slop_sir_lower_expr(l,bindings,expr,&lt); SIRId b=slop_sir_lower_expr(l,bindings,op+1,&rt); *out_type=SIR_TYPE_I64; if(opc=='*')return slop_lower_mul_i64(l,a,b); if(opc=='/')return slop_lower_div_i64(l,a,b); return slop_lower_mod_i64(l,a,b);}
-    char* callp = strchr(expr, '('); char* calle = strrchr(expr, ')'); if (callp && calle && calle > callp && calle[1] == 0) { *callp = 0; char* cname = slop_sir_trim(expr); *out_type = SIR_TYPE_I64; return slop_lower_call(l, cname, 0, 0, SIR_TYPE_I64); }
+    if(op){char opc=*op; *op=0; SIRType lt,rt; SIRId a=slop_sir_lower_expr(l,bindings,structs,expr,&lt,NULL); SIRId b=slop_sir_lower_expr(l,bindings,structs,op+1,&rt,NULL); *out_type=SIR_TYPE_I64; if(opc=='*')return slop_lower_mul_i64(l,a,b); if(opc=='/')return slop_lower_div_i64(l,a,b); return slop_lower_mod_i64(l,a,b);}
+
+    char* dot = strchr(expr, '.'); if (dot) { *dot = 0; char* objn = slop_sir_trim(expr); char* fld = slop_sir_trim(dot + 1); SlopSIRBinding* ob = slop_sir_find(bindings, objn); if (ob) { SIRId obj = slop_lower_local_get(l, ob->local, ob->type); *out_type = SIR_TYPE_I64; return slop_lower_field_get(l, obj, fld, SIR_TYPE_I64); } }
+    char* callp = strchr(expr, '('); char* calle = strrchr(expr, ')'); if (callp && calle && calle > callp && calle[1] == 0) { *callp = 0; char* cname = slop_sir_trim(expr); SlopSIRStructDef* sd = slop_sir_find_struct(structs, cname); if (sd) { *calle = 0; SIRId obj = slop_lower_struct_new(l, cname, 0); char* save_args=NULL; uint32_t fi=0; for(char* part=strtok_r(callp+1, ",", &save_args); part && fi<sd->field_count; part=strtok_r(NULL, ",", &save_args), fi++){ SIRType at; SIRId av=slop_sir_lower_expr(l, bindings, structs, part, &at, NULL); slop_lower_field_set(l, obj, sd->fields[fi], av); } *out_type = SIR_TYPE_STRUCT; if(out_struct_name)*out_struct_name=cname; return obj; } *out_type = SIR_TYPE_I64; return slop_lower_call(l, cname, 0, 0, SIR_TYPE_I64); }
     if(strcmp(expr,"true")==0){*out_type=SIR_TYPE_BOOL;return slop_lower_bool(l,true);} if(strcmp(expr,"false")==0){*out_type=SIR_TYPE_BOOL;return slop_lower_bool(l,false);}
     char* str=slop_sir_parse_string(expr); if(str){SIRId id=slop_lower_string_literal(l,str); free(str); *out_type=SIR_TYPE_STRING; return id;}
     int64_t iv=0; if(slop_sir_parse_i64(expr,&iv)){*out_type=SIR_TYPE_I64;return slop_lower_i64(l,iv);}
-    SlopSIRBinding* b=slop_sir_find(bindings,expr); if(b){*out_type=b->type; return slop_lower_local_get(l,b->local,b->type);}
+    SlopSIRBinding* b=slop_sir_find(bindings,expr); if(b){*out_type=b->type; if(out_struct_name && b->struct_name)*out_struct_name=b->struct_name; return slop_lower_local_get(l,b->local,b->type);}
     *out_type=SIR_TYPE_VOID; return 0;
 }
 
@@ -115,29 +135,31 @@ static inline bool slop_sir_close_context(SlopLowering* l,SlopSIRCtxStack* stack
 }
 
 static inline bool slop_sir_lower_source(const char* filename,const char* source,SIRModule* out,FILE* diag){
-    sir_module_init(out); SlopLowering lowering; slop_lowering_init(&lowering,out); SlopSIRBindings bindings={0}; SlopSIRCtxStack stack={0};
+    sir_module_init(out); SlopLowering lowering; slop_lowering_init(&lowering,out); SlopSIRBindings bindings={0}; SlopSIRStructs structs={0}; SlopSIRCtxStack stack={0}; bool in_struct=false; SlopSIRStructDef* current_struct=NULL;
     bool in_function=false; bool current_main=false;
     char* copy=strdup(source); if(!copy)return false; char* save=NULL; uint32_t line_no=0;
     for(char* line=strtok_r(copy,"\n",&save);line;line=strtok_r(NULL,"\n",&save)){
         line_no++; slop_sir_strip_comment(line); char* t=slop_sir_trim(line); if(!*t||strcmp(t,"{")==0)continue;
+        if(in_struct){ if(strcmp(t,"}")==0){in_struct=false;current_struct=NULL;continue;} char* colon=strchr(t, ':'); if(colon && current_struct && current_struct->field_count<32){*colon=0; current_struct->fields[current_struct->field_count++]=strdup(slop_sir_trim(t));} continue; }
+        if(slop_sir_starts(t,"struct ")){char* p=t+7;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;if(structs.len<64){current_struct=&structs.data[structs.len++];memset(current_struct,0,sizeof(*current_struct));current_struct->name=slop_sir_strdup_len(ns,(size_t)(p-ns));in_struct=true;}continue;}
         if(slop_sir_starts(t,"fn ")){char* p=t+3;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;char* name=slop_sir_strdup_len(ns,(size_t)(p-ns));slop_sir_bindings_free(&bindings);memset(&bindings,0,sizeof(bindings));slop_lower_function_begin(&lowering,name);slop_lower_block(&lowering,"entry");in_function=true;current_main=(strcmp(name,"main")==0);free(name);continue;}
         if(slop_sir_line_is_close_else(t)){
             if(!stack.len||stack.data[stack.len-1].kind!=SLOP_CTX_IF){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"else without matching if","put else immediately after an if block",t});goto fail;}
             SlopSIRCtx* c=&stack.data[stack.len-1]; slop_lower_jump(&lowering,c->end_block); slop_sir_emit_block_id(&lowering,c->else_block,"if_else"); c->in_else=true; continue;
         }
         if(strcmp(t,"}")==0){ if(stack.len){ if(!slop_sir_close_context(&lowering,&stack))goto fail; } else if(in_function){ if(current_main) sir_emit_exit(out,0); slop_lower_function_end(&lowering); in_function=false; current_main=false; } continue; }
-        if(slop_sir_starts(t,"while ")){char* cond=slop_sir_strip_trailing_open(t+6); SIRId cond_block=slop_sir_new_block_id(&lowering); SIRId body=slop_sir_new_block_id(&lowering); SIRId end=slop_sir_new_block_id(&lowering); slop_lower_jump(&lowering,cond_block); slop_sir_emit_block_id(&lowering,cond_block,"while_cond"); SIRType ct; SIRId cv=slop_sir_lower_expr(&lowering,&bindings,cond,&ct); slop_lower_branch(&lowering,cv,body,end); slop_sir_emit_block_id(&lowering,body,"while_body"); stack.data[stack.len++]=(SlopSIRCtx){SLOP_CTX_WHILE,cond_block,body,0,end,false}; continue;}
-        if(slop_sir_starts(t,"if ")){char* cond=slop_sir_strip_trailing_open(t+3); SIRId thenb=slop_sir_new_block_id(&lowering); SIRId elseb=slop_sir_new_block_id(&lowering); SIRId end=slop_sir_new_block_id(&lowering); SIRType ct; SIRId cv=slop_sir_lower_expr(&lowering,&bindings,cond,&ct); slop_lower_branch(&lowering,cv,thenb,elseb); stack.data[stack.len++]=(SlopSIRCtx){SLOP_CTX_IF,0,thenb,elseb,end,false}; slop_sir_emit_block_id(&lowering,thenb,"if_then"); continue;}
-        if(slop_sir_starts(t,"return")){char* rp=t+6;SIRType rt;SIRId rv=slop_sir_lower_expr(&lowering,&bindings,rp,&rt);slop_lower_return(&lowering,rv);continue;}
-        if(slop_sir_starts(t,"push")){char* p=strchr(t,'(');char* end=strrchr(t,')');if(!p||!end||end<=p){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"expected push(array, value)","example: push(nums, 4)",t});goto fail;}*end=0;p++;char* comma=strchr(p,',');if(!comma){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"expected comma in push", "example: push(nums, 4)", t});goto fail;}*comma=0;char* an=slop_sir_trim(p);SlopSIRBinding* ab=slop_sir_find(&bindings,an);if(!ab){slop_print_diagnostic(diag,slop_diag_unknown_name(filename,line_no,1,an,t));goto fail;}SIRType vt;SIRId val=slop_sir_lower_expr(&lowering,&bindings,comma+1,&vt);slop_lower_array_push(&lowering,ab->local,val);continue;}
-        if(slop_sir_starts(t,"let ")){char* p=t+4;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;char* name=slop_sir_strdup_len(ns,(size_t)(p-ns));while(*p&&*p!='=')p++;if(*p!='='){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"expected '=' in let declaration","write: let name = value",t});free(name);goto fail;}p++;SIRType type;SIRId value=slop_sir_lower_expr(&lowering,&bindings,p,&type);if(!value){slop_print_diagnostic(diag,slop_diag_unknown_name(filename,line_no,1,p,t));free(name);goto fail;}SIRId local=slop_lower_let(&lowering,name,type,value);slop_sir_bind(&bindings,name,local,type);free(name);continue;}
-        char* eq=strchr(t,'='); if(eq && !(eq>t&&(eq[-1]=='='||eq[1]=='='||eq[-1]=='!'||eq[-1]=='<'||eq[-1]=='>'))){*eq=0; char* name=slop_sir_trim(t); SlopSIRBinding* b=slop_sir_find(&bindings,name); if(!b){slop_print_diagnostic(diag,slop_diag_unknown_name(filename,line_no,1,name,t));goto fail;} SIRType type; SIRId value=slop_sir_lower_expr(&lowering,&bindings,eq+1,&type); slop_lower_assign(&lowering,b->local,value); continue;}
-        if(slop_sir_starts(t,"print")){char* p=strchr(t,'(');char* end=strrchr(t,')');if(!p||!end||end<=p){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"expected print(expr)","example: print(42)",t});goto fail;}*end=0;p++;SIRType type;SIRId value=slop_sir_lower_expr(&lowering,&bindings,p,&type);if(!value){slop_print_diagnostic(diag,slop_diag_unknown_name(filename,line_no,1,p,t));goto fail;} if(type==SIR_TYPE_STRING){SIRId nl=slop_lower_string_literal(&lowering,"\n");SIRId with_nl=slop_lower_string_concat(&lowering,value,nl);slop_lower_print_string_value(&lowering,with_nl);}else slop_lower_print_i64(&lowering,value);continue;}
+        if(slop_sir_starts(t,"while ")){char* cond=slop_sir_strip_trailing_open(t+6); SIRId cond_block=slop_sir_new_block_id(&lowering); SIRId body=slop_sir_new_block_id(&lowering); SIRId end=slop_sir_new_block_id(&lowering); slop_lower_jump(&lowering,cond_block); slop_sir_emit_block_id(&lowering,cond_block,"while_cond"); SIRType ct; SIRId cv=slop_sir_lower_expr(&lowering,&bindings,&structs,cond,&ct,NULL); slop_lower_branch(&lowering,cv,body,end); slop_sir_emit_block_id(&lowering,body,"while_body"); stack.data[stack.len++]=(SlopSIRCtx){SLOP_CTX_WHILE,cond_block,body,0,end,false}; continue;}
+        if(slop_sir_starts(t,"if ")){char* cond=slop_sir_strip_trailing_open(t+3); SIRId thenb=slop_sir_new_block_id(&lowering); SIRId elseb=slop_sir_new_block_id(&lowering); SIRId end=slop_sir_new_block_id(&lowering); SIRType ct; SIRId cv=slop_sir_lower_expr(&lowering,&bindings,&structs,cond,&ct,NULL); slop_lower_branch(&lowering,cv,thenb,elseb); stack.data[stack.len++]=(SlopSIRCtx){SLOP_CTX_IF,0,thenb,elseb,end,false}; slop_sir_emit_block_id(&lowering,thenb,"if_then"); continue;}
+        if(slop_sir_starts(t,"return")){char* rp=t+6;SIRType rt;SIRId rv=slop_sir_lower_expr(&lowering,&bindings,&structs,rp,&rt,NULL);slop_lower_return(&lowering,rv);continue;}
+        if(slop_sir_starts(t,"push")){char* p=strchr(t,'(');char* end=strrchr(t,')');if(!p||!end||end<=p){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"expected push(array, value)","example: push(nums, 4)",t});goto fail;}*end=0;p++;char* comma=strchr(p,',');if(!comma){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"expected comma in push", "example: push(nums, 4)", t});goto fail;}*comma=0;char* an=slop_sir_trim(p);SlopSIRBinding* ab=slop_sir_find(&bindings,an);if(!ab){slop_print_diagnostic(diag,slop_diag_unknown_name(filename,line_no,1,an,t));goto fail;}SIRType vt;SIRId val=slop_sir_lower_expr(&lowering,&bindings,&structs,comma+1,&vt,NULL);slop_lower_array_push(&lowering,ab->local,val);continue;}
+        if(slop_sir_starts(t,"let ")){char* p=t+4;while(*p&&isspace((unsigned char)*p))p++;char* ns=p;while(*p&&(isalnum((unsigned char)*p)||*p=='_'))p++;char* name=slop_sir_strdup_len(ns,(size_t)(p-ns));while(*p&&*p!='=')p++;if(*p!='='){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"expected '=' in let declaration","write: let name = value",t});free(name);goto fail;}p++;SIRType type; char* stname=NULL; SIRId value=slop_sir_lower_expr(&lowering,&bindings,&structs,p,&type,&stname);if(!value){slop_print_diagnostic(diag,slop_diag_unknown_name(filename,line_no,1,p,t));free(name);goto fail;}SIRId local=slop_lower_let(&lowering,name,type,value);slop_sir_bind_ex(&bindings,name,local,type,stname);free(name);continue;}
+        char* eq=strchr(t,'='); if(eq && !(eq>t&&(eq[-1]=='='||eq[1]=='='||eq[-1]=='!'||eq[-1]=='<'||eq[-1]=='>'))){*eq=0; char* name=slop_sir_trim(t); char* dot=strchr(name,'.'); SIRType type; SIRId value=slop_sir_lower_expr(&lowering,&bindings,&structs,eq+1,&type,NULL); if(dot){*dot=0; SlopSIRBinding* ob=slop_sir_find(&bindings,slop_sir_trim(name)); if(!ob){slop_print_diagnostic(diag,slop_diag_unknown_name(filename,line_no,1,name,t));goto fail;} SIRId obj=slop_lower_local_get(&lowering,ob->local,ob->type); slop_lower_field_set(&lowering,obj,slop_sir_trim(dot+1),value); slop_lower_assign(&lowering,ob->local,obj); continue;} SlopSIRBinding* b=slop_sir_find(&bindings,name); if(!b){slop_print_diagnostic(diag,slop_diag_unknown_name(filename,line_no,1,name,t));goto fail;} slop_lower_assign(&lowering,b->local,value); continue;}
+        if(slop_sir_starts(t,"print")){char* p=strchr(t,'(');char* end=strrchr(t,')');if(!p||!end||end<=p){slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"expected print(expr)","example: print(42)",t});goto fail;}*end=0;p++;SIRType type; char* stname=NULL; SIRId value=slop_sir_lower_expr(&lowering,&bindings,&structs,p,&type,&stname);if(!value){slop_print_diagnostic(diag,slop_diag_unknown_name(filename,line_no,1,p,t));goto fail;} if(type==SIR_TYPE_STRING){SIRId nl=slop_lower_string_literal(&lowering,"\n");SIRId with_nl=slop_lower_string_concat(&lowering,value,nl);slop_lower_print_string_value(&lowering,with_nl);}else slop_lower_print_i64(&lowering,value);continue;}
         slop_print_diagnostic(diag,(SlopDiagnostic){SLOP_DIAG_ERROR,filename,line_no,1,"SIR-first frontend does not support this statement yet","use the stable slop-compiler C backend for full language support",t});goto fail;
     }
     while(stack.len) if(!slop_sir_close_context(&lowering,&stack)) goto fail;
-    if(!in_function && out->inst_len == 0) sir_emit_exit(out,0); free(copy); slop_sir_bindings_free(&bindings); return true;
-fail: free(copy); slop_sir_bindings_free(&bindings); sir_module_free(out); return false;
+    if(!in_function && out->inst_len == 0) sir_emit_exit(out,0); free(copy); slop_sir_bindings_free(&bindings); slop_sir_structs_free(&structs); return true;
+fail: free(copy); slop_sir_bindings_free(&bindings); slop_sir_structs_free(&structs); sir_module_free(out); return false;
 }
 
 #endif // SLOP_SIR_FRONTEND_H
