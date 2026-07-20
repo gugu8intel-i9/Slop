@@ -67,9 +67,11 @@ static inline int sir_emit_elf64_x86_64(FILE* out, const SIRModule* m) {
         const SIRInst* inst = &m->insts[i];
         if (inst->op == SIR_OP_PRINT_STRING) {
             SIRId sid = inst->a;
+            bool is_const_string = false; bool is_value = false;
             for (uint32_t j = 0; j < m->inst_len; j++) {
-                if (m->insts[j].dst == inst->a && m->insts[j].op == SIR_OP_CONST_STRING) { sid = m->insts[j].a; break; }
+                if (inst->a && m->insts[j].dst == inst->a) { is_value = true; if (m->insts[j].op == SIR_OP_CONST_STRING) { sid = m->insts[j].a; is_const_string = true; } break; }
             }
+            if (!is_value && !is_const_string && inst->a < m->string_len) sid = inst->a;
             if (sid < m->string_len) {
                 slop_x64_mov_rax_imm32(&code, 1);       // write
                 slop_x64_mov_rdi_imm32(&code, 1);       // stdout

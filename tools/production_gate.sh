@@ -123,6 +123,15 @@ grep -q "Gugu" "$TMP/sir_method_demo_c.out"
 grep -q "40" "$TMP/sir_method_demo_c.out"
 grep -q "42" "$TMP/sir_method_demo_c.out"
 
+
+printf '\n== SIR-first arrays of strings and structs pipeline ==\n'
+"$PREBUILT_PIPELINE" sir_array_struct_string_demo.slop "$TMP/sir_array_struct_string_demo.c" c
+$CC -O3 -std=gnu11 "$TMP/sir_array_struct_string_demo.c" -o "$TMP/sir_array_struct_string_demo_c"
+"$TMP/sir_array_struct_string_demo_c" > "$TMP/sir_array_struct_string_demo_c.out"
+grep -q "slop" "$TMP/sir_array_struct_string_demo_c.out"
+grep -q "Gugu" "$TMP/sir_array_struct_string_demo_c.out"
+grep -q "20" "$TMP/sir_array_struct_string_demo_c.out"
+
 printf '\n== phase 4-7 smoke ==\n'
 tools/phase4_7_smoke.sh
 

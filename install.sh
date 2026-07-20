@@ -119,7 +119,7 @@ cp tools/slop_test.py "$SLOP_BIN/"
 mkdir -p "$SLOP_DIR/examples"
 mkdir -p "$SLOP_DIR/std"
 cp -r std/* "$SLOP_DIR/std/" 2>/dev/null || true
-cp hello.slop easy_start.slop low_level_demo.slop sir_pipeline_demo.slop sir_core_demo.slop sir_array_demo.slop sir_function_demo.slop sir_function_args_demo.slop sir_struct_demo.slop sir_method_demo.slop native_backend_demo.slop complex_syntax.slop parallel_processing.slop gpu_compute.slop \
+cp hello.slop easy_start.slop low_level_demo.slop sir_pipeline_demo.slop sir_core_demo.slop sir_array_demo.slop sir_function_demo.slop sir_function_args_demo.slop sir_struct_demo.slop sir_method_demo.slop sir_array_struct_string_demo.slop native_backend_demo.slop complex_syntax.slop parallel_processing.slop gpu_compute.slop \
    unified_parallel.slop benchmark_seq.slop benchmark_par.slop "$SLOP_DIR/examples/" 2>/dev/null || true
 
 # Create the beautiful high-level "slop" command runner script

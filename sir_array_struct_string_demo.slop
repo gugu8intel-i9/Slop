@@ -1,0 +1,14 @@
+struct Person {
+    name: string,
+    age: int
+}
+
+fn main(args: array[string]) {
+    let words = ["hi", "slop"]
+    print(words[1])
+
+    let people = [Person("Ada", 10), Person("Gugu", 20)]
+    let p = people[1]
+    print(p.name)
+    print(p.age)
+}
