@@ -72,12 +72,29 @@ static inline bool sir_find_const_string_id(const SIRModule* m, SIRId value_id, 
     return false;
 }
 
+static inline bool sir_operand_slot_is_value(SIROp op, char slot) {
+    switch (op) {
+        case SIR_OP_FUNCTION_BEGIN: return false;              // a=name string id
+        case SIR_OP_BLOCK: return false;                       // a=label string id
+        case SIR_OP_CALL: return slot != 'a';                  // a=function string id
+        case SIR_OP_LOCAL_DECLARE: return slot != 'a';         // a=local name string id
+        case SIR_OP_STRUCT_NEW: return slot != 'a';            // a=type name string id
+        case SIR_OP_FIELD_GET: return slot != 'b';             // b=field name string id
+        case SIR_OP_FIELD_SET: return slot != 'b';             // b=field name string id
+        case SIR_OP_RAW_EMIT: return false;                    // target/code string ids
+        case SIR_OP_CONST_STRING: return false;                // a=string pool id
+        case SIR_OP_PRINT_STRING: return true;                 // frontend prints values; native subset avoids optimizer rewriting here
+        default: return true;
+    }
+}
+
 static inline void sir_replace_value_from(SIRModule* m, uint32_t start, SIRId old_id, SIRId new_id) {
     if (old_id == 0 || old_id == new_id) return;
     for (uint32_t i = start; i < m->inst_len; i++) {
-        if (m->insts[i].a == old_id) m->insts[i].a = new_id;
-        if (m->insts[i].b == old_id) m->insts[i].b = new_id;
-        if (m->insts[i].c == old_id) m->insts[i].c = new_id;
+        SIROp op = m->insts[i].op;
+        if (sir_operand_slot_is_value(op, 'a') && m->insts[i].a == old_id) m->insts[i].a = new_id;
+        if (sir_operand_slot_is_value(op, 'b') && m->insts[i].b == old_id) m->insts[i].b = new_id;
+        if (sir_operand_slot_is_value(op, 'c') && m->insts[i].c == old_id) m->insts[i].c = new_id;
     }
 }
 

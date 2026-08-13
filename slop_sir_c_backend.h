@@ -197,7 +197,10 @@ static inline int sir_emit_c_backend(FILE* out, const SIRModule* m) {
                 else { fprintf(out, "    int64_t v%u = sir_array_i64_get(&", inst->dst); sir_c_ref(out, m, inst->a); fprintf(out, ", v%u);\n", inst->b); }
                 break;
             case SIR_OP_ARRAY_SET:
-                fprintf(out, "    "); sir_c_ref(out, m, inst->a); fprintf(out, ".data[v%u] = v%u;\n", inst->b, inst->c);
+                fprintf(out, "    sir_array_check(&"); sir_c_ref(out, m, inst->a); fprintf(out, ", v%u);\n", inst->b);
+                if (sir_c_value_type(m, inst->c) == SIR_TYPE_STRING) { fprintf(out, "    "); sir_c_ref(out, m, inst->a); fprintf(out, ".svals[v%u] = v%u;\n", inst->b, inst->c); }
+                else if (sir_c_value_type(m, inst->c) == SIR_TYPE_STRUCT) { fprintf(out, "    "); sir_c_ref(out, m, inst->a); fprintf(out, ".ovals[v%u] = v%u;\n", inst->b, inst->c); }
+                else { fprintf(out, "    "); sir_c_ref(out, m, inst->a); fprintf(out, ".ivals[v%u] = v%u;\n", inst->b, inst->c); }
                 break;
             case SIR_OP_STRUCT_NEW:
                 fprintf(out, "    SirStruct v%u = {0};\n", inst->dst);
