@@ -67,6 +67,11 @@ fn is_keyword(s: string) -> bool {
     if s == "raw" { return true }
     if s == "gpu" { return true }
     if s == "parallel" { return true }
+    if s == "for" { return true }
+    if s == "in" { return true }
+    if s == "and" { return true }
+    if s == "or" { return true }
+    if s == "not" { return true }
     return false
 }
 
@@ -556,6 +561,13 @@ fn safe_tok_val(tokens: array[string], pos: int) -> string {
     return ""
 }
 
+fn is_kw(tokens: array[string], pos: int, val: string) -> bool {
+    if tok_type(tokens, pos) == "KEYWORD" {
+        return tok_val(tokens, pos) == val
+    }
+    return false
+}
+
 fn is_tok(tokens: array[string], pos: int, val: string) -> bool {
     if pos < length(tokens) {
         if token_type(tokens[pos]) == "SYMBOL" {
@@ -709,8 +721,7 @@ fn collect_signatures(tokens: array[string]) -> array[string] {
                     func_params = arr_append(func_params, params)
                 }
             } else {
-                print("Unexpected top-level token")
-                print(kind)
+                # top-level statement: it becomes part of main
                 pos = pos + 1
             }
         }
@@ -779,7 +790,74 @@ fn is_array_type(t: string) -> bool {
 # ---------- Expression generator ----------
 # Returns [code, type, new_pos] as array of strings
 fn gen_expr(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    return gen_equality(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+    let left_res = gen_or(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+    let left = left_res[0]
+    let ltype = left_res[1]
+    pos = string_to_int(left_res[2])
+    # x |> f(a, b)  is  f(x, a, b)
+    while tok_type(tokens, pos) == "PIPE" {
+        pos = pos + 1
+        let name = tok_val(tokens, pos)
+        pos = pos + 1
+        pos = expect(tokens, pos, "SYMBOL", "(")
+        let args = left
+        let arg_types = ltype
+        while tok_val(tokens, pos) != ")" {
+            let arg_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+            args = args + ", " + arg_res[0]
+            arg_types = arg_types + ";" + arg_res[1]
+            pos = string_to_int(arg_res[2])
+            if tok_val(tokens, pos) == "," {
+                pos = pos + 1
+            }
+        }
+        pos = pos + 1
+        let call_res = gen_call(name, args, arg_types, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+        left = call_res[0]
+        ltype = call_res[1]
+        pos = string_to_int(call_res[2])
+    }
+    let result: array[string] = []
+    push(result, left)
+    push(result, ltype)
+    push(result, int_to_string(pos))
+    return result
+}
+
+fn gen_or(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
+    let left_res = gen_and(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+    let left = left_res[0]
+    let ltype = left_res[1]
+    pos = string_to_int(left_res[2])
+    while is_kw(tokens, pos, "or") {
+        let right_res = gen_and(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+        left = "(" + left + " || " + right_res[0] + ")"
+        ltype = "bool"
+        pos = string_to_int(right_res[2])
+    }
+    let result: array[string] = []
+    push(result, left)
+    push(result, ltype)
+    push(result, int_to_string(pos))
+    return result
+}
+
+fn gen_and(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
+    let left_res = gen_equality(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+    let left = left_res[0]
+    let ltype = left_res[1]
+    pos = string_to_int(left_res[2])
+    while is_kw(tokens, pos, "and") {
+        let right_res = gen_equality(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+        left = "(" + left + " && " + right_res[0] + ")"
+        ltype = "bool"
+        pos = string_to_int(right_res[2])
+    }
+    let result: array[string] = []
+    push(result, left)
+    push(result, ltype)
+    push(result, int_to_string(pos))
+    return result
 }
 
 fn gen_equality(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
@@ -945,6 +1023,281 @@ fn gen_multiplicative(tokens: array[string], pos: int, var_types: string, func_n
     return result
 }
 
+# Code for a call whose arguments are already generated. Returns [code, type, new_pos].
+fn gen_call(name: string, args: string, arg_types: string, pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
+    if name == "len" { name = "length" }
+    if name == "print" {
+        let at = arg_types
+        let result: array[string] = []
+        if at == "int" {
+            push(result, "slop_print_int(" + args + ")")
+        } else {
+            if at == "bool" {
+                push(result, "slop_print_bool(" + args + ")")
+            } else {
+                push(result, "slop_print_string(" + args + ")")
+            }
+        }
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "length" {
+        let result: array[string] = []
+        push(result, "(" + args + ".length)")
+        push(result, "int")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "push" {
+        # args is "arr, elem"; arg_types is "arr_type;elem_type"
+        let parts = split_first(args, ", ")
+        let arr = parts[0]
+        let elem = parts[1]
+        let type_parts = split(arg_types, ";")
+        let et = type_parts[1]
+        let c_et = c_type(et, struct_names)
+        let code = "SLOP_PUSH(local_arena, " + arr + ", " + c_et + ", " + elem + ")"
+        let result: array[string] = []
+        push(result, code)
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "read_file" {
+        let result: array[string] = []
+        push(result, "slop_read_file(local_arena, " + args + ")")
+        push(result, "string")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "write_file" {
+        let result: array[string] = []
+        push(result, "slop_write_file(" + args + ")")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "int_to_string" {
+        let result: array[string] = []
+        push(result, "slop_int_to_string(local_arena, " + args + ")")
+        push(result, "string")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "string_equal" {
+        let result: array[string] = []
+        push(result, "slop_string_equal(" + args + ")")
+        push(result, "bool")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "char_at" {
+        let result: array[string] = []
+        push(result, "slop_char_at(local_arena, " + args + ")")
+        push(result, "string")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "split" {
+        let result: array[string] = []
+        push(result, "slop_split(local_arena, " + args + ")")
+        push(result, "array[string]")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "join" {
+        let result: array[string] = []
+        push(result, "slop_join(local_arena, " + args + ")")
+        push(result, "string")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "addr_of" {
+        let result: array[string] = []
+        push(result, "((int64_t)&(" + args + "))")
+        push(result, "int")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "unsafe_load8" {
+        let result: array[string] = []
+        push(result, "((int64_t)slop_unsafe_load8((uintptr_t)(" + args + ")))")
+        push(result, "int")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "unsafe_load16" {
+        let result: array[string] = []
+        push(result, "((int64_t)slop_unsafe_load16((uintptr_t)(" + args + ")))")
+        push(result, "int")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "unsafe_load32" {
+        let result: array[string] = []
+        push(result, "((int64_t)slop_unsafe_load32((uintptr_t)(" + args + ")))")
+        push(result, "int")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "unsafe_load64" {
+        let result: array[string] = []
+        push(result, "((int64_t)slop_unsafe_load64((uintptr_t)(" + args + ")))")
+        push(result, "int")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "mmio_read32" {
+        let result: array[string] = []
+        push(result, "((int64_t)slop_mmio_read32((uintptr_t)(" + args + ")))")
+        push(result, "int")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "component_base" {
+        let result: array[string] = []
+        push(result, "((int64_t)slop_component_base((uintptr_t)(" + args + ")))")
+        push(result, "int")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "unsafe_store8" {
+        let parts = split_first(args, ", ")
+        let result: array[string] = []
+        push(result, "slop_unsafe_store8((uintptr_t)(" + parts[0] + "), (uint8_t)(" + parts[1] + "))")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "unsafe_store16" {
+        let parts = split_first(args, ", ")
+        let result: array[string] = []
+        push(result, "slop_unsafe_store16((uintptr_t)(" + parts[0] + "), (uint16_t)(" + parts[1] + "))")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "unsafe_store32" {
+        let parts = split_first(args, ", ")
+        let result: array[string] = []
+        push(result, "slop_unsafe_store32((uintptr_t)(" + parts[0] + "), (uint32_t)(" + parts[1] + "))")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "unsafe_store64" {
+        let parts = split_first(args, ", ")
+        let result: array[string] = []
+        push(result, "slop_unsafe_store64((uintptr_t)(" + parts[0] + "), (uint64_t)(" + parts[1] + "))")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "mmio_write32" {
+        let parts = split_first(args, ", ")
+        let result: array[string] = []
+        push(result, "slop_mmio_write32((uintptr_t)(" + parts[0] + "), (uint32_t)(" + parts[1] + "))")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "cpu_cycles" {
+        let result: array[string] = []
+        push(result, "((int64_t)slop_cpu_cycles())")
+        push(result, "int")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "cpu_fence" {
+        let result: array[string] = []
+        push(result, "slop_cpu_fence()")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "cpu_relax" {
+        let result: array[string] = []
+        push(result, "slop_cpu_relax()")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "cpu_prefetch" {
+        let result: array[string] = []
+        push(result, "slop_cpu_prefetch((uintptr_t)(" + args + "))")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "device_fence" {
+        let result: array[string] = []
+        push(result, "slop_device_fence()")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "gpu_fence" {
+        let result: array[string] = []
+        push(result, "slop_gpu_fence()")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "ram_copy" {
+        let p1 = split_first(args, ", ")
+        let p2 = split_first(p1[1], ", ")
+        let result: array[string] = []
+        push(result, "slop_ram_copy((uintptr_t)(" + p1[0] + "), (uintptr_t)(" + p2[0] + "), (uint64_t)(" + p2[1] + "))")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    if name == "ram_zero" {
+        let parts = split_first(args, ", ")
+        let result: array[string] = []
+        push(result, "slop_ram_zero((uintptr_t)(" + parts[0] + "), (uint64_t)(" + parts[1] + "))")
+        push(result, "void")
+        push(result, int_to_string(pos))
+        return result
+    }
+    # struct constructor
+    if arr_find(struct_names, name) >= 0 {
+        let fields = arr_get(struct_fields, arr_find(struct_names, name))
+        let f_parts = split(fields, ",")
+        let a_parts = split(args, ", ")
+        let code = "struct " + name + " _tmp_struct;\n"
+        let i = 0
+        while i < length(f_parts) {
+            let fp = split(f_parts[i], ":")
+            code = code + "    _tmp_struct." + fp[0] + " = " + a_parts[i] + ";\n"
+            i = i + 1
+        }
+        let result: array[string] = []
+        push(result, code + "    _tmp_struct")
+        push(result, name)
+        push(result, int_to_string(pos))
+        return result
+    }
+    # user function
+    let idx = arr_find(func_names, name)
+    if idx >= 0 {
+        let rtype = arr_get(func_returns, idx)
+        let result: array[string] = []
+        push(result, "fn_" + name + "(" + args + ")")
+        push(result, rtype)
+        push(result, int_to_string(pos))
+        return result
+    }
+    print("Error: unknown function")
+    print(name)
+    let result: array[string] = []
+    push(result, "")
+    push(result, "int")
+    push(result, int_to_string(pos))
+    return result
+}
+
 fn gen_primary(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
     let t = tok_type(tokens, pos)
     let v = tok_val(tokens, pos)
@@ -955,10 +1308,35 @@ fn gen_primary(tokens: array[string], pos: int, var_types: string, func_names: s
         push(result, int_to_string(pos + 1))
         return result
     }
+    let is_not = false
+    if t == "KEYWORD" {
+        if v == "not" { is_not = true }
+    }
+    if t == "SYMBOL" {
+        if v == "!" { is_not = true }
+    }
+    if is_not {
+        let n_res = gen_primary(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+        let result: array[string] = []
+        push(result, "(!" + n_res[0] + ")")
+        push(result, "bool")
+        push(result, n_res[2])
+        return result
+    }
+    if t == "SYMBOL" {
+        if v == "-" {
+            let m_res = gen_primary(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+            let result: array[string] = []
+            push(result, "(-" + m_res[0] + ")")
+            push(result, m_res[1])
+            push(result, m_res[2])
+            return result
+        }
+    }
     if t == "STRING" {
         let esc = escape_string(v)
         let result: array[string] = []
-        push(result, "slop_string_create(local_arena, \"" + esc + "\")")
+        push(result, "SLOP_STR(\"" + esc + "\")")
         push(result, "string")
         push(result, int_to_string(pos + 1))
         return result
@@ -1005,278 +1383,7 @@ fn gen_primary(tokens: array[string], pos: int, var_types: string, func_names: s
                 }
             }
             pos = pos + 1
-            # builtins
-            if name == "print" {
-                let at = arg_types
-                let result: array[string] = []
-                if at == "int" {
-                    push(result, "slop_print_int(" + args + ")")
-                } else {
-                    if at == "bool" {
-                        push(result, "slop_print_bool(" + args + ")")
-                    } else {
-                        push(result, "slop_print_string(" + args + ")")
-                    }
-                }
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "length" {
-                let result: array[string] = []
-                push(result, "(" + args + ".length)")
-                push(result, "int")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "push" {
-                # args is "arr, elem"; arg_types is "arr_type;elem_type"
-                let parts = split_first(args, ", ")
-                let arr = parts[0]
-                let elem = parts[1]
-                let type_parts = split(arg_types, ";")
-                let et = type_parts[1]
-                let c_et = c_type(et, struct_names)
-                let tmp = "_tmp_push_" + int_to_string(pos)
-                let code = c_et + "* " + tmp + " = (" + c_et + "*)slop_arena_alloc(local_arena, sizeof(" + c_et + "));\n    *" + tmp + " = " + elem + ";\n    slop_array_push(local_arena, &" + arr + ", " + tmp + ")"
-                let result: array[string] = []
-                push(result, code)
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "read_file" {
-                let result: array[string] = []
-                push(result, "slop_read_file(local_arena, " + args + ")")
-                push(result, "string")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "write_file" {
-                let result: array[string] = []
-                push(result, "slop_write_file(" + args + ")")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "int_to_string" {
-                let result: array[string] = []
-                push(result, "slop_int_to_string(local_arena, " + args + ")")
-                push(result, "string")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "string_equal" {
-                let result: array[string] = []
-                push(result, "slop_string_equal(" + args + ")")
-                push(result, "bool")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "char_at" {
-                let result: array[string] = []
-                push(result, "slop_char_at(local_arena, " + args + ")")
-                push(result, "string")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "split" {
-                let result: array[string] = []
-                push(result, "slop_split(local_arena, " + args + ")")
-                push(result, "array[string]")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "join" {
-                let result: array[string] = []
-                push(result, "slop_join(local_arena, " + args + ")")
-                push(result, "string")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "addr_of" {
-                let result: array[string] = []
-                push(result, "((int64_t)&(" + args + "))")
-                push(result, "int")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "unsafe_load8" {
-                let result: array[string] = []
-                push(result, "((int64_t)slop_unsafe_load8((uintptr_t)(" + args + ")))")
-                push(result, "int")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "unsafe_load16" {
-                let result: array[string] = []
-                push(result, "((int64_t)slop_unsafe_load16((uintptr_t)(" + args + ")))")
-                push(result, "int")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "unsafe_load32" {
-                let result: array[string] = []
-                push(result, "((int64_t)slop_unsafe_load32((uintptr_t)(" + args + ")))")
-                push(result, "int")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "unsafe_load64" {
-                let result: array[string] = []
-                push(result, "((int64_t)slop_unsafe_load64((uintptr_t)(" + args + ")))")
-                push(result, "int")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "mmio_read32" {
-                let result: array[string] = []
-                push(result, "((int64_t)slop_mmio_read32((uintptr_t)(" + args + ")))")
-                push(result, "int")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "component_base" {
-                let result: array[string] = []
-                push(result, "((int64_t)slop_component_base((uintptr_t)(" + args + ")))")
-                push(result, "int")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "unsafe_store8" {
-                let parts = split_first(args, ", ")
-                let result: array[string] = []
-                push(result, "slop_unsafe_store8((uintptr_t)(" + parts[0] + "), (uint8_t)(" + parts[1] + "))")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "unsafe_store16" {
-                let parts = split_first(args, ", ")
-                let result: array[string] = []
-                push(result, "slop_unsafe_store16((uintptr_t)(" + parts[0] + "), (uint16_t)(" + parts[1] + "))")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "unsafe_store32" {
-                let parts = split_first(args, ", ")
-                let result: array[string] = []
-                push(result, "slop_unsafe_store32((uintptr_t)(" + parts[0] + "), (uint32_t)(" + parts[1] + "))")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "unsafe_store64" {
-                let parts = split_first(args, ", ")
-                let result: array[string] = []
-                push(result, "slop_unsafe_store64((uintptr_t)(" + parts[0] + "), (uint64_t)(" + parts[1] + "))")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "mmio_write32" {
-                let parts = split_first(args, ", ")
-                let result: array[string] = []
-                push(result, "slop_mmio_write32((uintptr_t)(" + parts[0] + "), (uint32_t)(" + parts[1] + "))")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "cpu_cycles" {
-                let result: array[string] = []
-                push(result, "((int64_t)slop_cpu_cycles())")
-                push(result, "int")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "cpu_fence" {
-                let result: array[string] = []
-                push(result, "slop_cpu_fence()")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "cpu_relax" {
-                let result: array[string] = []
-                push(result, "slop_cpu_relax()")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "cpu_prefetch" {
-                let result: array[string] = []
-                push(result, "slop_cpu_prefetch((uintptr_t)(" + args + "))")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "device_fence" {
-                let result: array[string] = []
-                push(result, "slop_device_fence()")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "gpu_fence" {
-                let result: array[string] = []
-                push(result, "slop_gpu_fence()")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "ram_copy" {
-                let p1 = split_first(args, ", ")
-                let p2 = split_first(p1[1], ", ")
-                let result: array[string] = []
-                push(result, "slop_ram_copy((uintptr_t)(" + p1[0] + "), (uintptr_t)(" + p2[0] + "), (uint64_t)(" + p2[1] + "))")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            if name == "ram_zero" {
-                let parts = split_first(args, ", ")
-                let result: array[string] = []
-                push(result, "slop_ram_zero((uintptr_t)(" + parts[0] + "), (uint64_t)(" + parts[1] + "))")
-                push(result, "void")
-                push(result, int_to_string(pos))
-                return result
-            }
-            # struct constructor
-            if arr_find(struct_names, name) >= 0 {
-                let fields = arr_get(struct_fields, arr_find(struct_names, name))
-                let f_parts = split(fields, ",")
-                let a_parts = split(args, ", ")
-                let code = "struct " + name + " _tmp_struct;\n"
-                let i = 0
-                while i < length(f_parts) {
-                    let fp = split(f_parts[i], ":")
-                    code = code + "    _tmp_struct." + fp[0] + " = " + a_parts[i] + ";\n"
-                    i = i + 1
-                }
-                let result: array[string] = []
-                push(result, code + "    _tmp_struct")
-                push(result, name)
-                push(result, int_to_string(pos))
-                return result
-            }
-            # user function
-            let idx = arr_find(func_names, name)
-            if idx >= 0 {
-                let rtype = arr_get(func_returns, idx)
-                let result: array[string] = []
-                push(result, "fn_" + name + "(" + args + ")")
-                push(result, rtype)
-                push(result, int_to_string(pos))
-                return result
-            }
-            print("Error: unknown function")
-            print(name)
-            let result: array[string] = []
-            push(result, "")
-            push(result, "int")
-            push(result, int_to_string(pos))
-            return result
+            return gen_call(name, args, arg_types, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
         }
         # identifier or index or field
         let expr = name
@@ -1298,7 +1405,7 @@ fn gen_primary(tokens: array[string], pos: int, var_types: string, func_names: s
                 pos = expect(tokens, pos, "SYMBOL", "]")
                 let et = elem_type(etype)
                 let c_et = c_type(et, struct_names)
-                expr = "(*(" + c_et + "*)(slop_array_get(" + expr + ", " + idx + ")))"
+                expr = "SLOP_AT(" + c_et + ", " + expr + ", " + idx + ")"
                 etype = et
                 cont = true
             } else {
@@ -1359,8 +1466,7 @@ fn gen_primary(tokens: array[string], pos: int, var_types: string, func_names: s
             while i < length(e_parts) {
                 if e_parts[i] != "" {
                     let el = e_parts[i]
-                    let ep = "_tmp_el_" + int_to_string(i)
-                    code = code + "    " + c_et + "* " + ep + " = (" + c_et + "*)slop_arena_alloc(local_arena, sizeof(" + c_et + "));\n    *" + ep + " = " + el + ";\n    slop_array_push(local_arena, &" + arr_var + ", " + ep + ");\n"
+                    code = code + "    SLOP_PUSH(local_arena, " + arr_var + ", " + c_et + ", " + el + ");\n"
                 }
                 i = i + 1
             }
@@ -1402,9 +1508,81 @@ fn gen_stmt(tokens: array[string], pos: int, var_types: string, func_names: stri
     let t = tok_type(tokens, pos)
     let v = tok_val(tokens, pos)
 
+    let implicit_let = false
+    if t == "IDENTIFIER" {
+        # `x = 1` with a new name declares it: `let` is optional
+        if tok_val(tokens, pos + 1) == "=" {
+            if map_get(var_types, v) == "" {
+                implicit_let = true
+                t = "KEYWORD"
+                v = "let"
+            }
+        }
+    }
+
+    if t == "IDENTIFIER" {
+        # x += 1, x -= 1, x *= 2, x /= 2  (+= also appends strings)
+        let op = tok_val(tokens, pos + 1)
+        let is_compound = false
+        if tok_val(tokens, pos + 2) == "=" {
+            if op == "+" { is_compound = true }
+            if op == "-" { is_compound = true }
+            if op == "*" { is_compound = true }
+            if op == "/" { is_compound = true }
+        }
+        if is_compound {
+            let rhs_res = gen_expr(tokens, pos + 3, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+            pos = string_to_int(rhs_res[2])
+            let line = "    " + v + " = (" + v + " " + op + " " + rhs_res[0] + ");\n"
+            if map_get(var_types, v) == "string" {
+                line = "    " + v + " = slop_string_concat(local_arena, " + v + ", " + rhs_res[0] + ");\n"
+            }
+            let result: array[string] = []
+            push(result, int_to_string(pos))
+            push(result, output + line)
+            push(result, var_types)
+            return result
+        }
+    }
+
+    if is_kw(tokens, pos, "for") {
+        # for i in 0..n { }   or   for x in items { }
+        pos = pos + 1
+        let name = tok_val(tokens, pos)
+        pos = pos + 1
+        pos = expect(tokens, pos, "KEYWORD", "in")
+        let s_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+        pos = string_to_int(s_res[2])
+        let head = ""
+        let body_vars = ""
+        if tok_type(tokens, pos) == "RANGE" {
+            let e_res = gen_expr(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
+            pos = string_to_int(e_res[2])
+            head = "    for (int64_t " + name + " = " + s_res[0] + ", _end_" + name + " = " + e_res[0] + "; " + name + " < _end_" + name + "; " + name + "++) {\n"
+            body_vars = map_set(var_types, name, "int")
+        } else {
+            let et = elem_type(s_res[1])
+            let c_et = c_type(et, struct_names)
+            let it = "_it_" + int_to_string(pos)
+            let idx = "_i_" + int_to_string(pos)
+            head = "    SlopArray " + it + " = " + s_res[0] + ";\n    for (int64_t " + idx + " = 0; " + idx + " < (int64_t)" + it + ".length; " + idx + "++) {\n    " + c_et + " " + name + " = SLOP_AT(" + c_et + ", " + it + ", " + idx + ");\n"
+            body_vars = map_set(var_types, name, et)
+        }
+        pos = expect(tokens, pos, "SYMBOL", "{")
+        let block_res = gen_block(tokens, pos, body_vars, func_names, func_returns, func_params, struct_names, struct_fields, "", return_type)
+        pos = string_to_int(block_res[0])
+        let result: array[string] = []
+        push(result, int_to_string(pos))
+        push(result, output + head + block_res[1] + "    }\n")
+        push(result, var_types)
+        return result
+    }
+
     if t == "KEYWORD" {
         if v == "let" {
-            pos = pos + 1
+            if implicit_let == false {
+                pos = pos + 1
+            }
             let name = tok_val(tokens, pos)
             pos = pos + 1
             let vtype = ""
@@ -1469,7 +1647,7 @@ fn gen_stmt(tokens: array[string], pos: int, var_types: string, func_names: stri
             if tok_val(tokens, pos) == "}" { ret_empty = true }
             if tok_type(tokens, pos) == "EOF" { ret_empty = true }
             if ret_empty {
-                let line = "    slop_arena_restore(local_arena, saved_offset);\n    slop_arena_depth--;\n    return;\n"
+                let line = "    SLOP_LEAVE();\n    return;\n"
                 let result: array[string] = []
                 push(result, int_to_string(pos))
                 push(result, output + line)
@@ -1482,19 +1660,26 @@ fn gen_stmt(tokens: array[string], pos: int, var_types: string, func_names: stri
             pos = string_to_int(e_res[2])
             let line = ""
             if et == "string" {
-                line = "    SlopString _ret = slop_string_clone(slop_get_arena(slop_arena_depth - 1), " + code + ");\n    slop_arena_restore(local_arena, saved_offset);\n    slop_arena_depth--;\n    return _ret;\n"
+                line = "    SlopString _ret = slop_string_clone(slop_get_arena(slop_arena_depth - 1), " + code + ");\n    SLOP_LEAVE();\n    return _ret;\n"
+                let lit_parts = split(code, "SLOP_STR(")
+                if length(lit_parts) > 1 {
+                    if lit_parts[0] == "" {
+                        # a literal lives in static memory: nothing to copy
+                        line = "    SLOP_LEAVE();\n    return " + code + ";\n"
+                    }
+                }
             } else {
                 if et == "void" {
-                    line = "    " + code + ";\n    slop_arena_restore(local_arena, saved_offset);\n    slop_arena_depth--;\n    return;\n"
+                    line = "    " + code + ";\n    SLOP_LEAVE();\n    return;\n"
                 } else {
                     if is_array_type(et) {
                         if elem_type(et) == "string" {
-                            line = "    SlopArray _ret = slop_array_clone_strings(slop_get_arena(slop_arena_depth - 1), " + code + ");\n    slop_arena_restore(local_arena, saved_offset);\n    slop_arena_depth--;\n    return _ret;\n"
+                            line = "    SlopArray _ret = slop_array_clone_strings(slop_get_arena(slop_arena_depth - 1), " + code + ");\n    SLOP_LEAVE();\n    return _ret;\n"
                         } else {
-                            line = "    SlopArray _ret = slop_array_clone_ints(slop_get_arena(slop_arena_depth - 1), " + code + ");\n    slop_arena_restore(local_arena, saved_offset);\n    slop_arena_depth--;\n    return _ret;\n"
+                            line = "    SlopArray _ret = slop_array_clone_ints(slop_get_arena(slop_arena_depth - 1), " + code + ");\n    SLOP_LEAVE();\n    return _ret;\n"
                         }
                     } else {
-                        line = "    slop_arena_restore(local_arena, saved_offset);\n    slop_arena_depth--;\n    return " + code + ";\n"
+                        line = "    SLOP_LEAVE();\n    return " + code + ";\n"
                     }
                 }
             }
@@ -1520,8 +1705,16 @@ fn gen_stmt(tokens: array[string], pos: int, var_types: string, func_names: stri
             let full = output + "    if (" + cond + ") {\n" + then_code + "    }"
             if tok_val(tokens, pos) == "else" {
                 pos = pos + 1
-                pos = expect(tokens, pos, "SYMBOL", "{")
-                let else_res = gen_block(tokens, pos, vt2, func_names, func_returns, func_params, struct_names, struct_fields, "", return_type)
+                let else_res: array[string] = []
+                if tok_val(tokens, pos) == "if" {
+                    let elif_res = gen_stmt(tokens, pos, vt2, func_names, func_returns, func_params, struct_names, struct_fields, "", return_type)
+                    push(else_res, elif_res[0])
+                    push(else_res, elif_res[1])
+                    push(else_res, elif_res[2])
+                } else {
+                    pos = expect(tokens, pos, "SYMBOL", "{")
+                    else_res = gen_block(tokens, pos, vt2, func_names, func_returns, func_params, struct_names, struct_fields, "", return_type)
+                }
                 pos = string_to_int(else_res[0])
                 let else_code = else_res[1]
                 let vt3 = else_res[2]
@@ -1626,6 +1819,27 @@ fn gen_block(tokens: array[string], pos: int, var_types: string, func_names: str
 }
 
 # ---------- Function generator ----------
+fn contains(s: string, needle: string) -> bool {
+    return length(split(s, needle)) > 1
+}
+
+# Wraps a function body in its memory frame. A function that never touches the
+# arena and calls nothing (a "leaf") gets no frame at all: zero overhead.
+fn frame_body(body: string, falls_off_end: bool) -> string {
+    let needs_frame = false
+    if contains(body, "local_arena") { needs_frame = true }
+    if contains(body, "slop_get_arena") { needs_frame = true }
+    if contains(body, "slop_arena") { needs_frame = true }
+    if contains(body, "fn_") { needs_frame = true }
+    if needs_frame {
+        if falls_off_end {
+            return "    SLOP_ENTER();\n" + body + "    SLOP_LEAVE();\n"
+        }
+        return "    SLOP_ENTER();\n" + body
+    }
+    return join(split(body, "    SLOP_LEAVE();\n"), "")
+}
+
 fn gen_func(tokens: array[string], pos: int, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
     pos = expect(tokens, pos, "KEYWORD", "fn")
     let name = tok_val(tokens, pos)
@@ -1670,12 +1884,10 @@ fn gen_func(tokens: array[string], pos: int, func_names: string, func_returns: s
     let block_res = gen_block(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields, "", rtype)
     pos = string_to_int(block_res[0])
     let body = block_res[1]
-    let full = ""
-    if rtype == "void" {
-        full = c_rtype + " fn_" + name + "(" + params + ") {\n    slop_arena_depth++;\n    SlopArena* local_arena = slop_get_arena(slop_arena_depth);\n    size_t saved_offset = slop_arena_save(local_arena);\n" + body + "    slop_arena_restore(local_arena, saved_offset);\n    slop_arena_depth--;\n}\n\n"
-    } else {
-        full = c_rtype + " fn_" + name + "(" + params + ") {\n    slop_arena_depth++;\n    SlopArena* local_arena = slop_get_arena(slop_arena_depth);\n    size_t saved_offset = slop_arena_save(local_arena);\n" + body + "}\n\n"
+    if length(params) == 0 {
+        params = "void"
     }
+    let full = c_rtype + " fn_" + name + "(" + params + ") {\n" + frame_body(body, rtype == "void") + "}\n\n"
     let result: array[string] = []
     push(result, forward)
     push(result, full)
@@ -1686,7 +1898,7 @@ fn gen_func(tokens: array[string], pos: int, func_names: string, func_returns: s
 # ---------- Main compiler ----------
 fn main(args: array[string]) {
     if length(args) < 2 {
-        print("Usage: compiler_v2 <file.slop> [output.c]")
+        print("Usage: slop-compiler <file.slop> [output.c]")
         return
     }
     let filename = args[1]
@@ -1758,7 +1970,10 @@ fn main(args: array[string]) {
     }
     output = output + "\n"
 
-    # function bodies
+    # function bodies; top-level statements become main
+    let has_main = arr_find(func_names, "main") >= 0
+    let top_body = ""
+    let top_vars = map_set("", "args", "array[string]")
     let pos = 0
     while pos < length(tokens) {
         if tok_type(tokens, pos) == "EOF" {
@@ -1782,10 +1997,28 @@ fn main(args: array[string]) {
                 pos = pos + 1
             }
         } else {
-            let f_res = gen_func(tokens, pos, func_names, func_returns, func_params, struct_names, struct_fields)
-            output = output + f_res[1]
-            pos = string_to_int(f_res[2])
+            if tok_val(tokens, pos) == "fn" {
+                let f_res = gen_func(tokens, pos, func_names, func_returns, func_params, struct_names, struct_fields)
+                output = output + f_res[1]
+                pos = string_to_int(f_res[2])
+            } else {
+                let s_res = gen_stmt(tokens, pos, top_vars, func_names, func_returns, func_params, struct_names, struct_fields, top_body, "void")
+                pos = string_to_int(s_res[0])
+                top_body = s_res[1]
+                top_vars = s_res[2]
+            }
         }
+    }
+    let main_call = "fn_main(args)"
+    if has_main {
+        if length(top_body) > 0 {
+            print("Error: code outside functions is not allowed when fn main exists")
+        }
+        if arr_get(func_params, arr_find(func_names, "main")) == "<none>" {
+            main_call = "fn_main()"
+        }
+    } else {
+        output = output + "void fn_main(SlopArray args) {\n" + frame_body(top_body, true) + "}\n\n"
     }
 
     output = output + "\nint main(int argc, char** argv) {\n"
@@ -1797,7 +2030,7 @@ fn main(args: array[string]) {
     output = output + "        *s = slop_string_create(local_arena, argv[i]);\n"
     output = output + "        slop_array_push(local_arena, &args, s);\n"
     output = output + "    }\n"
-    output = output + "    fn_main(args);\n"
+    output = output + "    " + main_call + ";\n"
     output = output + "    return 0;\n"
     output = output + "}\n"
 

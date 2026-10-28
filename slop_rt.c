@@ -2,6 +2,11 @@
 
 THREAD_LOCAL int slop_arena_depth = 0;
 
+// The call depth is thread-local, so other languages reach it through this pointer.
+int* ext_slop_arena_depth(void) {
+    return &slop_arena_depth;
+}
+
 // Export all runtime functions with standard external linkage for FFI
 SlopArena* ext_slop_arena_create(size_t capacity) {
     return slop_arena_create(capacity);
@@ -45,6 +50,14 @@ SlopArray ext_slop_array_create(SlopArena* arena) {
 
 void ext_slop_array_push(SlopArena* arena, SlopArray* arr, void* item) {
     slop_array_push(arena, arr, item);
+}
+
+void* ext_slop_array_push_slot(SlopArena* arena, SlopArray* arr, size_t elem_size) {
+    return slop_array_push_slot(arena, arr, elem_size);
+}
+
+void* ext_slop_array_at(SlopArray arr, int64_t idx, size_t elem_size) {
+    return slop_array_at(arr, idx, elem_size);
 }
 
 void ext_slop_print_string(SlopString s) {

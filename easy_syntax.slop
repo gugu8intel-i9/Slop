@@ -1,0 +1,41 @@
+# No `fn main`, no `let`, no semicolons. Code at the top just runs.
+greeting = "Easy Slop"
+print(greeting)
+
+fn square(x: int) -> int {
+    return x * x
+}
+
+fn grade(score: int) -> string {
+    if score >= 90 {
+        return "A"
+    } else if score >= 80 {
+        return "B"
+    } else {
+        return "C"
+    }
+}
+
+names = ["Gugu", "Slop", "World"]
+for name in names {
+    print("Hello " + name)
+}
+
+total = 0
+for i in 0..10 {
+    total += i |> square()
+}
+print(total)
+
+scores = [95, 85, 70]
+for s in scores {
+    if s > 80 and not (s == 85) {
+        print("top: " + grade(s))
+    } else {
+        print(grade(s))
+    }
+}
+
+msg = "count:"
+msg += " " + int_to_string(len(scores))
+print(msg)

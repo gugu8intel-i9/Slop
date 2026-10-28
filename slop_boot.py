@@ -1128,10 +1128,7 @@ int main(int argc, char** argv) {
             if isinstance(stmt, ReturnNode):
                 expr_code, _ = self.generate_expression(stmt.expr)
                 c_elem_type = self.get_c_type(elem_type)
-                elem_ptr = self.fresh_temp()
-                self.output.append(f"        {c_elem_type}* {elem_ptr} = ({c_elem_type}*)slop_arena_alloc(local_arena, sizeof({c_elem_type}));\n")
-                self.output.append(f"        *{elem_ptr} = {expr_code};\n")
-                self.output.append(f"        slop_array_push(local_arena, &{res_var}, {elem_ptr});\n")
+                self.output.append(f"        SLOP_PUSH(local_arena, {res_var}, {c_elem_type}, {expr_code});\n")
             else:
                 self.generate_statement(stmt)
                 
@@ -1298,7 +1295,7 @@ int main(int argc, char** argv) {
                 elem_type = arr_type[6:-1]
                 
             c_elem_type = self.get_c_type(elem_type)
-            return f"(*({c_elem_type}*)(slop_array_get({arr_code}, {idx_code})))", elem_type
+            return f"SLOP_AT({c_elem_type}, {arr_code}, {idx_code})", elem_type
             
         elif isinstance(expr, ArrayLiteralNode):
             elem_type = "int"
@@ -1310,10 +1307,7 @@ int main(int argc, char** argv) {
             self.output.append(f"    SlopArray {arr_var} = slop_array_create(local_arena);\n")
             for elem in expr.elements:
                 elem_code, _ = self.generate_expression(elem)
-                elem_ptr = self.fresh_temp()
-                self.output.append(f"    {c_elem_type}* {elem_ptr} = ({c_elem_type}*)slop_arena_alloc(local_arena, sizeof({c_elem_type}));\n")
-                self.output.append(f"    *{elem_ptr} = {elem_code};\n")
-                self.output.append(f"    slop_array_push(local_arena, &{arr_var}, {elem_ptr});\n")
+                self.output.append(f"    SLOP_PUSH(local_arena, {arr_var}, {c_elem_type}, {elem_code});\n")
             return arr_var, f"array[{elem_type}]"
 
         elif isinstance(expr, ListComprehensionNode):
@@ -1330,15 +1324,12 @@ int main(int argc, char** argv) {
             idx_var = self.fresh_temp()
             
             self.output.append(f"    for (size_t {idx_var} = 0; {idx_var} < {source_code}.length; {idx_var}++) {{\n")
-            self.output.append(f"        {self.get_c_type(elem_type)} {expr.var_name} = *({self.get_c_type(elem_type)}*)({source_code}.data[{idx_var}]);\n")
+            self.output.append(f"        {self.get_c_type(elem_type)} {expr.var_name} = SLOP_AT({self.get_c_type(elem_type)}, {source_code}, (int64_t){idx_var});\n")
             
             elt_code, elt_type = self.generate_expression(expr.element_expr)
             c_elt_type = self.get_c_type(elt_type)
             
-            elt_ptr = self.fresh_temp()
-            self.output.append(f"        {c_elt_type}* {elt_ptr} = ({c_elt_type}*)slop_arena_alloc(local_arena, sizeof({c_elt_type}));\n")
-            self.output.append(f"        *{elt_ptr} = {elt_code};\n")
-            self.output.append(f"        slop_array_push(local_arena, &{arr_var}, {elt_ptr});\n")
+            self.output.append(f"        SLOP_PUSH(local_arena, {arr_var}, {c_elt_type}, {elt_code});\n")
             self.output.append("    }\n")
             
             if old_var_type:
@@ -1533,10 +1524,7 @@ int main(int argc, char** argv) {
                 arr_code, arr_type = self.generate_expression(expr.args[0])
                 elem_code, elem_type = self.generate_expression(expr.args[1])
                 c_elem_type = self.get_c_type(elem_type)
-                elem_ptr = self.fresh_temp()
-                self.output.append(f"    {c_elem_type}* {elem_ptr} = ({c_elem_type}*)slop_arena_alloc(local_arena, sizeof({c_elem_type}));\n")
-                self.output.append(f"    *{elem_ptr} = {elem_code};\n")
-                return f"slop_array_push(local_arena, &{arr_code}, {elem_ptr})", "void"
+                return f"SLOP_PUSH(local_arena, {arr_code}, {c_elem_type}, {elem_code})", "void"
             elif expr.name == "read_file":
                 arg_code, _ = self.generate_expression(expr.args[0])
                 return f"slop_read_file(local_arena, {arg_code})", "string"

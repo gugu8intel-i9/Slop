@@ -58,9 +58,7 @@ namespace slop {
     inline SlopArray to_slop_array(SlopArena* arena, const std::vector<T>& cpp_vec) {
         SlopArray arr = slop_array_create(arena);
         for (const auto& item : cpp_vec) {
-            T* ptr = (T*)slop_arena_alloc(arena, sizeof(T));
-            *ptr = item;
-            slop_array_push(arena, &arr, ptr);
+            *(T*)slop_array_push_slot(arena, &arr, sizeof(T)) = item;
         }
         return arr;
     }
@@ -70,7 +68,7 @@ namespace slop {
         std::vector<T> vec;
         vec.reserve(slop_arr.length);
         for (size_t i = 0; i < slop_arr.length; ++i) {
-            vec.push_back(*(T*)slop_arr.data[i]);
+            vec.push_back(*(T*)slop_array_at(slop_arr, (int64_t)i, sizeof(T)));
         }
         return vec;
     }

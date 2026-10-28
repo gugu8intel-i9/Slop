@@ -13,7 +13,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <stdatomic.h>
 
 #if defined(__i386__) || defined(__x86_64__)
 #include <x86intrin.h>
@@ -30,21 +29,21 @@ static inline void slop_unsafe_store32(uintptr_t addr, uint32_t value) { *(volat
 static inline void slop_unsafe_store64(uintptr_t addr, uint64_t value) { *(volatile uint64_t*)addr = value; }
 
 static inline uint32_t slop_mmio_read32(uintptr_t addr) {
-    atomic_thread_fence(memory_order_seq_cst);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     uint32_t v = *(volatile uint32_t*)addr;
-    atomic_thread_fence(memory_order_seq_cst);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     return v;
 }
 
 static inline void slop_mmio_write32(uintptr_t addr, uint32_t value) {
-    atomic_thread_fence(memory_order_seq_cst);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     *(volatile uint32_t*)addr = value;
-    atomic_thread_fence(memory_order_seq_cst);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
 
-static inline void slop_cpu_fence(void) { atomic_thread_fence(memory_order_seq_cst); }
-static inline void slop_device_fence(void) { atomic_thread_fence(memory_order_seq_cst); }
-static inline void slop_gpu_fence(void) { atomic_thread_fence(memory_order_seq_cst); }
+static inline void slop_cpu_fence(void) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
+static inline void slop_device_fence(void) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
+static inline void slop_gpu_fence(void) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
 
 static inline void slop_cpu_relax(void) {
 #if defined(__i386__) || defined(__x86_64__)

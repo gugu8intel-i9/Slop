@@ -76,146 +76,175 @@
     static inline void slop_winsock_init() {} // No-op on POSIX
 #endif
 
-// Slop Arena / Bucket Structure (linked list of fixed-size buckets so pointers never move)
+// ============================================================================
+// Slop Arena ("Bucket") memory
+// ============================================================================
+// Blocks are chained newest-first and each block is ONE allocation (header +
+// payload), so pointers never move and a new block costs a single malloc.
+// Restoring a mark scrubs only the bytes that were actually used, keeps one
+// emptied block as a spare (no malloc/free churn when a hot function keeps
+// crossing a block edge) and frees the rest.
 typedef struct SlopArenaBlock {
-    uint8_t* data;
+    struct SlopArenaBlock* prev;
     size_t size;
     size_t used;
-    struct SlopArenaBlock* next;
+    uint8_t data[];
 } SlopArenaBlock;
 
 typedef struct SlopArena {
-    SlopArenaBlock* head;
     SlopArenaBlock* current;
+    SlopArenaBlock* spare;
     size_t block_size;
 } SlopArena;
 
+static inline void slop_oom(void) {
+    fprintf(stderr, "Slop: out of memory.\n");
+    exit(1);
+}
+
 static inline SlopArenaBlock* slop_arena_block_create(size_t size) {
-    SlopArenaBlock* block = (SlopArenaBlock*)malloc(sizeof(SlopArenaBlock));
-    if (!block) {
-        fprintf(stderr, "Out of memory allocating Arena block metadata.\n");
-        exit(1);
-    }
-    block->data = (uint8_t*)malloc(size);
-    if (!block->data) {
-        fprintf(stderr, "Out of memory allocating Arena block buffer of size %zu.\n", size);
-        exit(1);
-    }
-    memset(block->data, 0, size);
+    // calloc lets the OS hand out zero pages lazily: untouched memory is never resident.
+    SlopArenaBlock* block = (SlopArenaBlock*)calloc(1, sizeof(SlopArenaBlock) + size);
+    if (!block) slop_oom();
     block->size = size;
-    block->used = 0;
-    block->next = NULL;
     return block;
+}
+
+static inline void slop_arena_block_free(SlopArenaBlock* block) {
+    memset(block->data, 0, block->used);
+    free(block);
+}
+
+static inline void slop_arena_init(SlopArena* arena, size_t capacity) {
+    arena->block_size = capacity < 1024 ? 1024 : capacity;
+    arena->current = slop_arena_block_create(arena->block_size);
+    arena->spare = NULL;
 }
 
 static inline SlopArena* slop_arena_create(size_t capacity) {
     SlopArena* arena = (SlopArena*)malloc(sizeof(SlopArena));
-    if (!arena) {
-        fprintf(stderr, "Out of memory allocating Arena metadata.\n");
-        exit(1);
-    }
-    arena->block_size = capacity;
-    if (arena->block_size < 1024) arena->block_size = 1024;
-    arena->head = slop_arena_block_create(arena->block_size);
-    arena->current = arena->head;
+    if (!arena) slop_oom();
+    slop_arena_init(arena, capacity);
     return arena;
 }
 
 static inline void slop_arena_destroy(SlopArena* arena) {
-    if (arena) {
-        SlopArenaBlock* block = arena->head;
-        while (block) {
-            SlopArenaBlock* next = block->next;
-            if (block->data) {
-                memset(block->data, 0, block->size);
-                free(block->data);
-            }
-            free(block);
-            block = next;
-        }
-        free(arena);
+    if (!arena) return;
+    SlopArenaBlock* block = arena->current;
+    while (block) {
+        SlopArenaBlock* prev = block->prev;
+        slop_arena_block_free(block);
+        block = prev;
     }
+    free(arena->spare);
+    free(arena);
+}
+
+static __attribute__((noinline)) void* slop_arena_alloc_slow(SlopArena* arena, size_t size) {
+    SlopArenaBlock* block;
+    if (size > arena->block_size) {
+        block = slop_arena_block_create(size);
+    } else if (arena->spare) {
+        block = arena->spare;
+        arena->spare = NULL;
+    } else {
+        block = slop_arena_block_create(arena->block_size);
+    }
+    block->prev = arena->current;
+    block->used = size;
+    arena->current = block;
+    return block->data;
 }
 
 static inline void* slop_arena_alloc(SlopArena* arena, size_t size) {
-    size = (size + 7) & ~7;
-    if (size > arena->block_size) {
-        // Large allocation: create a dedicated block just for it.
-        SlopArenaBlock* block = slop_arena_block_create(size);
-        block->next = arena->current->next;
-        arena->current->next = block;
-        block->used = size;
-        return block->data;
+    size = (size + 7) & ~(size_t)7;
+    SlopArenaBlock* block = arena->current;
+    if (__builtin_expect(block->size - block->used >= size, 1)) {
+        void* ptr = block->data + block->used;
+        block->used += size;
+        return ptr;
     }
-    if (arena->current->used + size > arena->current->size) {
-        SlopArenaBlock* block = slop_arena_block_create(arena->block_size);
-        arena->current->next = block;
-        arena->current = block;
-    }
-    void* ptr = &arena->current->data[arena->current->used];
-    arena->current->used += size;
-    return ptr;
+    return slop_arena_alloc_slow(arena, size);
 }
 
+// Grows the most recent allocation in place when there is room. Returns false otherwise.
+static inline bool slop_arena_extend(SlopArena* arena, void* ptr, size_t old_size, size_t new_size) {
+    SlopArenaBlock* block = arena->current;
+    old_size = (old_size + 7) & ~(size_t)7;
+    new_size = (new_size + 7) & ~(size_t)7;
+    if ((uint8_t*)ptr + old_size != block->data + block->used) return false;
+    if (block->size - block->used < new_size - old_size) return false;
+    block->used += new_size - old_size;
+    return true;
+}
+
+// A mark is the address of the next free byte.
 static inline size_t slop_arena_save(SlopArena* arena) {
     return (size_t)(arena->current->data + arena->current->used);
 }
 
 static inline void slop_arena_restore(SlopArena* arena, size_t marker) {
     uint8_t* target = (uint8_t*)marker;
-    SlopArenaBlock* block = arena->head;
-    while (block) {
-        if (target >= block->data && target <= block->data + block->size) {
-            if (block->used > (size_t)(target - block->data)) {
-                memset(target, 0, block->used - (size_t)(target - block->data));
-            }
-            block->used = (size_t)(target - block->data);
-            arena->current = block;
-            // Free any subsequent blocks to reclaim memory and keep pointer stability.
-            SlopArenaBlock* victim = block->next;
-            block->next = NULL;
-            while (victim) {
-                SlopArenaBlock* next = victim->next;
-                if (victim->data) {
-                    memset(victim->data, 0, victim->size);
-                    free(victim->data);
-                }
-                free(victim);
-                victim = next;
-            }
-            return;
+    SlopArenaBlock* block = arena->current;
+    // Newest blocks come first, so this only walks blocks created since the mark.
+    while (block && !(target >= block->data && target <= block->data + block->size)) {
+        SlopArenaBlock* prev = block->prev;
+        memset(block->data, 0, block->used);
+        if (block->size == arena->block_size && !arena->spare) {
+            block->used = 0;
+            arena->spare = block;
+        } else {
+            free(block);
         }
-        block = block->next;
+        block = prev;
     }
-    fprintf(stderr, "Slop Arena restore failed: invalid marker %p.\n", (void*)target);
-    exit(1);
+    if (!block) {
+        fprintf(stderr, "Slop Arena restore failed: invalid marker %p.\n", (void*)target);
+        exit(1);
+    }
+    size_t keep = (size_t)(target - block->data);
+    if (block->used > keep) memset(target, 0, block->used - keep);
+    block->used = keep;
+    arena->current = block;
 }
 
 // Thread-Local Global Arena Stack
 #ifdef _MSC_VER
 #define THREAD_LOCAL __declspec(thread)
+#elif defined(__cplusplus)
+#define THREAD_LOCAL thread_local
 #else
 #define THREAD_LOCAL _Thread_local
 #endif
 
+// "Two-bucket relay": a call at depth d allocates in bucket d & 1 and hands its
+// result to its caller's bucket (d - 1) & 1. Calls are LIFO, so when a function
+// returns everything deeper has already been wiped and the caller's data is on
+// top of the other bucket. Two buckets per thread cover ANY recursion depth:
+// memory grows with live data, never with call depth.
 extern THREAD_LOCAL int slop_arena_depth;
 static inline SlopArena* slop_get_arena(int depth) {
-    static THREAD_LOCAL SlopArena* arenas[1024] = {NULL};
-    if (depth < 0 || depth >= 1024) {
-        fprintf(stderr, "Slop call depth limit exceeded! Max: 1024.\n");
-        exit(1);
-    }
-    if (!arenas[depth]) {
-        arenas[depth] = slop_arena_create(64 * 1024); // 64KB starting capacity
-    }
-    return arenas[depth];
+    static THREAD_LOCAL SlopArena buckets[2];
+    SlopArena* arena = &buckets[depth & 1];
+    if (__builtin_expect(!arena->current, 0)) slop_arena_init(arena, 64 * 1024);
+    return arena;
 }
+
+// Function prologue / epilogue used by generated code.
+#define SLOP_ENTER() \
+    slop_arena_depth++; \
+    SlopArena* local_arena = slop_get_arena(slop_arena_depth); \
+    size_t saved_offset = slop_arena_save(local_arena)
+#define SLOP_LEAVE() (slop_arena_restore(local_arena, saved_offset), slop_arena_depth--)
 
 // Slop String representation
 typedef struct SlopString {
     const char* data;
     size_t length;
 } SlopString;
+
+// String literals point straight at static storage: no allocation, no copy.
+#define SLOP_STR(lit) ((SlopString){ .data = (lit), .length = sizeof(lit) - 1 })
 
 static inline SlopString slop_string_create(SlopArena* arena, const char* c_str) {
     size_t len = strlen(c_str);
@@ -250,15 +279,15 @@ static inline bool slop_string_equal(SlopString s1, SlopString s2) {
 }
 
 static inline SlopString slop_string_clone(SlopArena* dest_arena, SlopString s) {
-    if (s.length == 0) return (SlopString){ .data = "", .length = 0 };
+    if (s.length == 0) return SLOP_STR("");
     return slop_string_create_len(dest_arena, s.data, s.length);
 }
 
+// Strings are immutable, so a substring is just a view: no allocation.
 static inline SlopString slop_char_at(SlopArena* arena, SlopString s, int64_t idx) {
-    if (idx >= 0 && (size_t)idx < s.length) {
-        return slop_string_create_len(arena, s.data + idx, 1);
-    }
-    return slop_string_create(arena, "");
+    (void)arena;
+    if (idx >= 0 && (size_t)idx < s.length) return (SlopString){ .data = s.data + idx, .length = 1 };
+    return SLOP_STR("");
 }
 
 // Slop Int to String
@@ -283,24 +312,53 @@ static inline SlopArray slop_array_create(SlopArena* arena) {
     return arr;
 }
 
+static inline void slop_array_grow(SlopArena* arena, SlopArray* arr) {
+    size_t old_cap = arr->capacity;
+    arr->capacity = old_cap ? old_cap * 2 : 8;
+    // If the array is the newest thing in the bucket, just grow it where it is.
+    if (old_cap && slop_arena_extend(arena, arr->data, old_cap * sizeof(void*), arr->capacity * sizeof(void*))) return;
+    void** new_data = (void**)slop_arena_alloc(arena, arr->capacity * sizeof(void*));
+    if (old_cap) memcpy(new_data, arr->data, old_cap * sizeof(void*));
+    arr->data = new_data;
+}
+
 static inline void slop_array_push(SlopArena* arena, SlopArray* arr, void* item) {
-    if (arr->length >= arr->capacity) {
-        size_t old_cap = arr->capacity;
-        arr->capacity *= 2;
-        void** new_data = (void**)slop_arena_alloc(arena, arr->capacity * sizeof(void*));
-        memcpy(new_data, arr->data, old_cap * sizeof(void*));
-        arr->data = new_data;
-    }
+    if (arr->length >= arr->capacity) slop_array_grow(arena, arr);
     arr->data[arr->length++] = item;
 }
 
+static inline void slop_array_bounds_fail(SlopArray arr, int64_t idx) {
+    fprintf(stderr, "Slop Secure Guard: Array index out of bounds! Length: %zu, Requested Index: %lld. Terminating process to prevent memory exploit.\n", arr.length, (long long)idx);
+    exit(139);
+}
+
 static inline void* slop_array_get(SlopArray arr, int64_t idx) {
-    if (idx < 0 || (size_t)idx >= arr.length) {
-        fprintf(stderr, "Slop Secure Guard: Array index out of bounds! Length: %zu, Requested Index: %lld. Terminating process to prevent memory exploit.\n", arr.length, (long long)idx);
-        exit(139);
-    }
+    if (__builtin_expect(idx < 0 || (size_t)idx >= arr.length, 0)) slop_array_bounds_fail(arr, idx);
     return arr.data[idx];
 }
+
+// Element storage: values that fit in a slot (int, float, bool, small structs)
+// live directly in the slot; bigger ones (strings, big structs) are boxed.
+// `elem_size` is always sizeof(T), so the branch folds away at compile time.
+#define SLOP_INLINE_ELEM(elem_size) ((elem_size) <= sizeof(void*))
+
+// Returns where element `idx` lives. Usable as an lvalue: *(T*)slop_array_at(...)
+static inline void* slop_array_at(SlopArray arr, int64_t idx, size_t elem_size) {
+    if (__builtin_expect(idx < 0 || (size_t)idx >= arr.length, 0)) slop_array_bounds_fail(arr, idx);
+    return SLOP_INLINE_ELEM(elem_size) ? (void*)&arr.data[idx] : arr.data[idx];
+}
+
+// Appends an element and returns where to write it: *(T*)slop_array_push_slot(...) = v
+static inline void* slop_array_push_slot(SlopArena* arena, SlopArray* arr, size_t elem_size) {
+    if (arr->length >= arr->capacity) slop_array_grow(arena, arr);
+    void** slot = &arr->data[arr->length++];
+    if (SLOP_INLINE_ELEM(elem_size)) return slot;
+    *slot = slop_arena_alloc(arena, elem_size);
+    return *slot;
+}
+
+#define SLOP_AT(T, arr, idx) (*(T*)slop_array_at((arr), (idx), sizeof(T)))
+#define SLOP_PUSH(arena, arr, T, value) (*(T*)slop_array_push_slot((arena), &(arr), sizeof(T)) = (value))
 
 static inline SlopArray slop_split(SlopArena* arena, SlopString s, SlopString sep) {
     SlopArray arr = slop_array_create(arena);
@@ -308,14 +366,14 @@ static inline SlopArray slop_split(SlopArena* arena, SlopString s, SlopString se
     if (sep.length == 0) {
         for (size_t i = 0; i < s.length; i++) {
             SlopString* sub = (SlopString*)slop_arena_alloc(arena, sizeof(SlopString));
-            *sub = slop_string_create_len(arena, s.data + i, 1);
+            *sub = (SlopString){ .data = s.data + i, .length = 1 };
             slop_array_push(arena, &arr, sub);
         }
     } else {
         for (size_t i = 0; s.length >= sep.length && i <= s.length - sep.length; ) {
             if (memcmp(s.data + i, sep.data, sep.length) == 0) {
                 SlopString* sub = (SlopString*)slop_arena_alloc(arena, sizeof(SlopString));
-                *sub = slop_string_create_len(arena, s.data + start, i - start);
+                *sub = (SlopString){ .data = s.data + start, .length = i - start };
                 slop_array_push(arena, &arr, sub);
                 i += sep.length;
                 start = i;
@@ -325,7 +383,7 @@ static inline SlopArray slop_split(SlopArena* arena, SlopString s, SlopString se
         }
         if (start <= s.length) {
             SlopString* sub = (SlopString*)slop_arena_alloc(arena, sizeof(SlopString));
-            *sub = slop_string_create_len(arena, s.data + start, s.length - start);
+            *sub = (SlopString){ .data = s.data + start, .length = s.length - start };
             slop_array_push(arena, &arr, sub);
         }
     }
@@ -333,15 +391,18 @@ static inline SlopArray slop_split(SlopArena* arena, SlopString s, SlopString se
 }
 
 static inline SlopString slop_join(SlopArena* arena, SlopArray arr, SlopString sep) {
-    SlopString result = slop_string_create(arena, "");
+    size_t total = arr.length ? sep.length * (arr.length - 1) : 0;
+    for (size_t i = 0; i < arr.length; i++) total += ((SlopString*)arr.data[i])->length;
+    char* out = (char*)slop_arena_alloc(arena, total + 1);
+    size_t p = 0;
     for (size_t i = 0; i < arr.length; i++) {
         SlopString* s = (SlopString*)arr.data[i];
-        if (i > 0) {
-            result = slop_string_concat(arena, result, sep);
-        }
-        result = slop_string_concat(arena, result, *s);
+        if (i > 0) { memcpy(out + p, sep.data, sep.length); p += sep.length; }
+        memcpy(out + p, s->data, s->length);
+        p += s->length;
     }
-    return result;
+    out[p] = '\0';
+    return (SlopString){ .data = out, .length = p };
 }
 
 static inline SlopArray slop_array_clone_strings(SlopArena* dest_arena, SlopArray arr) {
@@ -355,14 +416,13 @@ static inline SlopArray slop_array_clone_strings(SlopArena* dest_arena, SlopArra
     return new_arr;
 }
 
+// Copies an array of inline (slot-sized) values into another arena.
 static inline SlopArray slop_array_clone_ints(SlopArena* dest_arena, SlopArray arr) {
-    SlopArray new_arr = slop_array_create(dest_arena);
-    for (size_t i = 0; i < arr.length; i++) {
-        int64_t* val = (int64_t*)arr.data[i];
-        int64_t* new_val = (int64_t*)slop_arena_alloc(dest_arena, sizeof(int64_t));
-        *new_val = *val;
-        slop_array_push(dest_arena, &new_arr, new_val);
-    }
+    SlopArray new_arr;
+    new_arr.length = arr.length;
+    new_arr.capacity = arr.length ? arr.length : 1;
+    new_arr.data = (void**)slop_arena_alloc(dest_arena, new_arr.capacity * sizeof(void*));
+    memcpy(new_arr.data, arr.data, arr.length * sizeof(void*));
     return new_arr;
 }
 
@@ -542,7 +602,8 @@ static inline SlopString slop_socket_read(SlopArena* arena, int64_t client_fd) {
     }
 
     buf[read_bytes] = '\0';
-    arena->current->used -= (max_read - read_bytes);
+    // Give back the unused tail of the read buffer (keeping 8-byte alignment).
+    arena->current->used = (size_t)((uint8_t*)buf - arena->current->data) + (((size_t)read_bytes + 8) & ~(size_t)7);
     return (SlopString){ .data = buf, .length = (size_t)read_bytes };
 }
 
@@ -656,7 +717,11 @@ static inline int64_t slop_ui_create(SlopString title) {
 }
 
 static inline void slop_ui_render(SlopString html) {
-    slop_ui_html = html.data;
+    char* copy = (char*)realloc((void*)slop_ui_html, html.length + 1);
+    if (!copy) slop_oom();
+    memcpy(copy, html.data, html.length);
+    copy[html.length] = '\0';
+    slop_ui_html = copy;
 }
 
 static inline void slop_ui_serve(int64_t server_fd) {
@@ -907,18 +972,11 @@ typedef struct {
 
 static inline void slop_parallel_map_worker(int64_t idx, void* ctx) {
     SlopMapCtx* map_ctx = (SlopMapCtx*)ctx;
-    int64_t* in = (int64_t*)map_ctx->input.data[idx];
-    int64_t* out = (int64_t*)map_ctx->output.data[idx];
-    *out = map_ctx->map_fn(*in);
+    SLOP_AT(int64_t, map_ctx->output, idx) = map_ctx->map_fn(SLOP_AT(int64_t, map_ctx->input, idx));
 }
 
 static inline SlopArray slop_parallel_map(SlopArena* arena, SlopArray input, int64_t (*map_fn)(int64_t)) {
-    SlopArray output = slop_array_create(arena);
-    for (size_t i = 0; i < input.length; i++) {
-        int64_t* p = (int64_t*)slop_arena_alloc(arena, sizeof(int64_t));
-        *p = 0;
-        slop_array_push(arena, &output, p);
-    }
+    SlopArray output = slop_array_clone_ints(arena, input);
 
     SlopMapCtx ctx = { input, output, map_fn };
     slop_parallel_for(0, (int64_t)input.length, slop_parallel_map_worker, &ctx);

@@ -2,7 +2,7 @@
 #include <iostream>
 
 // Define global call depth variable required by the runtime
-int slop_arena_depth = 0;
+THREAD_LOCAL int slop_arena_depth = 0;
 
 // Simple function that utilizes Slop's SEAA memory arena for high performance
 void run_slop_computation(SlopArena* arena) {
@@ -16,10 +16,10 @@ void run_slop_computation(SlopArena* arena) {
     std::vector<int64_t> numbers = {10, 20, 30, 40, 50};
     SlopArray slop_arr = slop::to_slop_array(arena, numbers);
 
-    // 4. Compute sum using Slop-style pointer access
+    // 4. Compute sum (ints live directly in the array slots)
     int64_t sum = 0;
     for (size_t i = 0; i < slop_arr.length; i++) {
-        sum += *(int64_t*)slop_arr.data[i];
+        sum += SLOP_AT(int64_t, slop_arr, (int64_t)i);
     }
     
     std::cout << "Sum calculated on Slop Arena: " << sum << std::endl;

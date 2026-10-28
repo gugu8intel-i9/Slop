@@ -5,34 +5,40 @@ Slop is meant to be easier to start than Python or JavaScript.
 ## The whole beginner language
 
 ```slop
-fn main(args: array[string]) {
-    let name = "Gugu"
-    let age = 18
+name = "Gugu"
+age = 18
 
-    if age >= 18 {
-        print("adult")
-    } else {
-        print("young")
-    }
-
-    let nums = [1, 2, 3]
-    push(nums, 4)
-
-    let i = 0
-    while i < length(nums) {
-        print(nums[i])
-        i = i + 1
-    }
+if age >= 18 and name != "" {
+    print("adult")
+} else if age > 12 {
+    print("teen")
+} else {
+    print("young")
 }
+
+nums = [1, 2, 3]
+push(nums, 4)
+
+for n in nums {
+    print(n)
+}
+
+total = 0
+for i in 0..10 {
+    total += i
+}
+print(total)
 ```
 
 ## Five rules
 
-1. `let` creates a variable.
-2. `fn` creates a function.
+1. `x = 1` creates a variable (`let x = 1` also works).
+2. `fn` creates a function. Code outside functions just runs; no `main` needed.
 3. `{ }` means a block.
-4. `array[T]` means a list of `T`.
+4. `for x in list { }` and `for i in 0..n { }` loop.
 5. `print(x)` shows a value.
+
+Extras: `and`, `or`, `not`, `+=`, `-=`, `len(list)`, and `x |> f()` (same as `f(x)`).
 
 ## Types
 
