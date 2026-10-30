@@ -336,6 +336,17 @@ fn __clock_ns() -> int {
     return __load64(t) * 1000000000 + __load64(t + 8)
 }
 
+fn __sleep_ms(ms: int) {
+    t = __scratch()
+    __store64(t, ms / 1000)
+    __store64(t + 8, ms % 1000 * 1000000)
+    if __arm() {
+        __syscall(101, t, 0)
+    } else {
+        __syscall(35, t, 0)
+    }
+}
+
 # x86-64 and ARM64 numbers for socket, setsockopt, bind, listen, accept
 fn __sock_nr(i: int) -> int {
     if __arm() {

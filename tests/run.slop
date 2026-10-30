@@ -113,7 +113,7 @@ for s in shipped {
 }
 
 # 2. test programs: output must match tests/expected/<name>.txt exactly
-tests = ["array", "array_struct_string", "core", "features", "fib", "float", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop", "thread", "use"]
+tests = ["array", "array_struct_string", "core", "features", "fib", "float", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop", "std", "thread", "use"]
 for name in tests {
     exe = tmp(name)
     if build("tests/" + name + ".slop", exe) {
@@ -199,7 +199,9 @@ cli = [
     CliCase(["help"], "slop run app.slop", 0),
     CliCase(["check", "tests/fib.slop"], "ok: no mistakes", 0),
     CliCase(["frobnicate"], "unknown command 'frobnicate'", 2),
-    CliCase(["run"], "which file?", 2)
+    CliCase(["run"], "which file?", 2),
+    CliCase(["std"], "random", 0),
+    CliCase(["std", "math"], "gcd(a: int, b: int) -> int", 0)
 ]
 for c in cli {
     all = [stage]

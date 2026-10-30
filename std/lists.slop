@@ -1,0 +1,245 @@
+# lists: sums, sorting and searching for lists of ints, floats and strings
+
+fn sum_ints(a: array[int]) -> int {
+    total = 0
+    for x in a {
+        total += x
+    }
+    return total
+}
+
+fn sum_floats(a: array[float]) -> float {
+    total = 0.0
+    for x in a {
+        total += x
+    }
+    return total
+}
+
+fn max_of_ints(a: array[int]) -> int {
+    best = a[0]
+    for x in a {
+        if x > best {
+            best = x
+        }
+    }
+    return best
+}
+
+fn min_of_ints(a: array[int]) -> int {
+    best = a[0]
+    for x in a {
+        if x < best {
+            best = x
+        }
+    }
+    return best
+}
+
+# the numbers from lo up to (not including) hi
+fn range_list(lo: int, hi: int) -> array[int] {
+    out: array[int] = []
+    for i in lo..hi {
+        push(out, i)
+    }
+    return out
+}
+
+fn copy_ints(a: array[int]) -> array[int] {
+    out: array[int] = []
+    for x in a {
+        push(out, x)
+    }
+    return out
+}
+
+fn reverse_ints(a: array[int]) -> array[int] {
+    out: array[int] = []
+    i = len(a) - 1
+    while i >= 0 {
+        push(out, a[i])
+        i -= 1
+    }
+    return out
+}
+
+fn reverse_strings(a: array[string]) -> array[string] {
+    out: array[string] = []
+    i = len(a) - 1
+    while i >= 0 {
+        push(out, a[i])
+        i -= 1
+    }
+    return out
+}
+
+# sorted copies (merge sort: fast for long lists too)
+fn sort_ints(a: array[int]) -> array[int] {
+    n = len(a)
+    src = copy_ints(a)
+    if n < 2 {
+        return src
+    }
+    dst = copy_ints(a)
+    width = 1
+    while width < n {
+        lo = 0
+        while lo < n {
+            mid = min_i(lo + width, n)
+            hi = min_i(lo + 2 * width, n)
+            i = lo
+            j = mid
+            k = lo
+            while k < hi {
+                if i < mid and (j >= hi or src[i] <= src[j]) {
+                    dst[k] = src[i]
+                    i += 1
+                } else {
+                    dst[k] = src[j]
+                    j += 1
+                }
+                k += 1
+            }
+            lo += 2 * width
+        }
+        t = src
+        src = dst
+        dst = t
+        width *= 2
+    }
+    return src
+}
+
+fn sort_floats(a: array[float]) -> array[float] {
+    out: array[float] = []
+    for x in a {
+        push(out, x)
+    }
+    # insertion sort into place, run on halves joined by merging
+    n = len(out)
+    width = 1
+    tmp: array[float] = []
+    for x in out {
+        push(tmp, x)
+    }
+    while width < n {
+        lo = 0
+        while lo < n {
+            mid = min_i(lo + width, n)
+            hi = min_i(lo + 2 * width, n)
+            i = lo
+            j = mid
+            k = lo
+            while k < hi {
+                if i < mid and (j >= hi or out[i] <= out[j]) {
+                    tmp[k] = out[i]
+                    i += 1
+                } else {
+                    tmp[k] = out[j]
+                    j += 1
+                }
+                k += 1
+            }
+            lo += 2 * width
+        }
+        for k in 0..n {
+            out[k] = tmp[k]
+        }
+        width *= 2
+    }
+    return out
+}
+
+# true when a comes before b in dictionary order (by byte)
+fn string_less(a: string, b: string) -> bool {
+    n = min_i(len(a), len(b))
+    for i in 0..n {
+        x = byte_at(a, i)
+        y = byte_at(b, i)
+        if x != y {
+            return x < y
+        }
+    }
+    return len(a) < len(b)
+}
+
+fn sort_strings(a: array[string]) -> array[string] {
+    out: array[string] = []
+    for s in a {
+        push(out, s)
+    }
+    for i in 1..len(out) {
+        v = out[i]
+        j = i - 1
+        while j >= 0 and string_less(v, out[j]) {
+            out[j + 1] = out[j]
+            j -= 1
+        }
+        out[j + 1] = v
+    }
+    return out
+}
+
+fn min_i(a: int, b: int) -> int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+# position of x, or -1
+fn index_of_int(a: array[int], x: int) -> int {
+    for i in 0..len(a) {
+        if a[i] == x {
+            return i
+        }
+    }
+    return -1
+}
+
+fn index_of_string(a: array[string], x: string) -> int {
+    for i in 0..len(a) {
+        if a[i] == x {
+            return i
+        }
+    }
+    return -1
+}
+
+fn has_int(a: array[int], x: int) -> bool {
+    return index_of_int(a, x) >= 0
+}
+
+fn has_string(a: array[string], x: string) -> bool {
+    return index_of_string(a, x) >= 0
+}
+
+# the list without repeats, in first-seen order
+fn unique_ints(a: array[int]) -> array[int] {
+    out: array[int] = []
+    for x in a {
+        if not has_int(out, x) {
+            push(out, x)
+        }
+    }
+    return out
+}
+
+fn unique_strings(a: array[string]) -> array[string] {
+    out: array[string] = []
+    for x in a {
+        if not has_string(out, x) {
+            push(out, x)
+        }
+    }
+    return out
+}
+
+# items lo up to (not including) hi
+fn slice_ints(a: array[int], lo: int, hi: int) -> array[int] {
+    out: array[int] = []
+    for i in lo..hi {
+        push(out, a[i])
+    }
+    return out
+}

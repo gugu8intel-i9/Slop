@@ -1,0 +1,177 @@
+# strings: text helpers beyond the built-ins (split, join, find, replace, ...)
+
+fn pad_left(s: string, width: int, fill: string) -> string {
+    out = s
+    while len(out) < width {
+        out = fill + out
+    }
+    return out
+}
+
+fn pad_right(s: string, width: int, fill: string) -> string {
+    out = s
+    while len(out) < width {
+        out = out + fill
+    }
+    return out
+}
+
+fn center(s: string, width: int) -> string {
+    left = (width - len(s)) / 2
+    if left < 0 {
+        left = 0
+    }
+    return pad_right(repeat(" ", left) + s, width, " ")
+}
+
+fn reverse_string(s: string) -> string {
+    out = ""
+    i = len(s) - 1
+    while i >= 0 {
+        out = out + char_at(s, i)
+        i -= 1
+    }
+    return out
+}
+
+# "hello big world" -> "Hello Big World"
+fn title_case(s: string) -> string {
+    out = ""
+    start = true
+    for i in 0..len(s) {
+        c = char_at(s, i)
+        if start {
+            out = out + upper(c)
+        } else {
+            out = out + c
+        }
+        start = c == " "
+    }
+    return out
+}
+
+fn capitalize(s: string) -> string {
+    if len(s) == 0 {
+        return s
+    }
+    return upper(char_at(s, 0)) + slice(s, 1, len(s))
+}
+
+# words separated by spaces, tabs or new lines
+fn words(s: string) -> array[string] {
+    out: array[string] = []
+    cur = ""
+    for i in 0..len(s) {
+        b = byte_at(s, i)
+        if b == 32 or b == 9 or b == 10 or b == 13 {
+            if cur != "" {
+                push(out, cur)
+                cur = ""
+            }
+        } else {
+            cur = cur + char_at(s, i)
+        }
+    }
+    if cur != "" {
+        push(out, cur)
+    }
+    return out
+}
+
+# lines without their line endings
+fn lines(s: string) -> array[string] {
+    out: array[string] = []
+    for line in split(s, "\n") {
+        if ends_with(line, "\r") {
+            line = slice(line, 0, len(line) - 1)
+        }
+        push(out, line)
+    }
+    if len(out) > 0 and out[len(out) - 1] == "" {
+        pop(out)
+    }
+    return out
+}
+
+# how many times sub appears (not overlapping)
+fn count(s: string, sub: string) -> int {
+    if len(sub) == 0 {
+        return 0
+    }
+    n = 0
+    i = 0
+    while i + len(sub) <= len(s) {
+        if slice(s, i, i + len(sub)) == sub {
+            n += 1
+            i += len(sub)
+        } else {
+            i += 1
+        }
+    }
+    return n
+}
+
+fn is_digit(c: string) -> bool {
+    if len(c) == 0 {
+        return false
+    }
+    for i in 0..len(c) {
+        b = byte_at(c, i)
+        if b < 48 or b > 57 {
+            return false
+        }
+    }
+    return true
+}
+
+fn is_letter(c: string) -> bool {
+    if len(c) == 0 {
+        return false
+    }
+    for i in 0..len(c) {
+        b = byte_at(c, i)
+        if not ((b >= 65 and b <= 90) or (b >= 97 and b <= 122)) {
+            return false
+        }
+    }
+    return true
+}
+
+fn is_space(c: string) -> bool {
+    return len(c) > 0 and trim(c) == ""
+}
+
+fn trim_left(s: string) -> string {
+    i = 0
+    while i < len(s) and is_space(char_at(s, i)) {
+        i += 1
+    }
+    return slice(s, i, len(s))
+}
+
+fn trim_right(s: string) -> string {
+    i = len(s)
+    while i > 0 and is_space(char_at(s, i - 1)) {
+        i -= 1
+    }
+    return slice(s, 0, i)
+}
+
+fn strip_prefix(s: string, pre: string) -> string {
+    if starts_with(s, pre) {
+        return slice(s, len(pre), len(s))
+    }
+    return s
+}
+
+fn strip_suffix(s: string, suf: string) -> string {
+    if ends_with(s, suf) {
+        return slice(s, 0, len(s) - len(suf))
+    }
+    return s
+}
+
+fn is_palindrome(s: string) -> bool {
+    t = lower(replace(s, " ", ""))
+    return t == reverse_string(t)
+}

@@ -49,6 +49,8 @@ let g_queue: array[int] = []
 let g_gl_name: array[string] = []
 let g_gl_type: array[string] = []
 let g_gl_addr: array[int] = []
+# the source file each global variable belongs to
+let g_gl_file: array[int] = []
 let g_gl_next: int = 0
 
 # ---------- current function ----------
@@ -2309,10 +2311,29 @@ fn find_global(name: string) -> int {
     return -1
 }
 
+fn token_file(i: int) -> int {
+    if i < len(g_tk_file) {
+        return g_tk_file[i]
+    }
+    return 0
+}
+
+# Functions see the global variables of every file, but a plain `x = ...` in a
+# function only changes a global of its own file; otherwise x is a new local.
+# This keeps libraries and the program from changing each other's variables.
+fn foreign_global(name: string, at: int) -> bool {
+    if g_in_top or find_local(name) >= 0 {
+        return false
+    }
+    let gi = find_global(name)
+    return gi >= 0 and g_gl_file[gi] != token_file(at)
+}
+
 fn add_global(name: string, t: string) -> int {
     push(g_gl_name, name)
     push(g_gl_type, t)
     push(g_gl_addr, a_globals() + g_gl_next)
+    push(g_gl_file, token_file(g_pos))
     let w = words(t)
     if w < 1 {
         w = 1
@@ -4406,6 +4427,9 @@ fn gen_assign() {
     let simple = after == lhs_at + 1
     let name = tk_at(lhs_at)
     let known = find_local(name) >= 0 or find_global(name) >= 0
+    if op == "=" and simple and foreign_global(name, lhs_at) {
+        known = false
+    }
     if not known {
         if op == "=" and simple {
             g_pos = lhs_at + 2
@@ -5150,10 +5174,50 @@ fn use_lines(src: string) -> array[string] {
     return names
 }
 
-# where a use line points: a file next to the one using it, or an installed package
+# the standard library: modules built into slop itself
+fn std_modules() -> array[string] {
+    return ["csv", "files", "lists", "math", "random", "strings", "testing", "time"]
+}
+
+fn std_source(name: string) -> string {
+    if name == "csv" {
+        return embed("std/csv.slop")
+    }
+    if name == "files" {
+        return embed("std/files.slop")
+    }
+    if name == "lists" {
+        return embed("std/lists.slop")
+    }
+    if name == "math" {
+        return embed("std/math.slop")
+    }
+    if name == "random" {
+        return embed("std/random.slop")
+    }
+    if name == "strings" {
+        return embed("std/strings.slop")
+    }
+    if name == "testing" {
+        return embed("std/testing.slop")
+    }
+    if name == "time" {
+        return embed("std/time.slop")
+    }
+    return ""
+}
+
+# where a use line points: a file next to the one using it, an installed
+# package, or a standard library module ("std/NAME.slop")
 fn resolve_use(name: string, dir: string) -> string {
     if ends_with(name, ".slop") {
         return dir + name
+    }
+    if starts_with_s(name, "std/") {
+        let m = slice(name, 4, len(name))
+        if std_source(m) != "" {
+            return "std/" + m + ".slop"
+        }
     }
     let roots = [g_src_dir + "slop_packages/", "slop_packages/"]
     for root in roots {
@@ -5164,6 +5228,9 @@ fn resolve_use(name: string, dir: string) -> string {
         if file_exists(base + "lib.slop") {
             return base + "lib.slop"
         }
+    }
+    if std_source(name) != "" {
+        return "std/" + name + ".slop"
     }
     print("error: package '" + name + "' is not installed. Add it with: slop add " + name)
     exit(1)
@@ -5182,7 +5249,12 @@ fn load_uses(src: string, dir: string) {
         if not seen {
             push(g_files, path)
             let idx = len(g_files) - 1
-            let text = read_file(path)
+            let text = ""
+            if starts_with_s(path, "std/") and not file_exists(path) {
+                text = std_source(slice(path, 4, len(path) - 5))
+            } else {
+                text = read_file(path)
+            }
             if len(text) == 0 {
                 print("error: cannot read " + path + " (used as \"" + name + "\")")
                 exit(1)
@@ -5195,6 +5267,9 @@ fn load_uses(src: string, dir: string) {
 }
 
 fn compile_program(main_src: string) {
+    # the runtime counts as its own file
+    push(g_files, "")
+    g_cur_file = 1
     tokenize(runtime_source(), false)
     g_user_tok = len(g_tk_kind)
     load_uses(main_src, g_src_dir)
@@ -6290,6 +6365,50 @@ fn install_package(p: Package) {
     }
 }
 
+# slop std: the standard library modules; slop std NAME: what one has
+fn std_list(names: array[string]) {
+    if len(names) == 0 {
+        print("Standard library (use \"NAME\" at the top of a program):")
+        for m in std_modules() {
+            let about = strip_hash(split(std_source(m), "\n")[0])
+            if starts_with_s(about, m + ": ") {
+                about = slice(about, len(m) + 2, len(about))
+            }
+            print("  " + pad_name(m) + about)
+        }
+        print("")
+        print("See what one has: slop std NAME")
+        return
+    }
+    let src = std_source(names[0])
+    if src == "" {
+        usage_error("there is no standard module called '" + names[0] + "'")
+    }
+    for line in split(src, "\n") {
+        if starts_with_s(line, "#") {
+            print(strip_hash(line))
+        }
+        if starts_with_s(line, "fn ") {
+            print("  " + slice(line, 3, len(line) - 2))
+        }
+    }
+}
+
+fn pad_name(s: string) -> string {
+    let out = s
+    while len(out) < 10 {
+        out = out + " "
+    }
+    return out
+}
+
+fn strip_hash(line: string) -> string {
+    if starts_with_s(line, "# ") {
+        return slice(line, 2, len(line))
+    }
+    return line
+}
+
 fn pkg_add(specs: array[string]) {
     if len(specs) == 0 {
         usage_error("which package? like: slop add stats")
@@ -6411,6 +6530,8 @@ fn help() {
     print("  slop sync                  get every package slop.pkg lists that is missing")
     print("  slop update [NAME]         get the newest version of packages")
     print("  slop search [WORD]         find packages")
+    print("  slop std [NAME]            the standard library: math, lists, strings, random,")
+    print("                             time, files, csv, testing (no download needed)")
     print("  slop version               show the version and system")
     print("  slop help                  show this help")
     print("")
@@ -6683,6 +6804,10 @@ fn main(args: array[string]) {
     }
     if cmd == "search" {
         pkg_search(rest)
+        return
+    }
+    if cmd == "std" {
+        std_list(rest)
         return
     }
     if cmd == "new" {

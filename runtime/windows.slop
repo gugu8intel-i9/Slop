@@ -331,6 +331,10 @@ fn __clock_ns() -> int {
     return count / freq * 1000000000 + count % freq * 1000000000 / freq
 }
 
+fn __sleep_ms(ms: int) {
+    __ccall("Sleep", ms)
+}
+
 fn __socket_init() {
     if not __win_sock_ready {
         data = __alloc(512)

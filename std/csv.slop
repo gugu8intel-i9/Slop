@@ -1,0 +1,82 @@
+# csv: comma-separated tables
+#   use "csv"
+#   rows = read_csv("scores.csv")
+#   print(rows[0][1])
+
+# one line -> its fields ("quoted, fields" and "" for a quote work)
+fn parse_csv_line(line: string) -> array[string] {
+    out: array[string] = []
+    cur = ""
+    quoted = false
+    i = 0
+    n = len(line)
+    while i < n {
+        c = char_at(line, i)
+        if quoted {
+            if c == "\"" {
+                if i + 1 < n and char_at(line, i + 1) == "\"" {
+                    cur = cur + "\""
+                    i += 1
+                } else {
+                    quoted = false
+                }
+            } else {
+                cur = cur + c
+            }
+        } else {
+            if c == "\"" {
+                quoted = true
+            } else {
+                if c == "," {
+                    push(out, cur)
+                    cur = ""
+                } else {
+                    cur = cur + c
+                }
+            }
+        }
+        i += 1
+    }
+    push(out, cur)
+    return out
+}
+
+fn parse_csv(text: string) -> array[array[string]] {
+    rows: array[array[string]] = []
+    for line in split(text, "\n") {
+        if ends_with(line, "\r") {
+            line = slice(line, 0, len(line) - 1)
+        }
+        if line != "" {
+            push(rows, parse_csv_line(line))
+        }
+    }
+    return rows
+}
+
+fn read_csv(path: string) -> array[array[string]] {
+    return parse_csv(read_file(path))
+}
+
+fn csv_field(s: string) -> string {
+    if contains(s, ",") or contains(s, "\"") or contains(s, "\n") {
+        return "\"" + replace(s, "\"", "\"\"") + "\""
+    }
+    return s
+}
+
+fn to_csv_line(fields: array[string]) -> string {
+    parts: array[string] = []
+    for f in fields {
+        push(parts, csv_field(f))
+    }
+    return join(parts, ",")
+}
+
+fn write_csv(path: string, rows: array[array[string]]) {
+    text = ""
+    for row in rows {
+        text = text + to_csv_line(row) + "\n"
+    }
+    write_file(path, text)
+}

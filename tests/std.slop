@@ -1,0 +1,110 @@
+# the standard library
+use "math"
+use "lists"
+use "strings"
+use "random"
+use "time"
+use "files"
+use "csv"
+use "testing"
+
+# math
+check_float("PI", PI, 3.141592653589793)
+check_int("gcd", gcd(84, -36), 12)
+check_int("lcm", lcm(4, 6), 12)
+check("is_prime 97", is_prime(97))
+check("not is_prime 91", not is_prime(91))
+check_int("factorial", factorial(10), 3628800)
+check_int("ipow", ipow(3, 13), 1594323)
+check_float("hypot", hypot(3, 4), 5.0)
+check_float("radians", radians(180), PI)
+check_float("clamp", clamp(7.5, 0, 5), 5.0)
+check_int("sign", sign(-0.5), -1)
+check_float("lerp", lerp(10, 20, 0.25), 12.5)
+check("is_close", is_close(0.1 + 0.2, 0.3))
+
+# lists
+nums = [5, 3, 9, 1, 3, 7]
+check_int("sum_ints", sum_ints(nums), 28)
+check_int("max_of_ints", max_of_ints(nums), 9)
+check_string("sort_ints", str(len(sort_ints(nums))) + ":" + join(sort_strings(["b", "a"]), ","), "6:a,b")
+sorted = sort_ints(nums)
+check("sort_ints order", sorted[0] == 1 and sorted[1] == 3 and sorted[5] == 9)
+check_int("original kept", nums[0], 5)
+big: array[int] = []
+for i in 0..1000 {
+    push(big, (i * 7919) % 1000)
+}
+big_sorted = sort_ints(big)
+ok_order = true
+for i in 1..1000 {
+    if big_sorted[i - 1] > big_sorted[i] {
+        ok_order = false
+    }
+}
+check("sort 1000", ok_order and big_sorted[999] == 999)
+fs = sort_floats([2.5, -1.0, 0.5])
+check_float("sort_floats", fs[0] + fs[1] * 10 + fs[2] * 100, -1.0 + 5.0 + 250.0)
+check_int("index_of_int", index_of_int(nums, 9), 2)
+check_int("unique_ints", len(unique_ints(nums)), 5)
+check_int("range_list", sum_ints(range_list(1, 11)), 55)
+check_string("sort_strings", join(sort_strings(["pear", "apple", "fig", "app"]), " "), "app apple fig pear")
+check_string("reverse_strings", join(reverse_strings(["a", "b", "c"]), ""), "cba")
+
+# strings
+check_string("pad_left", pad_left("7", 3, "0"), "007")
+check_string("center", center("hi", 6), "  hi  ")
+check_string("title_case", title_case("hello big world"), "Hello Big World")
+check_string("capitalize", capitalize("slop"), "Slop")
+check_string("reverse_string", reverse_string("abc"), "cba")
+check_int("words", len(words("  one two\tthree\n")), 3)
+check_int("lines", len(lines("a\r\nb\nc\n")), 3)
+check_int("count", count("banana", "an"), 2)
+check("is_digit", is_digit("123") and not is_digit("12a"))
+check("is_letter", is_letter("Ab") and not is_letter("a1"))
+check_string("trim_left", trim_left("  x "), "x ")
+check_string("strip_suffix", strip_suffix("photo.png", ".png"), "photo")
+check("is_palindrome", is_palindrome("Never odd or even"))
+
+# random: a seed gives the same numbers every time
+seed(42)
+a = random_bits()
+seed(42)
+check_int("seed repeats", random_bits(), a)
+check_int("splitmix64", a, -4767286540954276203)
+all_in_range = true
+for i in 0..1000 {
+    r = random_int(1, 6)
+    f = random_float()
+    if r < 1 or r > 6 or f < 0.0 or f >= 1.0 {
+        all_in_range = false
+    }
+}
+check("random ranges", all_in_range)
+deck = range_list(0, 52)
+shuffle_ints(deck)
+check_int("shuffle keeps items", sum_ints(deck), 1326)
+
+# time
+start = now_ms()
+sleep(30)
+check("sleep", elapsed_ms(start) >= 25)
+check_string("format_duration", format_duration(1500) + " " + format_duration(3723000), "1.5s 1h 2m 3s")
+
+# files and csv
+write_lines("slop-test-std.txt", ["one", "two"])
+append_file("slop-test-std.txt", "three\n")
+check_int("read_lines", len(read_lines("slop-test-std.txt")), 3)
+check("exists", exists("slop-test-std.txt"))
+check_string("join_path", join_path("a/b", "c.txt"), "a/b/c.txt")
+check_string("file_name", file_name("a/b/c.txt") + " " + dir_name("a/b/c.txt") + " " + extension("a/b/c.txt"), "c.txt a/b .txt")
+rows = parse_csv("name,score\n\"Smith, Jo\",91\n\"say \"\"hi\"\"\",7\n")
+check_int("csv rows", len(rows), 3)
+check_string("csv quoted", rows[1][0], "Smith, Jo")
+check_string("csv quotes", rows[2][0], "say \"hi\"")
+write_csv("slop-test-std.csv", rows)
+check_string("csv round trip", read_csv("slop-test-std.csv")[2][0], "say \"hi\"")
+remove_file("slop-test-std.txt")
+remove_file("slop-test-std.csv")
+
+test_summary()

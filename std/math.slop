@@ -1,0 +1,143 @@
+# math: constants and number helpers (sqrt, sin, pow and friends are built in)
+PI = 3.141592653589793
+TAU = 6.283185307179586
+E = 2.718281828459045
+
+fn min_int(a: int, b: int) -> int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+fn max_int(a: int, b: int) -> int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn min_float(a: float, b: float) -> float {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+fn max_float(a: float, b: float) -> float {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+# keeps x between lo and hi
+fn clamp(x: float, lo: float, hi: float) -> float {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+fn clamp_int(x: int, lo: int, hi: int) -> int {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+# -1, 0 or 1
+fn sign(x: float) -> int {
+    if x > 0.0 {
+        return 1
+    }
+    if x < 0.0 {
+        return -1
+    }
+    return 0
+}
+
+# the point a fraction t of the way from a to b
+fn lerp(a: float, b: float, t: float) -> float {
+    return a + (b - a) * t
+}
+
+fn hypot(x: float, y: float) -> float {
+    return sqrt(x * x + y * y)
+}
+
+fn radians(degrees: float) -> float {
+    return degrees * PI / 180.0
+}
+
+fn degrees(radians: float) -> float {
+    return radians * 180.0 / PI
+}
+
+# greatest common divisor
+fn gcd(a: int, b: int) -> int {
+    a = abs(a)
+    b = abs(b)
+    while b != 0 {
+        t = a % b
+        a = b
+        b = t
+    }
+    return a
+}
+
+# least common multiple
+fn lcm(a: int, b: int) -> int {
+    if a == 0 or b == 0 {
+        return 0
+    }
+    return abs(a / gcd(a, b) * b)
+}
+
+fn is_prime(n: int) -> bool {
+    if n < 2 {
+        return false
+    }
+    if n % 2 == 0 {
+        return n == 2
+    }
+    d = 3
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 2
+    }
+    return true
+}
+
+fn factorial(n: int) -> int {
+    out = 1
+    for i in 2..n + 1 {
+        out *= i
+    }
+    return out
+}
+
+# whole-number power: ipow(2, 10) is 1024
+fn ipow(base: int, exp: int) -> int {
+    out = 1
+    while exp > 0 {
+        if (exp & 1) == 1 {
+            out *= base
+        }
+        base *= base
+        exp = exp >> 1
+    }
+    return out
+}
+
+fn is_close(a: float, b: float) -> bool {
+    return abs(a - b) <= 1e-9 * max_float(1.0, max_float(abs(a), abs(b)))
+}
