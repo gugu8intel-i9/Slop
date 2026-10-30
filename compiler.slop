@@ -13,6 +13,8 @@
 
 # ---------- tokens ----------
 # kinds: 1 name, 2 keyword, 3 number, 4 string, 5 symbol, 6 end of file
+use "tools/convert.slop"
+
 let g_tk_kind: array[int] = []
 let g_tk_text: array[string] = []
 let g_tk_line: array[int] = []
@@ -6521,6 +6523,8 @@ fn help() {
     print("  slop new hello             start a new program in hello.slop")
     print("  slop repl                  type Slop code and see results right away")
     print("  slop install               copy slop to a folder for programs on this computer")
+    print("  slop convert hello.rs      turn Rust, C, C++, Java, C#, JavaScript, TypeScript,")
+    print("                             Go, Kotlin, Swift or Python code into Slop")
     print("")
     print("Packages (put 'use \"name\"' at the top of your program to use one):")
     print("  slop add NAME              get a package: a name from 'slop search',")
@@ -6614,6 +6618,56 @@ fn install() {
             print("  echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.profile")
             print("(on macOS use ~/.zprofile; then open a new terminal)")
         }
+    }
+}
+
+# slop convert FILE: writes FILE's code as Slop next to it, then checks it
+fn convert_command(files: array[string], from_lang: string, out: string) {
+    if len(files) == 0 {
+        usage_error("which file? like: slop convert hello.rs")
+    }
+    let file = files[0]
+    let lang = from_lang
+    if lang == "" {
+        lang = cv_language(file)
+    }
+    let langs = ["rust", "c", "cpp", "java", "csharp", "js", "go", "python", "kotlin", "swift"]
+    let known = false
+    for l in langs {
+        if l == lang {
+            known = true
+        }
+    }
+    if not known {
+        usage_error("cannot tell what language " + file + " is in. Add --from with one of: " + join(langs, ", "))
+    }
+    let src = read_file(file)
+    if len(src) == 0 {
+        usage_error("cannot read " + file + " (missing or empty)")
+    }
+    let dest = out
+    if dest == "" {
+        let dot = len(file) - 1
+        while dot > 0 and byte_at(file, dot) != 46 and byte_at(file, dot) != 47 {
+            dot -= 1
+        }
+        dest = file + ".slop"
+        if dot > 0 and byte_at(file, dot) == 46 {
+            dest = slice(file, 0, dot) + ".slop"
+        }
+    }
+    let text = convert_source(src, lang)
+    write_file(dest, "# converted from " + slice(file, len(dir_of(file)), len(file)) + " by slop convert\n" + text)
+    print("wrote " + dest)
+    if cv_todos > 0 {
+        print(int_to_string(cv_todos) + " lines need a hand: look for '# TODO' in " + dest)
+    }
+    let me = program_path()
+    let log = run(me, [me, "check", dest])
+    if run_status() == 0 {
+        print("it builds. Run it with: slop run " + dest)
+    } else {
+        print("it does not build yet: " + clean_error(log))
     }
 }
 
@@ -6732,6 +6786,7 @@ fn repl() {
 fn main(args: array[string]) {
     let target = host_target()
     let out = ""
+    let from_lang = ""
     let words: array[string] = []
     let program_args: array[string] = []
     let k = 1
@@ -6741,11 +6796,15 @@ fn main(args: array[string]) {
             # everything after the program's file goes to the program
             push(program_args, a)
         } else {
-            if (a == "--target" or a == "-o") and k + 1 < len(args) {
+            if (a == "--target" or a == "-o" or a == "--from") and k + 1 < len(args) {
                 if a == "--target" {
                     target = args[k + 1]
                 } else {
-                    out = args[k + 1]
+                    if a == "--from" {
+                        from_lang = args[k + 1]
+                    } else {
+                        out = args[k + 1]
+                    }
                 }
                 k += 1
             } else {
@@ -6804,6 +6863,10 @@ fn main(args: array[string]) {
     }
     if cmd == "search" {
         pkg_search(rest)
+        return
+    }
+    if cmd == "convert" {
+        convert_command(rest, from_lang, out)
         return
     }
     if cmd == "std" {

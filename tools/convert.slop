@@ -1,0 +1,2608 @@
+# slop convert: turns code written in other languages into Slop.
+#
+# It reads Rust, C, C++, Java, C#, JavaScript, TypeScript, Go, Kotlin, Swift
+# and Python. Each line is translated on its own: functions, variables,
+# types, printing, if/else, loops, structs and common string and list
+# methods. What has no Slop version yet (switch, classes, pointers, ...) is
+# kept as a "# TODO:" comment so nothing is silently lost.
+
+# ---------- state for one conversion ----------
+cv_lang = ""
+cv_out: array[string] = []
+cv_depth = 0
+# one entry per open brace: "keep", "drop", "fn", "struct", "todo" or "inc:<statement>"
+cv_stack: array[string] = []
+cv_struct_names: array[string] = []
+cv_todos = 0
+# per function: names to rename (C's argv -> args, Go receivers -> this)
+cv_ren_from: array[string] = []
+cv_ren_to: array[string] = []
+cv_in_main = false
+cv_struct_line = -1
+cv_close_after = 0
+
+# ---------- small text helpers ----------
+fn cv_is_ident(c: int) -> bool {
+    return (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or (c >= 48 and c <= 57) or c == 95
+}
+
+fn cv_is_name(s: string) -> bool {
+    if len(s) == 0 {
+        return false
+    }
+    let c0 = byte_at(s, 0)
+    if c0 >= 48 and c0 <= 57 {
+        return false
+    }
+    for i in 0..len(s) {
+        if not cv_is_ident(byte_at(s, i)) {
+            return false
+        }
+    }
+    return true
+}
+
+fn cv_find_from(s: string, sub: string, start: int) -> int {
+    if start >= len(s) {
+        return -1
+    }
+    let k = find(slice(s, start, len(s)), sub)
+    if k < 0 {
+        return -1
+    }
+    return k + start
+}
+
+# index just after the string literal that starts at i
+fn cv_skip_str(s: string, i: int) -> int {
+    let q = byte_at(s, i)
+    let j = i + 1
+    while j < len(s) {
+        let c = byte_at(s, j)
+        if c == 92 {
+            j += 2
+            continue
+        }
+        if c == q {
+            return j + 1
+        }
+        j += 1
+    }
+    return len(s)
+}
+
+fn cv_is_quote(c: int) -> bool {
+    return c == 34 or c == 39 or c == 96
+}
+
+# index of the bracket that closes the one at i, or -1
+fn cv_close(s: string, i: int) -> int {
+    let depth = 0
+    let j = i
+    while j < len(s) {
+        let c = byte_at(s, j)
+        if cv_is_quote(c) {
+            j = cv_skip_str(s, j)
+            continue
+        }
+        if c == 40 or c == 91 or c == 123 {
+            depth += 1
+        }
+        if c == 41 or c == 93 or c == 125 {
+            depth -= 1
+            if depth == 0 {
+                return j
+            }
+        }
+        j += 1
+    }
+    return -1
+}
+
+# first place pat appears outside string literals (from start), or -1
+fn cv_find_code(s: string, pat: string, start: int) -> int {
+    let i = start
+    let n = len(s)
+    let m = len(pat)
+    while i + m <= n {
+        let c = byte_at(s, i)
+        if cv_is_quote(c) and not cv_is_quote(byte_at(pat, 0)) {
+            i = cv_skip_str(s, i)
+            continue
+        }
+        if slice(s, i, i + m) == pat {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn cv_replace_code(s: string, old: string, new: string) -> string {
+    let out = s
+    let i = cv_find_code(out, old, 0)
+    while i >= 0 {
+        out = slice(out, 0, i) + new + slice(out, i + len(old), len(out))
+        i = cv_find_code(out, old, i + len(new))
+    }
+    return out
+}
+
+# replaces old only where it is a whole word
+fn cv_replace_word(s: string, old: string, new: string) -> string {
+    let out = s
+    let i = cv_find_code(out, old, 0)
+    while i >= 0 {
+        let before = i == 0 or not cv_is_ident(byte_at(out, i - 1))
+        let e = i + len(old)
+        let after = e >= len(out) or not cv_is_ident(byte_at(out, e))
+        if before and after and (i == 0 or byte_at(out, i - 1) != 46 or byte_at(old, 0) == 46) {
+            out = slice(out, 0, i) + new + slice(out, e, len(out))
+            i = cv_find_code(out, old, i + len(new))
+        } else {
+            i = cv_find_code(out, old, i + 1)
+        }
+    }
+    return out
+}
+
+# splits at commas that are not inside brackets or strings (angle too)
+fn cv_split_args(s: string, angle: bool) -> array[string] {
+    let out: array[string] = []
+    let depth = 0
+    let start = 0
+    let i = 0
+    while i < len(s) {
+        let c = byte_at(s, i)
+        if cv_is_quote(c) {
+            i = cv_skip_str(s, i)
+            continue
+        }
+        if c == 40 or c == 91 or c == 123 or (angle and c == 60) {
+            depth += 1
+        }
+        if c == 41 or c == 93 or c == 125 or (angle and c == 62) {
+            depth -= 1
+        }
+        if c == 44 and depth == 0 {
+            push(out, trim(slice(s, start, i)))
+            start = i + 1
+        }
+        i += 1
+    }
+    let last = trim(slice(s, start, len(s)))
+    if last != "" or len(out) > 0 {
+        push(out, last)
+    }
+    return out
+}
+
+# start of the value that ends just before position end (a.b, f(x), xs[i], "text")
+fn cv_operand_start(s: string, end: int) -> int {
+    let i = end - 1
+    while i >= 0 {
+        let c = byte_at(s, i)
+        if cv_is_ident(c) or c == 46 {
+            i -= 1
+            continue
+        }
+        if c == 41 or c == 93 {
+            let depth = 0
+            while i >= 0 {
+                let d = byte_at(s, i)
+                if d == 41 or d == 93 {
+                    depth += 1
+                }
+                if d == 40 or d == 91 {
+                    depth -= 1
+                    if depth == 0 {
+                        break
+                    }
+                }
+                i -= 1
+            }
+            i -= 1
+            continue
+        }
+        if c == 34 {
+            i -= 1
+            while i >= 0 and not (byte_at(s, i) == 34 and (i == 0 or byte_at(s, i - 1) != 92)) {
+                i -= 1
+            }
+            i -= 1
+            continue
+        }
+        break
+    }
+    return i + 1
+}
+
+fn cv_strip_semi(s: string) -> string {
+    let t = trim(s)
+    while ends_with(t, ";") {
+        t = trim(slice(t, 0, len(t) - 1))
+    }
+    return t
+}
+
+fn cv_quote(text: string) -> string {
+    return "\"" + text + "\""
+}
+
+# ---------- types ----------
+fn cv_type(raw: string) -> string {
+    let t = trim(raw)
+    for junk in ["const ", "mut ", "final ", "static ", "unsigned ", "signed ", "volatile ", "std::", "&", "?"] {
+        t = trim(replace(t, junk, ""))
+    }
+    if t == "" {
+        return ""
+    }
+    if t == "char*" or t == "char *" or t == "str" or t == "String" or t == "string" or t == "string_view" or t == "char[]" {
+        return "string"
+    }
+    if ends_with(t, "*") {
+        return cv_type(slice(t, 0, len(t) - 1))
+    }
+    if ends_with(t, "[]") {
+        return "array[" + cv_type(slice(t, 0, len(t) - 2)) + "]"
+    }
+    if starts_with(t, "[]") {
+        return "array[" + cv_type(slice(t, 2, len(t))) + "]"
+    }
+    if starts_with(t, "[") and ends_with(t, "]") {
+        # Swift [Int]
+        return "array[" + cv_type(slice(t, 1, len(t) - 1)) + "]"
+    }
+    let lt = find(t, "<")
+    if lt > 0 and ends_with(t, ">") {
+        let outer = slice(t, 0, lt)
+        let inner = slice(t, lt + 1, len(t) - 1)
+        if outer == "Vec" or outer == "vector" or outer == "List" or outer == "ArrayList" or outer == "Array" or outer == "VecDeque" {
+            return "array[" + cv_type(inner) + "]"
+        }
+        if outer == "Box" or outer == "Option" or outer == "Rc" {
+            return cv_type(inner)
+        }
+        return t
+    }
+    let ints = ["int", "long", "short", "char", "byte", "size_t", "ssize_t", "Int", "Long", "Integer", "Short", "Byte", "number", "uint", "usize", "isize", "long long", "long int", "rune", "Int32", "Int64", "UInt", "nint"]
+    for w in ints {
+        if t == w {
+            return "int"
+        }
+    }
+    for k in ["i", "u"] {
+        for b in ["8", "16", "32", "64", "128"] {
+            if t == k + b or t == "int" + b or t == "uint" + b or t == "int" + b + "_t" or t == "uint" + b + "_t" {
+                return "int"
+            }
+        }
+    }
+    if t == "float" or t == "double" or t == "f32" or t == "f64" or t == "Float" or t == "Double" or t == "float32" or t == "float64" or t == "decimal" or t == "long double" {
+        return "float"
+    }
+    if t == "bool" or t == "boolean" or t == "Boolean" or t == "Bool" {
+        return "bool"
+    }
+    if t == "void" or t == "()" or t == "Unit" or t == "None" {
+        return "void"
+    }
+    if t == "auto" or t == "var" or t == "let" or t == "val" {
+        return ""
+    }
+    return t
+}
+
+fn cv_is_type_word(w: string) -> bool {
+    let t = cv_type(w)
+    if t == "" {
+        return w == "auto" or w == "var" or w == "const" or w == "let" or w == "val"
+    }
+    if t != w or w == "int" or w == "float" or w == "bool" or w == "string" or w == "void" {
+        return true
+    }
+    for s in cv_struct_names {
+        if s == w {
+            return true
+        }
+    }
+    return false
+}
+
+fn cv_zero(t: string) -> string {
+    if t == "float" {
+        return "0.0"
+    }
+    if t == "bool" {
+        return "false"
+    }
+    if t == "string" {
+        return "\"\""
+    }
+    if starts_with(t, "array[") {
+        return "[]"
+    }
+    return "0"
+}
+
+# ---------- string literals ----------
+# 'a' -> "a", 'text' -> "text" (JS and Python), f"x {a}" / `x ${a}` -> "x " + str(a)
+fn cv_literals(s: string) -> string {
+    let out = ""
+    let i = 0
+    let n = len(s)
+    while i < n {
+        let c = byte_at(s, i)
+        if not cv_is_quote(c) {
+            out = out + char_at(s, i)
+            i += 1
+            continue
+        }
+        let j = cv_skip_str(s, i)
+        let body = slice(s, i + 1, j - 1)
+        let prefix = ""
+        if len(out) > 0 {
+            prefix = char_at(out, len(out) - 1)
+        }
+        let fstring = cv_lang == "python" and (prefix == "f" or prefix == "F") and (len(out) < 2 or not cv_is_ident(byte_at(out, len(out) - 2)))
+        if cv_lang == "csharp" and prefix == "$" {
+            fstring = true
+        }
+        if c == 39 {
+            # a character in C-like languages, a string in JS and Python
+            if cv_lang != "python" and cv_lang != "js" and len(body) > 2 and byte_at(body, 0) != 92 {
+                # a Rust lifetime like 'a: leave it
+                out = out + "'"
+                i += 1
+                continue
+            }
+            body = replace(body, "\\'", "'")
+            body = replace(body, "\"", "\\\"")
+        }
+        if fstring {
+            out = slice(out, 0, len(out) - 1) + cv_interpolate(body, "{", "}")
+        } else {
+            if c == 96 {
+                out = out + cv_interpolate(replace(body, "\n", "\\n"), "${", "}")
+            } else {
+                if (cv_lang == "kotlin" and contains(body, "$")) {
+                    out = out + cv_interpolate(body, "${", "}")
+                } else {
+                    if cv_lang == "swift" and contains(body, "\\(") {
+                        out = out + cv_interpolate(body, "\\(", ")")
+                    } else {
+                        out = out + cv_quote(body)
+                    }
+                }
+            }
+        }
+        i = j
+    }
+    return out
+}
+
+# text with {expr} parts -> "text" + str(expr) + ...
+fn cv_interpolate(body: string, open: string, close: string) -> string {
+    let parts: array[string] = []
+    let lit = ""
+    let i = 0
+    while i < len(body) {
+        if open == "{" and slice(body, i, i + 2) == "{{" {
+            lit = lit + "{"
+            i += 2
+            continue
+        }
+        if open == "{" and slice(body, i, i + 2) == "}}" {
+            lit = lit + "}"
+            i += 2
+            continue
+        }
+        if slice(body, i, i + len(open)) == open {
+            let e = cv_find_from(body, close, i + len(open))
+            if e < 0 {
+                break
+            }
+            let expr = slice(body, i + len(open), e)
+            let colon = find(expr, ":")
+            if colon > 0 and open == "{" {
+                expr = slice(expr, 0, colon)
+            }
+            if lit != "" {
+                push(parts, cv_quote(lit))
+                lit = ""
+            }
+            push(parts, "str(" + cv_expr(trim(expr)) + ")")
+            i = e + len(close)
+            continue
+        }
+        if cv_lang == "kotlin" and byte_at(body, i) == 36 and i + 1 < len(body) and cv_is_ident(byte_at(body, i + 1)) {
+            let e = i + 1
+            while e < len(body) and cv_is_ident(byte_at(body, e)) {
+                e += 1
+            }
+            if lit != "" {
+                push(parts, cv_quote(lit))
+                lit = ""
+            }
+            push(parts, "str(" + slice(body, i + 1, e) + ")")
+            i = e
+            continue
+        }
+        lit = lit + char_at(body, i)
+        i += 1
+    }
+    if lit != "" or len(parts) == 0 {
+        push(parts, cv_quote(lit))
+    }
+    return join(parts, " + ")
+}
+
+# ---------- formatted printing ----------
+# Rust/Python "{} and {name}" with arguments -> "..." + str(a) + ...
+fn cv_brace_format(lit: string, args: array[string]) -> string {
+    let body = slice(lit, 1, len(lit) - 1)
+    let parts: array[string] = []
+    let text = ""
+    let next = 0
+    let i = 0
+    while i < len(body) {
+        let two = slice(body, i, i + 2)
+        if two == "{{" or two == "}}" {
+            text = text + char_at(body, i)
+            i += 2
+            continue
+        }
+        if byte_at(body, i) == 123 {
+            let e = cv_find_from(body, "}", i)
+            if e < 0 {
+                break
+            }
+            let spec = slice(body, i + 1, e)
+            let colon = find(spec, ":")
+            if colon >= 0 {
+                spec = slice(spec, 0, colon)
+            }
+            let value = ""
+            if spec == "" {
+                if next < len(args) {
+                    value = args[next]
+                }
+                next += 1
+            } else {
+                if is_digit_text(spec) and to_int(spec) < len(args) {
+                    value = args[to_int(spec)]
+                } else {
+                    value = spec
+                }
+            }
+            if text != "" {
+                push(parts, cv_quote(text))
+                text = ""
+            }
+            push(parts, "str(" + value + ")")
+            i = e + 1
+            continue
+        }
+        text = text + char_at(body, i)
+        i += 1
+    }
+    if text != "" or len(parts) == 0 {
+        push(parts, cv_quote(text))
+    }
+    return join(parts, " + ")
+}
+
+fn is_digit_text(s: string) -> bool {
+    if len(s) == 0 {
+        return false
+    }
+    for i in 0..len(s) {
+        let b = byte_at(s, i)
+        if b < 48 or b > 57 {
+            return false
+        }
+    }
+    return true
+}
+
+# C "%d and %s" with arguments -> "..." + str(a) + ...
+fn cv_percent_format(lit: string, args: array[string]) -> string {
+    let body = slice(lit, 1, len(lit) - 1)
+    let parts: array[string] = []
+    let text = ""
+    let next = 0
+    let i = 0
+    while i < len(body) {
+        if byte_at(body, i) == 37 {
+            if slice(body, i, i + 2) == "%%" {
+                text = text + "%"
+                i += 2
+                continue
+            }
+            # skip flags, width, precision and size letters up to the conversion letter
+            let j = i + 1
+            while j < len(body) and not contains("diufFgGeEsScxXpvqT", char_at(body, j)) {
+                j += 1
+            }
+            let conv = char_at(body, j)
+            let value = ""
+            if next < len(args) {
+                value = args[next]
+            }
+            next += 1
+            if text != "" {
+                push(parts, cv_quote(text))
+                text = ""
+            }
+            if conv == "c" {
+                push(parts, "chr(" + value + ")")
+            } else {
+                push(parts, "str(" + value + ")")
+            }
+            i = j + 1
+            continue
+        }
+        text = text + char_at(body, i)
+        i += 1
+    }
+    if text != "" or len(parts) == 0 {
+        push(parts, cv_quote(text))
+    }
+    return join(parts, " + ")
+}
+
+fn cv_drop_newline(lit: string) -> string {
+    if ends_with(lit, "\\n\"") {
+        return slice(lit, 0, len(lit) - 3) + "\""
+    }
+    return lit
+}
+
+# the call that starts at position i with name `name(`: returns its arguments
+# and leaves the end position in cv_call_end
+cv_call_end = 0
+
+fn cv_call_args(s: string, open: int) -> array[string] {
+    let close = cv_close(s, open)
+    if close < 0 {
+        close = len(s) - 1
+    }
+    cv_call_end = close + 1
+    let args: array[string] = []
+    for a in cv_split_args(slice(s, open + 1, close), false) {
+        push(args, cv_expr(a))
+    }
+    return args
+}
+
+# format!/String.format/fmt.Sprintf/"...".format(...) inside expressions
+fn cv_format_calls(s: string) -> string {
+    let out = s
+    for name in ["format!(", "String.format(", "fmt.Sprintf(", "string.Format(", "sprintf("] {
+        let i = cv_find_code(out, name, 0)
+        while i >= 0 and (i == 0 or not cv_is_ident(byte_at(out, i - 1))) {
+            let args = cv_call_args(out, i + len(name) - 1)
+            let end = cv_call_end
+            let rep = "\"\""
+            if len(args) > 0 and starts_with(args[0], "\"") {
+                let rest: array[string] = []
+                for k in 1..len(args) {
+                    push(rest, args[k])
+                }
+                if name == "format!(" or name == "string.Format(" {
+                    rep = cv_brace_format(args[0], rest)
+                } else {
+                    rep = cv_percent_format(args[0], rest)
+                }
+            }
+            out = slice(out, 0, i) + rep + slice(out, end, len(out))
+            i = cv_find_code(out, name, i + len(rep))
+        }
+    }
+    # "text {}".format(a) (Python)
+    let k = cv_find_code(out, "\".format(", 0)
+    while k >= 0 {
+        let start = cv_operand_start(out, k + 1)
+        let lit = slice(out, start, k + 1)
+        let args = cv_call_args(out, k + 8)
+        let rep = cv_brace_format(lit, args)
+        out = slice(out, 0, start) + rep + slice(out, cv_call_end, len(out))
+        k = cv_find_code(out, "\".format(", start + len(rep))
+    }
+    return out
+}
+
+# ---------- method calls -> Slop functions ----------
+# x.len() -> len(x), xs.push(v) -> push(xs, v), s.trim() -> trim(s), ...
+fn cv_method(s: string, pat: string, fname: string) -> string {
+    let out = s
+    let i = cv_find_code(out, pat, 0)
+    while i >= 0 {
+        let start = cv_operand_start(out, i)
+        if start == i {
+            i = cv_find_code(out, pat, i + 1)
+            continue
+        }
+        let obj = slice(out, start, i)
+        let rep = ""
+        let end = i + len(pat)
+        if ends_with(pat, "(") {
+            let close = cv_close(out, i + len(pat) - 1)
+            if close < 0 {
+                break
+            }
+            let inner = trim(slice(out, i + len(pat), close))
+            end = close + 1
+            if fname == "" {
+                rep = obj
+            } else {
+                if inner == "" and fname == "0 == len" {
+                    rep = "(len(" + obj + ") == 0)"
+                } else {
+                if inner == "" {
+                    rep = fname + "(" + obj + ")"
+                } else {
+                    rep = fname + "(" + obj + ", " + inner + ")"
+                }
+                }
+            }
+        } else {
+            # a property like .length: not when a name continues
+            if end < len(out) and (cv_is_ident(byte_at(out, end)) or byte_at(out, end) == 40) {
+                i = cv_find_code(out, pat, i + 1)
+                continue
+            }
+            if fname == "" {
+                rep = obj
+            } else {
+                if fname == "0 == len" {
+                    rep = "(len(" + obj + ") == 0)"
+                } else {
+                    rep = fname + "(" + obj + ")"
+                }
+            }
+        }
+        out = slice(out, 0, start) + rep + slice(out, end, len(out))
+        i = cv_find_code(out, pat, start + len(rep))
+    }
+    return out
+}
+
+fn cv_methods(s: string) -> string {
+    let out = s
+    # calls that just hand the value on
+    out = cv_method(out, ".is_empty()", "0 == len")
+    out = cv_method(out, ".isEmpty()", "0 == len")
+    for pat in [".unwrap()", ".clone()", ".as_str()", ".to_owned()", ".iter()", ".into_iter()", ".into()", ".borrow()", ".chars()", ".collect()"] {
+        out = cv_method(out, pat, "")
+    }
+    out = cv_method(out, ".expect(", "")
+    # .parse::<i32>() and friends
+    for pat in [".parse::<i32>()", ".parse::<i64>()", ".parse::<usize>()", ".parse::<u32>()", ".parse::<u64>()", ".parse()"] {
+        out = cv_method(out, pat, "to_int")
+    }
+    for pat in [".parse::<f64>()", ".parse::<f32>()"] {
+        out = cv_method(out, pat, "float")
+    }
+    let table = [
+        ".len()", "len", ".length()", "len", ".size()", "len", ".length", "len", ".count", "len",
+        ".push(", "push", ".push_back(", "push", ".append(", "push", ".add(", "push",
+        ".pop()", "pop", ".pop_back()", "pop", ".removeLast()", "pop",
+        ".to_uppercase()", "upper", ".toUpperCase()", "upper", ".upper()", "upper", ".uppercased()", "upper",
+        ".to_lowercase()", "lower", ".toLowerCase()", "lower", ".lower()", "lower", ".lowercased()", "lower",
+        ".trim()", "trim", ".strip()", "trim",
+        ".contains(", "contains", ".includes(", "contains",
+        ".starts_with(", "starts_with", ".startswith(", "starts_with", ".startsWith(", "starts_with", ".hasPrefix(", "starts_with",
+        ".ends_with(", "ends_with", ".endswith(", "ends_with", ".endsWith(", "ends_with", ".hasSuffix(", "ends_with",
+        ".split(", "split", ".replace(", "replace", ".replaceAll(", "replace", ".indexOf(", "find", ".find(", "find",
+        ".to_string()", "str", ".toString()", "str",
+        ".abs()", "abs", ".sqrt()", "sqrt", ".floor()", "floor", ".ceil()", "ceil", ".round()", "round",
+        ".powi(", "pow", ".powf(", "pow"
+    ]
+    let k = 0
+    while k < len(table) {
+        out = cv_method(out, table[k], table[k + 1])
+        k += 2
+    }
+    # joining: Python puts the separator first (", ".join(xs)), the others the list
+    if cv_lang == "python" {
+        let i = cv_find_code(out, ".join(", 0)
+        while i >= 0 {
+            let start = cv_operand_start(out, i)
+            let sep = slice(out, start, i)
+            let close = cv_close(out, i + 5)
+            let list = slice(out, i + 6, close)
+            let rep = "join(" + list + ", " + sep + ")"
+            out = slice(out, 0, start) + rep + slice(out, close + 1, len(out))
+            i = cv_find_code(out, ".join(", start + len(rep))
+        }
+    } else {
+        out = cv_method(out, ".join(", "join")
+    }
+    return out
+}
+
+# NAME(x) -> x
+fn cv_unwrap(s: string, name: string) -> string {
+    let out = s
+    let i = cv_find_code(out, name, 0)
+    while i >= 0 {
+        let close = cv_close(out, i + len(name) - 1)
+        if close < 0 {
+            break
+        }
+        let inner = slice(out, i + len(name), close)
+        out = slice(out, 0, i) + inner + slice(out, close + 1, len(out))
+        i = cv_find_code(out, name, i + len(inner))
+    }
+    return out
+}
+
+# Java/JS/C#/Kotlin join text and numbers with +: Slop wants str() around numbers
+fn cv_concat_strings(s: string) -> string {
+    let parts: array[string] = []
+    let depth = 0
+    let start = 0
+    let i = 0
+    let has_text = false
+    while i < len(s) {
+        let c = byte_at(s, i)
+        if cv_is_quote(c) {
+            if depth == 0 and i == start + cv_lead_spaces(slice(s, start, len(s))) {
+                has_text = true
+            }
+            i = cv_skip_str(s, i)
+            continue
+        }
+        if c == 40 or c == 91 {
+            depth += 1
+        }
+        if c == 41 or c == 93 {
+            depth -= 1
+        }
+        if c == 43 and depth == 0 and i + 1 < len(s) and byte_at(s, i + 1) != 61 and byte_at(s, i + 1) != 43 and (i == 0 or byte_at(s, i - 1) != 43) {
+            push(parts, trim(slice(s, start, i)))
+            start = i + 1
+        }
+        if (c == 61 or c == 44 or c == 60 or c == 62) and depth == 0 {
+            # an assignment, comparison or list: leave it
+            return s
+        }
+        i += 1
+    }
+    push(parts, trim(slice(s, start, len(s))))
+    if len(parts) < 2 or not has_text {
+        return s
+    }
+    let out: array[string] = []
+    for p in parts {
+        if starts_with(p, "\"") and cv_skip_str(p, 0) == len(p) or starts_with(p, "str(") {
+            push(out, p)
+        } else {
+            push(out, "str(" + p + ")")
+        }
+    }
+    return join(out, " + ")
+}
+
+fn cv_lead_spaces(s: string) -> int {
+    let i = 0
+    while i < len(s) and byte_at(s, i) == 32 {
+        i += 1
+    }
+    return i
+}
+
+# Swift call labels: greet(name: n) -> greet(n)
+fn cv_drop_labels(s: string) -> string {
+    let out = ""
+    let depth = 0
+    let i = 0
+    while i < len(s) {
+        let c = byte_at(s, i)
+        if cv_is_quote(c) {
+            let j = cv_skip_str(s, i)
+            out = out + slice(s, i, j)
+            i = j
+            continue
+        }
+        if c == 40 {
+            depth += 1
+        }
+        if c == 41 {
+            depth -= 1
+        }
+        if depth > 0 and cv_is_ident(c) and (i == 0 or byte_at(s, i - 1) == 40 or byte_at(s, i - 1) == 32) {
+            let e = i
+            while e < len(s) and cv_is_ident(byte_at(s, e)) {
+                e += 1
+            }
+            if e + 1 < len(s) and byte_at(s, e) == 58 and byte_at(s, e + 1) == 32 {
+                i = e + 2
+                continue
+            }
+        }
+        out = out + char_at(s, i)
+        i += 1
+    }
+    return out
+}
+
+# ---------- whole expressions ----------
+fn cv_expr(e: string) -> string {
+    let s = cv_literals(e)
+    s = cv_format_calls(s)
+    # Rust and C++ paths
+    s = cv_unwrap(s, "String::from(")
+    s = cv_unwrap(s, "str::to_string(")
+    for pair in [["strings.ToUpper(", "upper("], ["strings.ToLower(", "lower("], ["strings.Contains(", "contains("], ["strings.HasPrefix(", "starts_with("], ["strings.HasSuffix(", "ends_with("], ["strings.Split(", "split("], ["strings.Join(", "join("], ["strings.TrimSpace(", "trim("], ["strings.ReplaceAll(", "replace("], ["strings.Repeat(", "repeat("], ["strings.Index(", "find("], ["String::new()", "\"\""], ["Vec::new()", "[]"], ["vec![", "["], ["std::", ""], ["Math.", ""], ["math.", ""], ["Integer.parseInt(", "to_int("], ["Double.parseDouble(", "float("], ["String.valueOf(", "str("], ["strconv.Itoa(", "str("], ["strconv.Atoi(", "to_int("], ["Number(", "float("], ["System.exit(", "exit("], ["os.Exit(", "exit("], ["process.exit(", "exit("], ["std::process::exit(", "exit("], ["process::exit(", "exit("]] {
+        s = cv_replace_code(s, pair[0], pair[1])
+    }
+    for pair in [["parseInt", "to_int"], ["atoi", "to_int"], ["stoi", "to_int"], ["atof", "float"], ["stod", "float"], ["parseFloat", "float"], ["to_string", "str"], ["String", "str"], ["strlen", "len"], ["fabs", "abs"], ["sqrtf", "sqrt"], ["powf", "pow"], ["True", "true"], ["False", "false"], ["self", "this"], ["nil", "0"], ["NULL", "0"], ["nullptr", "0"], ["null", "0"], ["None", "0"]] {
+        s = cv_replace_word(s, pair[0], pair[1])
+    }
+    s = cv_methods(s)
+    if cv_struct_impl != "" {
+        s = cv_replace_word(s, "Self", cv_struct_impl)
+    }
+    s = cv_replace_code(s, "panic!(", "eprint(")
+    # Rust `as` casts: x as f64 -> float(x)
+    for pair in [[" as f64", "float"], [" as f32", "float"], [" as i32", "int"], [" as i64", "int"], [" as usize", "int"], [" as u8", "int"], [" as u32", "int"], [" as u64", "int"], [" as isize", "int"]] {
+        let i = cv_find_code(s, pair[0], 0)
+        while i >= 0 {
+            let start = cv_operand_start(s, i)
+            let rep = pair[1] + "(" + slice(s, start, i) + ")"
+            if pair[1] == "int" {
+                rep = slice(s, start, i)
+            }
+            s = slice(s, 0, start) + rep + slice(s, i + len(pair[0]), len(s))
+            i = cv_find_code(s, pair[0], start + len(rep))
+        }
+    }
+    # Go: xs = append(xs, v) is handled as a statement; X::new( -> X_new(
+    let i = cv_find_code(s, "::", 0)
+    while i >= 0 {
+        s = slice(s, 0, i) + "_" + slice(s, i + 2, len(s))
+        i = cv_find_code(s, "::", i + 1)
+    }
+    # struct literals: Point { x: 1, y: 2 } -> Point(1, 2)
+    for name in cv_struct_names {
+        let j = cv_find_code(s, name + " {", 0)
+        if j < 0 {
+            j = cv_find_code(s, name + "{", 0)
+        }
+        while j >= 0 {
+            let open = cv_find_from(s, "{", j)
+            let close = cv_close(s, open)
+            if close < 0 {
+                break
+            }
+            let vals: array[string] = []
+            for f in cv_split_args(slice(s, open + 1, close), false) {
+                let c = find(f, ":")
+                if c >= 0 {
+                    push(vals, trim(slice(f, c + 1, len(f))))
+                } else {
+                    if f != "" {
+                        push(vals, f)
+                    }
+                }
+            }
+            let rep = name + "(" + join(vals, ", ") + ")"
+            s = slice(s, 0, j) + rep + slice(s, close + 1, len(s))
+            j = cv_find_code(s, name + " {", j + len(rep))
+        }
+    }
+    # operators
+    s = cv_replace_code(s, "===", "==")
+    s = cv_replace_code(s, "!==", "!=")
+    s = cv_replace_code(s, "&&", " and ")
+    s = cv_replace_code(s, "||", " or ")
+    s = cv_replace_code(s, "->", ".")
+    let k = cv_find_code(s, "!", 0)
+    while k >= 0 {
+        if k + 1 < len(s) and byte_at(s, k + 1) == 61 {
+            k = cv_find_code(s, "!", k + 2)
+            continue
+        }
+        s = slice(s, 0, k) + "not " + slice(s, k + 1, len(s))
+        k = cv_find_code(s, "!", k + 4)
+    }
+    s = cv_replace_word(s, "new", "")
+    s = cv_replace_code(s, "  ", " ")
+    s = cv_replace_code(s, "( ", "(")
+    s = cv_replace_code(s, "not  ", "not ")
+    if cv_lang == "python" {
+        s = cv_replace_code(s, "//", "/")
+    }
+    # C address-of in calls (&x) has no meaning here
+    s = cv_replace_code(s, "(&", "(")
+    s = cv_replace_code(s, ", &", ", ")
+    for k2 in 0..len(cv_ren_from) {
+        s = cv_replace_word(s, cv_ren_from[k2], cv_ren_to[k2])
+    }
+    if cv_lang == "java" or cv_lang == "js" or cv_lang == "csharp" or cv_lang == "kotlin" {
+        s = cv_concat_strings(trim(s))
+    }
+    if cv_lang == "swift" {
+        s = cv_drop_labels(s)
+    }
+    return trim(s)
+}
+
+# ---------- output ----------
+fn cv_emit(text: string) {
+    let pad = ""
+    for i in 0..cv_depth {
+        pad = pad + "    "
+    }
+    push(cv_out, pad + text)
+}
+
+fn cv_todo(original: string) {
+    cv_todos += 1
+    cv_emit("# TODO: " + trim(original))
+}
+
+fn cv_open(kind: string) {
+    push(cv_stack, kind)
+    if kind != "drop" and kind != "todo-open" {
+        cv_depth += 1
+    }
+}
+
+fn cv_close_one() {
+    if len(cv_stack) == 0 {
+        return
+    }
+    let kind = pop(cv_stack)
+    if kind == "drop" {
+        return
+    }
+    if kind == "drop-impl" {
+        cv_struct_impl = ""
+        return
+    }
+    if starts_with(kind, "inc:") {
+        cv_emit(slice(kind, 4, len(kind)))
+    }
+    if kind == "struct" {
+        # no comma after the last field
+        let last = len(cv_out) - 1
+        if last >= 0 and ends_with(cv_out[last], ",") {
+            cv_out[last] = slice(cv_out[last], 0, len(cv_out[last]) - 1)
+        }
+    }
+    if kind == "fn" {
+        cv_ren_from = []
+        cv_ren_to = []
+        cv_in_main = false
+    }
+    cv_depth -= 1
+    cv_emit("}")
+}
+
+fn cv_in_todo() -> bool {
+    for k in cv_stack {
+        if k == "todo" {
+            return true
+        }
+    }
+    return false
+}
+
+fn cv_in_struct() -> bool {
+    return len(cv_stack) > 0 and cv_stack[len(cv_stack) - 1] == "struct"
+}
+
+# ---------- statements ----------
+fn cv_starts_word(s: string, w: string) -> bool {
+    return s == w or starts_with(s, w + " ") or starts_with(s, w + "(") or starts_with(s, w + "{")
+}
+
+fn cv_print(args: array[string], newline: bool) -> string {
+    return "print(" + join(args, ", ") + ")"
+}
+
+# a printing statement -> print(...), or "" when the line does not print
+fn cv_print_stmt(s: string) -> string {
+    let names = ["println!(", "print!(", "eprintln!(", "eprint!(", "printf(", "puts(", "System.out.println(", "System.out.print(", "System.out.printf(", "System.err.println(", "console.log(", "console.error(", "fmt.Println(", "fmt.Print(", "fmt.Printf(", "Console.WriteLine(", "Console.Write(", "println(", "print(", "fprintf(stderr,"]
+    for name in names {
+        if starts_with(s, name) {
+            let open = len(name) - 1
+            let raw_args: array[string] = []
+            if name == "fprintf(stderr," {
+                let close = cv_close(s, 7)
+                raw_args = cv_split_args(slice(s, len(name), close), false)
+            } else {
+                let close = cv_close(s, open)
+                if close < 0 {
+                    return ""
+                }
+                raw_args = cv_split_args(slice(s, open + 1, close), false)
+            }
+            let args: array[string] = []
+            for a in raw_args {
+                # Python keyword arguments (end="", sep=...) have no Slop version
+                if not (cv_lang == "python" and (starts_with(a, "end=") or starts_with(a, "sep=") or starts_with(a, "file="))) {
+                    push(args, cv_expr(a))
+                }
+            }
+            let fn_name = "print"
+            if starts_with(name, "eprint") or name == "System.err.println(" or name == "console.error(" or name == "fprintf(stderr," {
+                fn_name = "eprint"
+            }
+            let percent = name == "printf(" or name == "System.out.printf(" or name == "fmt.Printf(" or name == "fprintf(stderr,"
+            let braces = ends_with(name, "!(") or starts_with(name, "Console.")
+            if (percent or braces) and len(args) > 0 and starts_with(args[0], "\"") and cv_skip_str(args[0], 0) == len(args[0]) {
+                args[0] = replace(args[0], "%n", "\\n")
+                let rest: array[string] = []
+                for k in 1..len(args) {
+                    push(rest, args[k])
+                }
+                let text = cv_drop_newline(args[0])
+                if percent {
+                    text = cv_percent_format(text, rest)
+                } else {
+                    text = cv_brace_format(text, rest)
+                }
+                return fn_name + "(" + text + ")"
+            }
+            if fn_name == "eprint" and len(args) > 1 {
+                return "eprint(" + join(args, " + \" \" + ") + ")"
+            }
+            if len(args) == 0 {
+                return fn_name + "(\"\")"
+            }
+            if len(args) == 1 and percent {
+                return fn_name + "(" + cv_drop_newline(args[0]) + ")"
+            }
+            return fn_name + "(" + join(args, ", ") + ")"
+        }
+    }
+    # C++ streams: std::cout << a << b << std::endl
+    for name in ["std::cout", "cout", "std::cerr", "cerr"] {
+        if starts_with(s, name + " <<") or starts_with(s, name + "<<") {
+            let items: array[string] = []
+            let rest = slice(s, find(s, "<<"), len(s))
+            let pieces = split(rest, "<<")
+            for p in pieces {
+                let t = trim(p)
+                if t != "" and t != "std::endl" and t != "endl" and t != "\"\\n\"" and t != "'\\n'" {
+                    let v = cv_expr(t)
+                    if starts_with(v, "\"") {
+                        push(items, cv_drop_newline(v))
+                    } else {
+                        push(items, "str(" + v + ")")
+                    }
+                }
+            }
+            let f = "print"
+            if contains(name, "cerr") {
+                f = "eprint"
+            }
+            if len(items) == 0 {
+                return f + "(\"\")"
+            }
+            return f + "(" + join(items, " + ") + ")"
+        }
+    }
+    return ""
+}
+
+# "int x = 5" / "let mut x: i32 = 5" / "x := 5" / "var x = 5" -> Slop, or ""
+fn cv_declaration(s: string) -> string {
+    let t = s
+    # Go
+    let walrus = cv_find_code(t, ":=", 0)
+    if walrus > 0 and cv_is_name(trim(slice(t, 0, walrus))) {
+        return trim(slice(t, 0, walrus)) + " = " + cv_init(trim(slice(t, walrus + 2, len(t))), "")
+    }
+    for kw in ["let mut ", "let ", "var ", "val ", "const ", "auto ", "static ", "final "] {
+        if starts_with(t, kw) {
+            let rest = trim(slice(t, len(kw), len(t)))
+            let eq = cv_find_code(rest, "=", 0)
+            let lhs = rest
+            let rhs = ""
+            if eq > 0 {
+                lhs = trim(slice(rest, 0, eq))
+                rhs = trim(slice(rest, eq + 1, len(rest)))
+            }
+            let typ = ""
+            let colon = find(lhs, ":")
+            if colon > 0 {
+                typ = cv_type(slice(lhs, colon + 1, len(lhs)))
+                lhs = trim(slice(lhs, 0, colon))
+            } else {
+                # Go: var x int = 5; C# / Java: var x = 5
+                let sp = find(lhs, " ")
+                if sp > 0 {
+                    typ = cv_type(slice(lhs, sp + 1, len(lhs)))
+                    lhs = trim(slice(lhs, 0, sp))
+                    if not cv_is_name(lhs) {
+                        # const int x -> the type came first
+                        return cv_declaration(slice(t, len(kw), len(t)))
+                    }
+                }
+            }
+            if not cv_is_name(lhs) {
+                return ""
+            }
+            return cv_make_decl(lhs, typ, rhs)
+        }
+    }
+    # C-like: TYPE name = value, TYPE name[] = {...}, TYPE name
+    let eq = cv_find_code(t, "=", 0)
+    let lhs = t
+    let rhs = ""
+    if eq > 0 {
+        if byte_at(t, eq + 1) == 61 or contains("+-*/<>!%&|^", char_at(t, eq - 1)) {
+            return ""
+        }
+        lhs = trim(slice(t, 0, eq))
+        rhs = trim(slice(t, eq + 1, len(t)))
+    }
+    let is_array = false
+    if ends_with(lhs, "]") {
+        let b = find(lhs, "[")
+        if b > 0 {
+            lhs = trim(slice(lhs, 0, b))
+            is_array = true
+        }
+    }
+    let sp = len(lhs) - 1
+    while sp >= 0 and cv_is_ident(byte_at(lhs, sp)) {
+        sp -= 1
+    }
+    if sp < 0 {
+        return ""
+    }
+    let name = slice(lhs, sp + 1, len(lhs))
+    let tword = trim(slice(lhs, 0, sp + 1))
+    if starts_with(tword, "struct ") {
+        tword = trim(slice(tword, 7, len(tword)))
+    }
+    if not cv_is_name(name) or tword == "" or tword == "return" or tword == "else" {
+        return ""
+    }
+    let first = split(tword, " ")[0]
+    if ends_with(first, "*") {
+        first = slice(first, 0, len(first) - 1)
+    }
+    if not cv_is_type_word(first) and not cv_is_type_word(tword) {
+        return ""
+    }
+    let typ = cv_type(tword)
+    if is_array and typ != "string" {
+        typ = "array[" + typ + "]"
+    }
+    return cv_make_decl(name, typ, rhs)
+}
+
+fn cv_init(rhs: string, typ: string) -> string {
+    let r = trim(rhs)
+    if starts_with(r, "{") and ends_with(r, "}") {
+        # C/Java list or struct initializer
+        let inner = slice(r, 1, len(r) - 1)
+        let vals: array[string] = []
+        for v in cv_split_args(inner, false) {
+            if v != "" {
+                push(vals, cv_expr(v))
+            }
+        }
+        for sname in cv_struct_names {
+            if sname == typ {
+                return typ + "(" + join(vals, ", ") + ")"
+            }
+        }
+        return "[" + join(vals, ", ") + "]"
+    }
+    let brace = find(r, "{")
+    if brace > 0 and ends_with(r, "}") and (starts_with(r, "new ") or contains(slice(r, 0, brace), "[]")) {
+        # new int[]{1, 2} / []int{1, 2}
+        return cv_init(slice(r, brace, len(r)), typ)
+    }
+    return cv_expr(r)
+}
+
+# true when the code later adds a fraction to name (so 0 should start as 0.0)
+fn cv_becomes_float(name: string) -> bool {
+    for line in split(cv_src, "\n") {
+        let t = trim(line)
+        for op in [" += ", " -= ", " *= ", " /= ", " = "] {
+            if starts_with(t, name + op) {
+                let rhs = slice(t, len(name) + len(op), len(t))
+                if cv_has_fraction(rhs) or (cv_lang == "python" and contains(rhs, " / ")) {
+                    return true
+                }
+            }
+        }
+    }
+    return false
+}
+
+fn cv_has_fraction(s: string) -> bool {
+    let i = 1
+    while i + 1 < len(s) {
+        let a = byte_at(s, i - 1)
+        let b = byte_at(s, i + 1)
+        if byte_at(s, i) == 46 and a >= 48 and a <= 57 and b >= 48 and b <= 57 {
+            return true
+        }
+        i += 1
+    }
+    return false
+}
+
+fn cv_make_decl(name: string, typ: string, rhs: string) -> string {
+    if typ == "" and is_digit_text(trim(rhs)) and cv_becomes_float(name) {
+        return name + " = " + trim(rhs) + ".0"
+    }
+    let value = ""
+    if rhs == "" {
+        if typ == "" {
+            return name + " = 0"
+        }
+        value = cv_zero(typ)
+        for sname in cv_struct_names {
+            if sname == typ {
+                return "# TODO: give " + name + " a value: " + name + " = " + typ + "(...)"
+            }
+        }
+    } else {
+        value = cv_init(rhs, typ)
+    }
+    if value == "[]" and typ == "" {
+        return name + ": " + cv_list_type(name) + " = []"
+    }
+    if typ != "" and typ != "void" and (typ == "float" or starts_with(typ, "array[") or value == "[]") {
+        return name + ": " + typ + " = " + value
+    }
+    return name + " = " + value
+}
+
+# ---------- function headers ----------
+fn cv_params(raw: string) -> string {
+    let out: array[string] = []
+    let parts = cv_split_args(raw, true)
+    # Go: "a, b int" -> both are int
+    let types: array[string] = []
+    let names: array[string] = []
+    for p in parts {
+        let q = trim(p)
+        if q == "" or q == "void" or q == "self" or q == "&self" or q == "&mut self" or q == "mut self" {
+            continue
+        }
+        for junk in ["mut ", "final ", "const "] {
+            if starts_with(q, junk) {
+                q = trim(slice(q, len(junk), len(q)))
+            }
+        }
+        let eqd = find(q, "=")
+        if eqd > 0 {
+            q = trim(slice(q, 0, eqd))
+        }
+        let colon = find(q, ":")
+        if colon > 0 {
+            # Rust / TS / Kotlin / Swift / Python with types: name: Type
+            let nm = trim(slice(q, 0, colon))
+            if starts_with(nm, "_ ") {
+                nm = trim(slice(nm, 2, len(nm)))
+            }
+            push(names, nm)
+            push(types, cv_type(slice(q, colon + 1, len(q))))
+            continue
+        }
+        let sp = len(q) - 1
+        while sp >= 0 and (cv_is_ident(byte_at(q, sp)) or byte_at(q, sp) == 93 or byte_at(q, sp) == 91) {
+            sp -= 1
+        }
+        if sp < 0 {
+            # only a name: Go shares the next type; JS and Python have none
+            push(names, q)
+            push(types, "")
+            continue
+        }
+        let nm = slice(q, sp + 1, len(q))
+        let ty = trim(slice(q, 0, sp + 1))
+        if cv_lang == "go" {
+            # Go puts the name first: a int
+            let gsp = find(q, " ")
+            nm = slice(q, 0, gsp)
+            ty = trim(slice(q, gsp + 1, len(q)))
+        }
+        if ends_with(nm, "[]") {
+            nm = slice(nm, 0, len(nm) - 2)
+            ty = ty + "[]"
+        }
+        push(names, nm)
+        push(types, cv_type(ty))
+    }
+    if cv_lang == "python" or cv_lang == "js" {
+        cv_guessed = false
+        for i in 0..len(names) {
+            if types[i] == "" {
+                types[i] = cv_guess_param(names[i], i)
+                cv_guessed = true
+            }
+        }
+    }
+    let k = len(types) - 1
+    let carry = "int"
+    while k >= 0 {
+        if types[k] == "" {
+            types[k] = carry
+        } else {
+            carry = types[k]
+        }
+        k -= 1
+    }
+    for i in 0..len(names) {
+        push(out, names[i] + ": " + types[i])
+    }
+    return join(out, ", ")
+}
+
+# what a function written without types returns, guessed from its returns
+cv_guess_ret = ""
+cv_guessed = false
+cv_fn_name = ""
+cv_src = ""
+
+# a type for an untyped parameter: from the calls to the function, then from
+# how the function uses it
+fn cv_guess_param(name: string, index: int) -> string {
+    let call = cv_fn_name + "("
+    let at = cv_find_code(cv_src, call, 0)
+    while at >= 0 {
+        let ok_start = at == 0 or not cv_is_ident(byte_at(cv_src, at - 1))
+        let before = trim(slice(cv_src, cv_line_start(cv_src, at), at))
+        if ok_start and not ends_with(before, "def") and not ends_with(before, "function") {
+            let close = cv_close(cv_src, at + len(call) - 1)
+            if close > 0 {
+                let args = cv_split_args(slice(cv_src, at + len(call), close), false)
+                if index < len(args) {
+                    let a = args[index]
+                    if starts_with(a, "\"") or starts_with(a, "'") or starts_with(a, "`") or starts_with(a, "f\"") {
+                        return "string"
+                    }
+                    if is_digit_text(a) {
+                        return "int"
+                    }
+                    if contains(a, ".") and is_digit_text(replace(a, ".", "")) {
+                        return "float"
+                    }
+                    if starts_with(a, "[") {
+                        return "array[int]"
+                    }
+                }
+            }
+        }
+        at = cv_find_code(cv_src, call, at + 1)
+    }
+    # how the body uses it
+    for hint in ["len(" + name + ")", name + ".upper()", name + ".lower()", name + ".strip()", name + ".split(", name + ".startswith(", name + ".startsWith(", name + ".toUpperCase()", name + ".length", "${" + name + "}", "{" + name + "}", name + " + \"", "\" + " + name] {
+        if cv_find_code(cv_src, hint, 0) >= 0 or contains(cv_src, hint) {
+            return "string"
+        }
+    }
+    return "int"
+}
+
+# what a JavaScript function returns, from its first `return value`
+fn cv_js_return(name: string) -> string {
+    let at = cv_find_code(cv_src, "function " + name + "(", 0)
+    if at < 0 {
+        return ""
+    }
+    let open = cv_find_code(cv_src, "{", at)
+    let close = cv_close(cv_src, open)
+    if open < 0 or close < 0 {
+        return ""
+    }
+    let body = slice(cv_src, open, close)
+    let r = cv_find_code(body, "return ", 0)
+    if r < 0 {
+        return ""
+    }
+    let e = cv_find_from(body, "\n", r)
+    if e < 0 {
+        e = len(body)
+    }
+    let v = cv_strip_semi(slice(body, r + 7, e))
+    if v == "" {
+        return ""
+    }
+    if starts_with(v, "`") {
+        return "string"
+    }
+    return cv_guess_type(v)
+}
+
+fn cv_line_start(s: string, at: int) -> int {
+    let i = at
+    while i > 0 and byte_at(s, i - 1) != 10 {
+        i -= 1
+    }
+    return i
+}
+
+# element type of a list that starts empty: from what gets pushed onto it
+fn cv_list_type(name: string) -> string {
+    for pat in [name + ".append(", name + ".push(", name + ".push_back(", name + ".add(", "push(" + name + ", "] {
+        let at = cv_find_code(cv_src, pat, 0)
+        if at >= 0 {
+            let v = trim(slice(cv_src, at + len(pat), at + len(pat) + 20))
+            if starts_with(v, "\"") or starts_with(v, "'") or starts_with(v, "f\"") or starts_with(v, "`") {
+                return "array[string]"
+            }
+            let e = 0
+            while e < len(v) and (cv_is_ident(byte_at(v, e)) or byte_at(v, e) == 46) {
+                e += 1
+            }
+            let word = slice(v, 0, e)
+            if contains(word, ".") and is_digit_text(replace(word, ".", "")) {
+                return "array[float]"
+            }
+        }
+    }
+    return "array[int]"
+}
+
+fn cv_fn_line(fname: string, params: string, ret: string) -> string {
+    let name = fname
+    if name == "Main" {
+        name = "main"
+    }
+    let r = ret
+    if r == "void" {
+        r = ""
+    }
+    if name == "main" {
+        cv_in_main = true
+        if contains(params, "argv") or contains(params, "args") {
+            if contains(params, "argc") {
+                push(cv_ren_from, "argc")
+                push(cv_ren_to, "len(args)")
+            }
+            push(cv_ren_from, "argv")
+            push(cv_ren_to, "args")
+            return "fn main(args: array[string]) {"
+        }
+        return "fn main() {"
+    }
+    let line = "fn " + name + "(" + params + ")"
+    if r != "" {
+        line = line + " -> " + r
+    }
+    return line + " {"
+}
+
+# tries the line as a function header; returns "" when it is not one
+fn cv_function(s: string) -> string {
+    if not ends_with(s, "{") {
+        return ""
+    }
+    let open = find(s, "(")
+    if open < 0 {
+        return ""
+    }
+    let head = trim(slice(s, 0, open))
+    let close = cv_close(s, open)
+    if close < 0 {
+        return ""
+    }
+    if head == "func" {
+        # Go method: func (p Point) Name(args) Type {
+        let recv = split(trim(slice(s, open + 1, close)), " ")
+        let rest = trim(slice(s, close + 1, len(s)))
+        let rtype = cv_type(recv[len(recv) - 1])
+        push(cv_ren_from, recv[0])
+        push(cv_ren_to, "this")
+        let saved = cv_struct_impl
+        cv_struct_impl = rtype
+        let po = find(rest, "(")
+        let f = cv_function("func " + slice(rest, 0, po + 1) + "self, " + slice(rest, po + 1, len(rest)))
+        cv_struct_impl = saved
+        return f
+    }
+    let params = slice(s, open + 1, close)
+    let tail = trim(slice(s, close + 1, len(s) - 1))
+    for mod in ["public ", "private ", "protected ", "static ", "pub ", "inline ", "extern ", "virtual ", "override ", "async ", "unsafe ", "export ", "internal ", "open ", "final ", "pub(crate) ", "const "] {
+        while starts_with(head, mod) {
+            head = trim(slice(head, len(mod), len(head)))
+        }
+    }
+    for kw in ["if", "while", "for", "switch", "catch", "else if", "return", "match", "when"] {
+        if head == kw or starts_with(head, kw + " ") {
+            return ""
+        }
+    }
+    let ret = ""
+    let colon_ret = starts_with(tail, ":")
+    if starts_with(tail, "->") {
+        ret = cv_type(slice(tail, 2, len(tail)))
+    }
+    if colon_ret {
+        ret = cv_type(slice(tail, 1, len(tail)))
+    }
+    if starts_with(tail, "throws") or starts_with(tail, "const") or starts_with(tail, "noexcept") {
+        tail = ""
+    }
+    # fn / func / fun / function / def NAME
+    for kw in ["fn ", "func ", "fun ", "function ", "def "] {
+        if starts_with(head, kw) {
+            let name = trim(slice(head, len(kw), len(head)))
+            let lt = find(name, "<")
+            if lt > 0 {
+                name = slice(name, 0, lt)
+            }
+            cv_fn_name = name
+            if cv_lang == "go" and tail != "" and not starts_with(tail, "->") and not colon_ret {
+                ret = cv_type(tail)
+            }
+            # Go method: func (p Point) Name(...)
+            if starts_with(name, "(") {
+                let rc = find(name, ")")
+                let recv = split(trim(slice(name, 1, rc)), " ")
+                let mname = trim(slice(name, rc + 1, len(name)))
+                let rp_close = cv_close(s, cv_find_from(s, "(", open + rc + 1))
+                let real_params = slice(s, cv_find_from(s, "(", open + rc + 1) + 1, rp_close)
+                let rtail = trim(slice(s, rp_close + 1, len(s) - 1))
+                let rtype = cv_type(recv[len(recv) - 1])
+                push(cv_ren_from, recv[0])
+                push(cv_ren_to, "this")
+                let ps = cv_params(real_params)
+                let all = "this: " + rtype
+                if ps != "" {
+                    all = all + ", " + ps
+                }
+                return cv_fn_line(rtype + "_" + mname, all, cv_type(rtail))
+            }
+            if not cv_is_name(name) {
+                return ""
+            }
+            if cv_lang == "python" and ret == "" {
+                ret = cv_guess_ret
+            }
+            if cv_lang == "js" and ret == "" {
+                ret = cv_js_return(name)
+            }
+            if cv_struct_impl != "" and contains(params, "self") {
+                let ps = cv_params(params)
+                let all = "this: " + cv_struct_impl
+                if ps != "" {
+                    all = all + ", " + ps
+                }
+                return cv_fn_line(cv_struct_impl + "_" + name, all, replace(ret, "Self", cv_struct_impl))
+            }
+            if cv_struct_impl != "" {
+                return cv_fn_line(cv_struct_impl + "_" + name, cv_params(params), replace(ret, "Self", cv_struct_impl))
+            }
+            return cv_fn_line(name, cv_params(params), ret)
+        }
+    }
+    # C-like: TYPE NAME(...)
+    let sp = len(head) - 1
+    while sp >= 0 and cv_is_ident(byte_at(head, sp)) {
+        sp -= 1
+    }
+    if sp < 0 {
+        return ""
+    }
+    let name = slice(head, sp + 1, len(head))
+    let tword = trim(slice(head, 0, sp + 1))
+    if tword == "" or not cv_is_name(name) or contains(tword, "=") or contains(tword, ".") {
+        return ""
+    }
+    if not cv_is_type_word(split(tword, " ")[0]) and not cv_is_type_word(tword) {
+        return ""
+    }
+    return cv_fn_line(name, cv_params(params), cv_type(tword))
+}
+
+cv_struct_impl = ""
+
+# ---------- control flow ----------
+# text inside the outer parentheses, or the whole text when there are none
+fn cv_unparen(s: string) -> string {
+    let t = trim(s)
+    if starts_with(t, "(") and cv_close(t, 0) == len(t) - 1 {
+        return trim(slice(t, 1, len(t) - 1))
+    }
+    return t
+}
+
+# for (init; cond; step) -> Slop; returns the header line (may emit setup lines first)
+fn cv_c_for(inner: string) -> string {
+    let parts = split(inner, ";")
+    if len(parts) != 3 {
+        return ""
+    }
+    let init = trim(parts[0])
+    let cond = trim(parts[1])
+    let step = trim(parts[2])
+    for kw in ["int ", "let ", "var ", "auto ", "size_t ", "long ", "usize ", "unsigned "] {
+        if starts_with(init, kw) {
+            init = trim(slice(init, len(kw), len(init)))
+        }
+    }
+    let ge = find(init, ":=")
+    if ge > 0 {
+        init = slice(init, 0, ge) + "=" + slice(init, ge + 2, len(init))
+    }
+    let eq = find(init, "=")
+    if eq > 0 {
+        let v = trim(slice(init, 0, eq))
+        let start = cv_expr(trim(slice(init, eq + 1, len(init))))
+        let up = step == v + "++" or step == "++" + v or step == v + " += 1" or step == v + "+=1"
+        if up and starts_with(cond, v + " < ") {
+            return "for " + v + " in " + start + ".." + cv_expr(slice(cond, len(v) + 3, len(cond))) + " {"
+        }
+        if up and starts_with(cond, v + " <= ") {
+            return "for " + v + " in " + start + ".." + cv_expr(slice(cond, len(v) + 4, len(cond))) + " + 1 {"
+        }
+        if up and starts_with(cond, v + "<") and not starts_with(cond, v + "<=") {
+            return "for " + v + " in " + start + ".." + cv_expr(slice(cond, len(v) + 1, len(cond))) + " {"
+        }
+        # anything else becomes a while loop with the step at the end
+        cv_emit(v + " = " + start)
+        cv_pending_inc = cv_statement(step)
+        return "while " + cv_expr(cond) + " {"
+    }
+    return ""
+}
+
+cv_pending_inc = ""
+
+# if/while/for/else lines; returns the converted header or ""
+fn cv_control(s: string) -> string {
+    let body = s
+    let opens = ends_with(body, "{")
+    if opens {
+        body = trim(slice(body, 0, len(body) - 1))
+    }
+    if body == "else" or body == "} else" {
+        return "else {"
+    }
+    if body == "loop" or body == "for" or body == "while true" or body == "while (true)" or body == "while (1)" or body == "for (;;)" or body == "do" {
+        if body == "do" {
+            return ""
+        }
+        return "while true {"
+    }
+    let prefix = ""
+    let rest = body
+    if starts_with(rest, "else if") {
+        prefix = "else if "
+        rest = trim(slice(rest, 7, len(rest)))
+    } else {
+        if starts_with(rest, "elif ") {
+            prefix = "else if "
+            rest = trim(slice(rest, 5, len(rest)))
+        } else {
+            if cv_starts_word(rest, "if") {
+                prefix = "if "
+                rest = trim(slice(rest, 2, len(rest)))
+            }
+        }
+    }
+    if prefix != "" {
+        return prefix + cv_expr(cv_unparen(rest)) + " {"
+    }
+    if cv_starts_word(rest, "while") {
+        return "while " + cv_expr(cv_unparen(trim(slice(rest, 5, len(rest))))) + " {"
+    }
+    if cv_starts_word(rest, "for") or cv_starts_word(rest, "foreach") {
+        let inner = trim(slice(rest, find(rest, " "), len(rest)))
+        if starts_with(rest, "for(") or starts_with(rest, "foreach(") {
+            inner = slice(rest, find(rest, "("), len(rest))
+        }
+        inner = cv_unparen(inner)
+        if contains(inner, ";") {
+            return cv_c_for(inner)
+        }
+        # for x in xs / for (int x : xs) / for (const x of xs) / for _, x := range xs
+        let sep = ""
+        for cand in [" in ", " : ", " of ", ":= range ", "= range "] {
+            if sep == "" and contains(inner, cand) {
+                sep = cand
+            }
+        }
+        if sep == "" {
+            # Go: for cond {
+            return "while " + cv_expr(inner) + " {"
+        }
+        let at = find(inner, sep)
+        let var = trim(slice(inner, 0, at))
+        let what = trim(slice(inner, at + len(sep), len(inner)))
+        let words = split(var, " ")
+        var = words[len(words) - 1]
+        if contains(var, ",") {
+            # Go's "_, x" and Python's "i, x" (enumerate) -> the last name
+            let names = split(var, ",")
+            var = trim(names[len(names) - 1])
+        }
+        if contains(trim(slice(inner, 0, at)), ",") and not starts_with(trim(slice(inner, 0, at)), "_") {
+            cv_todos += 1
+            return "for " + var + " in " + cv_expr(what) + " {   # TODO: this loop also counted"
+        }
+        var = replace(replace(var, "&", ""), "*", "")
+        # ranges
+        if starts_with(what, "range(") and ends_with(what, ")") {
+            let ra = cv_split_args(slice(what, 6, len(what) - 1), false)
+            if len(ra) == 1 {
+                return "for " + var + " in 0.." + cv_expr(ra[0]) + " {"
+            }
+            if len(ra) == 2 {
+                return "for " + var + " in " + cv_expr(ra[0]) + ".." + cv_expr(ra[1]) + " {"
+            }
+            cv_todos += 1
+            return "for " + var + " in " + cv_expr(ra[0]) + ".." + cv_expr(ra[1]) + " {   # TODO: step " + ra[2]
+        }
+        let incl = cv_find_code(what, "..=", 0)
+        if incl > 0 {
+            return "for " + var + " in " + cv_expr(slice(what, 0, incl)) + ".." + cv_expr(slice(what, incl + 3, len(what))) + " + 1 {"
+        }
+        let dots = cv_find_code(what, "...", 0)
+        if dots > 0 {
+            # Swift/Kotlin closed range
+            return "for " + var + " in " + cv_expr(slice(what, 0, dots)) + ".." + cv_expr(slice(what, dots + 3, len(what))) + " + 1 {"
+        }
+        let until = find(what, " until ")
+        if until > 0 {
+            return "for " + var + " in " + cv_expr(slice(what, 0, until)) + ".." + cv_expr(slice(what, until + 7, len(what))) + " {"
+        }
+        let half = find(what, "..<")
+        if half > 0 {
+            return "for " + var + " in " + cv_expr(slice(what, 0, half)) + ".." + cv_expr(slice(what, half + 3, len(what))) + " {"
+        }
+        if cv_find_code(what, "..", 0) > 0 {
+            let dd = cv_find_code(what, "..", 0)
+            let extra = ""
+            if cv_lang == "kotlin" {
+                extra = " + 1"
+            }
+            return "for " + var + " in " + cv_expr(slice(what, 0, dd)) + ".." + cv_expr(slice(what, dd + 2, len(what))) + extra + " {"
+        }
+        return "for " + var + " in " + cv_expr(what) + " {"
+    }
+    return ""
+}
+
+# one statement (no braces) -> Slop
+fn cv_statement(raw: string) -> string {
+    let s = cv_strip_semi(raw)
+    if s == "" {
+        return ""
+    }
+    let p = cv_print_stmt(s)
+    if p != "" {
+        return p
+    }
+    if cv_starts_word(s, "return") {
+        let v = trim(slice(s, 6, len(s)))
+        if cv_in_main {
+            if v == "0" or v == "" or v == "Ok(())" {
+                return ""
+            }
+            return "exit(" + cv_expr(v) + ")"
+        }
+        if v == "" {
+            return "return"
+        }
+        return "return " + cv_expr(v)
+    }
+    if s == "break" or s == "continue" or s == "pass" {
+        if s == "pass" {
+            return ""
+        }
+        return s
+    }
+    for op in ["++", "--"] {
+        if ends_with(s, op) and cv_is_name(cv_expr(slice(s, 0, len(s) - 2))) or (starts_with(s, op) and cv_is_name(slice(s, 2, len(s)))) {
+            let v = replace(s, op, "")
+            if op == "++" {
+                return cv_expr(v) + " += 1"
+            }
+            return cv_expr(v) + " -= 1"
+        }
+    }
+    # Go: xs = append(xs, v)
+    let ap = find(s, "= append(")
+    if ap > 0 {
+        let args = cv_split_args(slice(s, ap + 9, len(s) - 1), false)
+        if len(args) == 2 {
+            return "push(" + cv_expr(args[0]) + ", " + cv_expr(args[1]) + ")"
+        }
+    }
+    let q = cv_find_code(s, " ? ", 0)
+    let eq = cv_find_code(s, "=", 0)
+    if q > 0 and eq > 0 and eq < q {
+        # x = c ? a : b  ->  x = b, then if c { x = a }
+        let rhs = slice(s, eq + 1, len(s))
+        let q2 = cv_find_code(rhs, " ? ", 0)
+        let c2 = cv_find_code(rhs, " : ", q2)
+        if c2 > 0 {
+            let cond = trim(slice(rhs, 0, q2))
+            let yes = trim(slice(rhs, q2 + 3, c2))
+            let no = trim(slice(rhs, c2 + 3, len(rhs)))
+            let first = cv_statement(slice(s, 0, eq + 1) + " " + no)
+            let target = trim(slice(first, 0, find(first, " = ")))
+            if contains(target, ":") {
+                target = trim(slice(target, 0, find(target, ":")))
+            }
+            return first + "\nif " + cv_expr(cv_unparen(cond)) + " {\n    " + target + " = " + cv_expr(yes) + "\n}"
+        }
+    }
+    if q > 0 {
+        cv_todos += 1
+        return "# TODO: " + s
+    }
+    let d = cv_declaration(s)
+    if d != "" {
+        return d
+    }
+    # assignment: convert both sides
+    for op in [" += ", " -= ", " *= ", " /= ", " = "] {
+        let at = cv_find_code(s, op, 0)
+        if at > 0 and op == " = " and cv_is_name(trim(slice(s, 0, at))) and is_digit_text(trim(slice(s, at + 3, len(s)))) and cv_becomes_float(trim(slice(s, 0, at))) {
+            return trim(slice(s, 0, at)) + " = " + trim(slice(s, at + 3, len(s))) + ".0"
+        }
+        if at > 0 and op == " = " and trim(slice(s, at + 3, len(s))) == "[]" and cv_is_name(trim(slice(s, 0, at))) {
+            let nm = trim(slice(s, 0, at))
+            return nm + ": " + cv_list_type(nm) + " = []"
+        }
+        if at > 0 {
+            return cv_expr(slice(s, 0, at)) + op + cv_expr(slice(s, at + len(op), len(s)))
+        }
+    }
+    return cv_expr(s)
+}
+
+fn cv_unsupported(s: string) -> bool {
+    if contains(s, " match ") or contains(s, "=match ") {
+        return true
+    }
+    for w in ["switch", "case", "match", "try", "catch", "throw", "goto", "class", "interface", "template", "enum", "union", "typedef", "lambda", "defer", "go", "select", "with", "yield", "async", "await", "trait", "macro_rules!", "except", "finally", "raise", "do", "when", "guard"] {
+        if cv_starts_word(s, w) {
+            return true
+        }
+    }
+    return contains(s, "=>") or contains(s, "malloc(") or contains(s, "free(") or contains(s, "scanf(") or contains(s, "sizeof") or contains(s, "lambda ")
+}
+
+fn cv_skip_line(s: string) -> bool {
+    for w in ["#include", "#define", "#pragma", "#if", "#endif", "#else", "using ", "import ", "package ", "use ", "extern crate", "mod ", "from ", "#!", "@", "#[", "#!["] {
+        if starts_with(s, w) {
+            return true
+        }
+    }
+    return s == "\"use strict\"" or s == "'use strict'" or s == "\"use strict\";"
+}
+
+# wrappers whose body is kept but whose braces go away
+fn cv_wrapper(s: string) -> bool {
+    if not ends_with(s, "{") {
+        return false
+    }
+    for w in ["namespace ", "extern \"C\"", "object ", "module "] {
+        if starts_with(s, w) {
+            return true
+        }
+    }
+    let t = s
+    for mod in ["public ", "private ", "protected ", "static ", "final ", "abstract ", "internal "] {
+        while starts_with(t, mod) {
+            t = slice(t, len(mod), len(t))
+        }
+    }
+    # Java/C#/Kotlin: a class around static methods (like class Main)
+    if starts_with(t, "class ") and cv_lang != "python" and cv_lang != "cpp" and cv_lang != "swift" and cv_lang != "js" {
+        return true
+    }
+    return false
+}
+
+# struct headers: Rust/C/C++/Go/Swift
+fn cv_struct_header(s: string) -> string {
+    let t = s
+    for mod in ["pub ", "typedef "] {
+        if starts_with(t, mod) {
+            t = slice(t, len(mod), len(t))
+        }
+    }
+    if starts_with(t, "type ") and ends_with(t, "struct {") {
+        return trim(slice(t, 5, len(t) - 8))
+    }
+    if starts_with(t, "struct ") and ends_with(t, "{") {
+        let name = trim(slice(t, 7, len(t) - 1))
+        if name == "" {
+            name = "Unnamed"
+        }
+        let lt = find(name, "<")
+        if lt > 0 {
+            name = slice(name, 0, lt)
+        }
+        return name
+    }
+    if cv_lang == "python" and starts_with(t, "class ") and ends_with(t, "{") {
+        return ""
+    }
+    return ""
+}
+
+fn cv_field(s: string) -> string {
+    let t = cv_strip_semi(s)
+    if ends_with(t, ",") {
+        t = trim(slice(t, 0, len(t) - 1))
+    }
+    if starts_with(t, "pub ") {
+        t = trim(slice(t, 4, len(t)))
+    }
+    if starts_with(t, "let ") or starts_with(t, "var ") {
+        t = trim(slice(t, 4, len(t)))
+    }
+    if t == "" {
+        return ""
+    }
+    let colon = find(t, ":")
+    if colon > 0 {
+        return trim(slice(t, 0, colon)) + ": " + cv_type(slice(t, colon + 1, len(t))) + ","
+    }
+    let sp = len(t) - 1
+    while sp >= 0 and cv_is_ident(byte_at(t, sp)) {
+        sp -= 1
+    }
+    if cv_lang == "go" {
+        let g = find(t, " ")
+        return slice(t, 0, g) + ": " + cv_type(slice(t, g + 1, len(t))) + ","
+    }
+    return slice(t, sp + 1, len(t)) + ": " + cv_type(slice(t, 0, sp + 1)) + ","
+}
+
+# ---------- switch (C, Java, JS, Go, C#) and match (Rust) -> Slop match ----------
+cv_arm_line = -1
+
+fn cv_top() -> string {
+    if len(cv_stack) == 0 {
+        return ""
+    }
+    return cv_stack[len(cv_stack) - 1]
+}
+
+fn cv_close_arm() {
+    if cv_top() == "arm" {
+        cv_close_one()
+    }
+}
+
+# a pattern from "case 1" / "_" / "1 | 2"
+fn cv_pattern(p: string) -> string {
+    let t = trim(p)
+    if t == "default" or t == "_" {
+        return "_"
+    }
+    let parts: array[string] = []
+    for alt in split(t, "|") {
+        push(parts, cv_expr(trim(alt)))
+    }
+    return join(parts, " | ")
+}
+
+fn cv_open_arm(pat: string) {
+    # "case 1: case 2:" share one arm
+    if cv_top() == "arm" and cv_arm_line == len(cv_out) - 1 and cv_arm_line >= 0 {
+        let prev = cv_out[cv_arm_line]
+        let k = find(prev, " => {")
+        cv_out[cv_arm_line] = slice(prev, 0, k) + " | " + pat + " => {"
+        return
+    }
+    cv_close_arm()
+    cv_emit(pat + " => {")
+    cv_arm_line = len(cv_out) - 1
+    cv_open("arm")
+}
+
+# handles the line when it belongs to a switch or match; true if it did
+fn cv_switch_line(s: string) -> bool {
+    if (starts_with(s, "switch") or starts_with(s, "match ")) and ends_with(s, "{") {
+        let head = trim(slice(s, 0, len(s) - 1))
+        let what = trim(slice(head, find(head, " ") + 1, len(head)))
+        if starts_with(head, "switch(") {
+            what = slice(head, 6, len(head))
+        }
+        cv_emit("match " + cv_expr(cv_unparen(what)) + " {")
+        if starts_with(s, "match") {
+            cv_open("rmatch")
+        } else {
+            cv_open("switch")
+        }
+        return true
+    }
+    let top = cv_top()
+    let in_switch = top == "switch" or (top == "arm" and len(cv_stack) > 1 and cv_stack[len(cv_stack) - 2] == "switch")
+    if in_switch {
+        if starts_with(s, "case ") or starts_with(s, "default:") or s == "default" {
+            let colon = cv_find_code(s, ":", 0)
+            if colon < 0 {
+                return false
+            }
+            let pat = "_"
+            if starts_with(s, "case ") {
+                pat = cv_pattern(replace(slice(s, 5, colon), ",", " |"))
+            }
+            cv_open_arm(pat)
+            let rest = trim(slice(s, colon + 1, len(s)))
+            if rest != "" {
+                for part in split(rest, ";") {
+                    if trim(part) != "" {
+                        cv_line(trim(part) + ";")
+                    }
+                }
+            }
+            return true
+        }
+        if top == "arm" and (s == "break;" or s == "break") {
+            return true
+        }
+        return false
+    }
+    let in_rmatch = top == "rmatch" or (top == "keep" and false)
+    if in_rmatch {
+        let arrow = cv_find_code(s, "=>", 0)
+        if arrow < 0 {
+            return false
+        }
+        let pat = cv_pattern(slice(s, 0, arrow))
+        let rhs = trim(slice(s, arrow + 2, len(s)))
+        if ends_with(rhs, ",") {
+            rhs = trim(slice(rhs, 0, len(rhs) - 1))
+        }
+        cv_emit(pat + " => {")
+        if rhs == "{" {
+            cv_open("keep")
+            return true
+        }
+        cv_open("keep")
+        if starts_with(rhs, "{") and ends_with(rhs, "}") {
+            rhs = trim(slice(rhs, 1, len(rhs) - 1))
+        }
+        for part in split(rhs, ";") {
+            if trim(part) != "" {
+                cv_line(trim(part) + ";")
+            }
+        }
+        cv_close_one()
+        return true
+    }
+    return false
+}
+
+# ---------- one line of C-like code ----------
+fn cv_line(raw: string) {
+    let s = trim(raw)
+    if s == "" {
+        push(cv_out, "")
+        return
+    }
+    # comments
+    if starts_with(s, "//") or starts_with(s, "#") and cv_lang == "python" {
+        let text = s
+        if starts_with(s, "//") {
+            text = "#" + slice(s, 2, len(s))
+        }
+        cv_emit(text)
+        return
+    }
+    let comment = ""
+    let cpos = cv_find_code(s, "//", 0)
+    if cv_lang == "python" {
+        cpos = cv_find_code(s, "#", 0)
+    }
+    if cpos > 0 {
+        comment = "  # " + trim(slice(s, cpos + 2, len(s)))
+        if cv_lang == "python" {
+            comment = "  # " + trim(slice(s, cpos + 1, len(s)))
+        }
+        s = trim(slice(s, 0, cpos))
+    }
+    if cv_skip_line(s) {
+        return
+    }
+    # closing braces first: "}", "};", "} else {", "} Name;"
+    while starts_with(s, "}") {
+        let after = trim(slice(s, 1, len(s)))
+        if cv_in_struct() and cv_struct_line >= 0 and cv_is_name(cv_strip_semi(after)) and starts_with(cv_out[cv_struct_line], "struct Unnamed") {
+            # typedef struct { ... } Name;
+            let nm = cv_strip_semi(after)
+            cv_out[cv_struct_line] = "struct " + nm + " {"
+            push(cv_struct_names, nm)
+            after = ""
+        }
+        if cv_in_todo() {
+            let top = pop(cv_stack)
+            push(cv_stack, top)
+            cv_todo("}")
+            pop(cv_stack)
+            if len(cv_stack) > 0 and starts_with(after, "else") {
+                s = after
+                break
+            }
+        } else {
+            if starts_with(after, "else") or starts_with(after, "while") {
+                # } else {  -> close the block then open the else
+                let top = ""
+                if len(cv_stack) > 0 {
+                    top = pop(cv_stack)
+                }
+                if starts_with(top, "inc:") {
+                    cv_emit(slice(top, 4, len(top)))
+                }
+                cv_depth -= 1
+                let header = cv_control(after)
+                if header == "" {
+                    cv_todo("} " + after)
+                    cv_depth += 1
+                    push(cv_stack, "keep")
+                    return
+                }
+                cv_emit("} " + header)
+                cv_depth += 1
+                push(cv_stack, "keep")
+                return
+            }
+            if cv_top() == "arm" {
+                cv_close_one()
+            }
+            cv_close_one()
+        }
+        s = trim(after)
+        if s == ";" or s == "" or s == ")" or s == ");" {
+            return
+        }
+    }
+    if cv_in_todo() {
+        cv_todo(s)
+        let opens = 0
+        for i in 0..len(s) {
+            if byte_at(s, i) == 123 {
+                push(cv_stack, "todo")
+            }
+            if byte_at(s, i) == 125 and len(cv_stack) > 0 {
+                pop(cv_stack)
+            }
+        }
+        return
+    }
+    if cv_in_struct() {
+        if contains(s, "(") {
+            cv_todo(s)
+            return
+        }
+        let f = cv_field(s)
+        if f != "" {
+            cv_emit(f)
+        }
+        return
+    }
+    if cv_wrapper(s) {
+        push(cv_stack, "drop")
+        return
+    }
+    # Rust impl blocks: methods become TypeName_method(this: TypeName, ...)
+    if starts_with(s, "impl ") and ends_with(s, "{") {
+        let nm = trim(slice(s, 5, len(s) - 1))
+        if contains(nm, " for ") {
+            nm = trim(slice(nm, find(nm, " for ") + 5, len(nm)))
+        }
+        cv_struct_impl = nm
+        push(cv_stack, "drop-impl")
+        return
+    }
+    let sname = cv_struct_header(s)
+    if sname != "" {
+        push(cv_struct_names, sname)
+        cv_emit("struct " + sname + " {")
+        cv_struct_line = len(cv_out) - 1
+        cv_open("struct")
+        return
+    }
+    if cv_switch_line(s) {
+        return
+    }
+    if cv_unsupported(s) {
+        cv_todo(s + comment)
+        if ends_with(s, "{") {
+            push(cv_stack, "todo")
+        }
+        return
+    }
+    let f = cv_function(s)
+    if f != "" {
+        if (cv_lang == "python" or cv_lang == "js") and cv_guessed {
+            comment = comment + "  # check the types: they were guessed"
+        }
+        cv_emit(f + comment)
+        cv_open("fn")
+        return
+    }
+    if starts_with(s, "else ") and not starts_with(s, "else if") and not ends_with(s, "{") {
+        cv_emit("else {")
+        cv_open("keep")
+        cv_line(trim(slice(s, 5, len(s))))
+        cv_close_one()
+        return
+    }
+    let c = cv_control(s)
+    if c != "" {
+        if ends_with(s, "{") {
+            cv_emit(c + comment)
+            cv_open("keep")
+            if cv_pending_inc != "" {
+                cv_stack[len(cv_stack) - 1] = "inc:" + cv_pending_inc
+                cv_pending_inc = ""
+            }
+            return
+        }
+        # no braces: if (x) y; -> a one-line block, or the next line is the body
+        let header_end = len(s)
+        let po = find(s, "(")
+        if po >= 0 and not starts_with(s, "else") {
+            header_end = cv_close(s, po) + 1
+        }
+        let rest = trim(slice(s, header_end, len(s)))
+        if starts_with(s, "else ") and not starts_with(s, "else if") {
+            rest = trim(slice(s, 5, len(s)))
+            c = "else {"
+        } else {
+            c = cv_control(slice(s, 0, header_end) + " {")
+        }
+        cv_emit(c + comment)
+        cv_open("keep")
+        if cv_pending_inc != "" {
+            cv_stack[len(cv_stack) - 1] = "inc:" + cv_pending_inc
+            cv_pending_inc = ""
+        }
+        if rest != "" {
+            cv_line(rest)
+            cv_close_one()
+        } else {
+            cv_close_after += 1
+        }
+        return
+    }
+    if ends_with(s, ");") and cv_function(cv_strip_semi(s) + " {") != "" {
+        # a function declaration (C prototype): Slop doesn't need them
+        cv_ren_from = []
+        cv_ren_to = []
+        cv_in_main = false
+        return
+    }
+    # a block opening on a line of its own, or other code with braces
+    if s == "{" {
+        cv_emit("if true {")
+        cv_open("keep")
+        return
+    }
+    let opens_block = ends_with(s, "{")
+    let st = s
+    if opens_block {
+        st = trim(slice(s, 0, len(s) - 1))
+    }
+    let out = cv_statement(st)
+    if cv_depth == 0 and out == "main()" {
+        # Slop calls main by itself
+        return
+    }
+    # Rust: a last expression without ; is the value the block gives back
+    if cv_lang == "rust" and not ends_with(s, ";") and not opens_block and out != "" and not contains(out, " = ") and not contains(out, " += ") and not contains(out, " -= ") and not starts_with(out, "return") and not starts_with(out, "print(") and not starts_with(out, "push(") and not starts_with(out, "#") and out != "break" and out != "continue" and not ends_with(s, ",") {
+        out = "return " + out
+    }
+    if out != "" or comment != "" {
+        if opens_block {
+            cv_todo(s)
+            push(cv_stack, "todo")
+            return
+        }
+        let outs = split(out + comment, "\n")
+        for o in outs {
+            cv_emit(o)
+        }
+    }
+    while cv_close_after > 0 {
+        cv_close_after -= 1
+        cv_close_one()
+    }
+}
+
+# ---------- Python: indentation -> braces ----------
+fn cv_py_lines(lines: array[string]) -> array[string] {
+    let out: array[string] = []
+    let indents: array[int] = [0]
+    let kinds: array[string] = ["top"]
+    let blanks = 0
+    for i in 0..len(lines) {
+        let line = lines[i]
+        let t = trim(line)
+        if t == "" {
+            blanks += 1
+            continue
+        }
+        if starts_with(t, "#") {
+            push(out, t)
+            continue
+        }
+        let ind = 0
+        while ind < len(line) and byte_at(line, ind) == 32 {
+            ind += 1
+        }
+        while ind < indents[len(indents) - 1] {
+            pop(indents)
+            let k = pop(kinds)
+            if k != "drop" {
+                push(out, "}")
+            }
+        }
+        while blanks > 0 {
+            push(out, "")
+            blanks -= 1
+        }
+        let code = t
+        let hash = cv_find_code(code, "#", 0)
+        let note = ""
+        if hash > 0 {
+            note = "  #" + slice(code, hash + 1, len(code))
+            code = trim(slice(code, 0, hash))
+        }
+        if ends_with(code, ":") {
+            let head = trim(slice(code, 0, len(code) - 1))
+            # the block's indent is the next code line's
+            let j = i + 1
+            while j < len(lines) and (trim(lines[j]) == "" or starts_with(trim(lines[j]), "#")) {
+                j += 1
+            }
+            let inner = ind + 4
+            if j < len(lines) {
+                inner = 0
+                while inner < len(lines[j]) and byte_at(lines[j], inner) == 32 {
+                    inner += 1
+                }
+            }
+            push(indents, inner)
+            if starts_with(head, "if __name__") {
+                push(kinds, "drop")
+                continue
+            }
+            push(kinds, "block")
+            if starts_with(head, "def ") {
+                # guess the return type from the function's return lines
+                cv_guess_ret = ""
+                let k = i + 1
+                while k < len(lines) {
+                    let lt = trim(lines[k])
+                    let lind = 0
+                    while lind < len(lines[k]) and byte_at(lines[k], lind) == 32 {
+                        lind += 1
+                    }
+                    if lt != "" and lind <= ind {
+                        break
+                    }
+                    if starts_with(lt, "return ") and cv_guess_ret == "" {
+                        let v = trim(slice(lt, 7, len(lt)))
+                        cv_guess_ret = cv_guess_type(v)
+                    }
+                    k += 1
+                }
+            }
+            if starts_with(head, "else") {
+                push(out, "else {" + note)
+            } else {
+                if starts_with(head, "def ") and not contains(head, "->") and cv_guess_ret != "" {
+                    head = head + " -> " + cv_guess_ret
+                }
+                push(out, head + " {" + note)
+            }
+            continue
+        }
+        push(out, code + note)
+    }
+    while len(indents) > 1 {
+        pop(indents)
+        let k = pop(kinds)
+        if k != "drop" {
+            push(out, "}")
+        }
+    }
+    return out
+}
+
+fn cv_guess_type(v: string) -> string {
+    if starts_with(v, "\"") or starts_with(v, "'") or starts_with(v, "f\"") or starts_with(v, "str(") {
+        return "string"
+    }
+    if v == "True" or v == "False" or starts_with(v, "not ") or contains(v, " == ") or contains(v, " < ") or contains(v, " > ") {
+        return "bool"
+    }
+    if contains(v, ".") and is_digit_text(replace(replace(v, ".", ""), "-", "")) {
+        return "float"
+    }
+    if contains(v, " / ") or starts_with(v, "float(") {
+        return "float"
+    }
+    if starts_with(v, "[") {
+        return "array[int]"
+    }
+    return "int"
+}
+
+# ---------- whole files ----------
+fn cv_language(path: string) -> string {
+    let exts = [".rs", "rust", ".c", "c", ".h", "c", ".cpp", "cpp", ".cc", "cpp", ".cxx", "cpp", ".hpp", "cpp", ".java", "java", ".cs", "csharp", ".js", "js", ".mjs", "js", ".ts", "js", ".go", "go", ".py", "python", ".kt", "kotlin", ".swift", "swift", ".scala", "kotlin", ".dart", "java", ".php", "js"]
+    let k = 0
+    while k < len(exts) {
+        if ends_with(lower(path), exts[k]) {
+            return exts[k + 1]
+        }
+        k += 2
+    }
+    return ""
+}
+
+# C block comments -> # lines
+fn cv_block_comments(src: string) -> string {
+    let out = ""
+    let i = 0
+    let n = len(src)
+    while i < n {
+        let c = byte_at(src, i)
+        if cv_is_quote(c) and cv_lang != "python" {
+            let j = cv_skip_str(src, i)
+            if c == 39 and j - i > 4 {
+                # a lone ' (Rust lifetime): not a string
+                j = i + 1
+            }
+            out = out + slice(src, i, j)
+            i = j
+            continue
+        }
+        if c == 47 and i + 1 < n and byte_at(src, i + 1) == 47 {
+            let e = cv_find_from(src, "\n", i)
+            if e < 0 {
+                e = n
+            }
+            out = out + slice(src, i, e)
+            i = e
+            continue
+        }
+        if c == 47 and i + 1 < n and byte_at(src, i + 1) == 42 {
+            let e = cv_find_from(src, "*/", i + 2)
+            if e < 0 {
+                e = n - 2
+            }
+            let text = slice(src, i + 2, e)
+            let lines: array[string] = []
+            for l in split(text, "\n") {
+                let t = trim(l)
+                if starts_with(t, "*") {
+                    t = trim(slice(t, 1, len(t)))
+                }
+                if t != "" {
+                    push(lines, "// " + t)
+                }
+            }
+            out = out + join(lines, "\n")
+            i = e + 2
+            continue
+        }
+        out = out + char_at(src, i)
+        i += 1
+    }
+    return out
+}
+
+# puts a "{" that sits on its own line at the end of the line before it, and
+# splits "head { body }" on one line into three lines
+fn cv_join_braces(lines: array[string]) -> array[string] {
+    let out: array[string] = []
+    for l in lines {
+        let t = trim(l)
+        let ob = cv_find_code(t, "{", 0)
+        if ob > 0 and ends_with(t, "}") and cv_close(t, ob) == len(t) - 1 {
+            let head = trim(slice(t, 0, ob))
+            if ends_with(head, ")") or head == "else" or ends_with(head, "else") or contains(head, "->") or starts_with(head, "fn ") or starts_with(head, "func ") {
+                push(out, head + " {")
+                for part in split(slice(t, ob + 1, len(t) - 1), ";") {
+                    if trim(part) != "" {
+                        push(out, trim(part) + ";")
+                    }
+                }
+                push(out, "}")
+                continue
+            }
+        }
+        if t == "{" and len(out) > 0 {
+            let k = len(out) - 1
+            while k > 0 and trim(out[k]) == "" {
+                k -= 1
+            }
+            let prev = trim(out[k])
+            if prev != "" and not ends_with(prev, "{") and not ends_with(prev, ";") and not ends_with(prev, "}") and not starts_with(prev, "//") {
+                out[k] = out[k] + " {"
+                continue
+            }
+        }
+        push(out, l)
+    }
+    return out
+}
+
+# a source file in another language -> Slop source
+fn convert_source(src: string, lang: string) -> string {
+    cv_lang = lang
+    cv_out = []
+    cv_depth = 0
+    cv_stack = []
+    cv_struct_names = []
+    cv_todos = 0
+    cv_ren_from = []
+    cv_ren_to = []
+    cv_in_main = false
+    cv_struct_impl = ""
+    cv_close_after = 0
+    let text = replace(replace(src, "\r\n", "\n"), "\t", "    ")
+    cv_src = text
+    if lang != "python" {
+        text = cv_block_comments(text)
+    }
+    let lines = split(text, "\n")
+    # struct names first, so `Point p = ...` is known as a declaration
+    for l in lines {
+        let t = trim(l)
+        for pre in ["pub struct ", "struct ", "typedef struct ", "type "] {
+            if starts_with(t, pre) {
+                let rest = trim(slice(t, len(pre), len(t)))
+                let e = 0
+                while e < len(rest) and cv_is_ident(byte_at(rest, e)) {
+                    e += 1
+                }
+                if e > 0 and (pre != "type " or contains(rest, "struct")) {
+                    push(cv_struct_names, slice(rest, 0, e))
+                }
+            }
+        }
+        if starts_with(t, "}") and ends_with(t, ";") and cv_is_name(cv_strip_semi(trim(slice(t, 1, len(t))))) {
+            push(cv_struct_names, cv_strip_semi(trim(slice(t, 1, len(t)))))
+        }
+    }
+    if lang == "python" {
+        lines = cv_py_lines(lines)
+    } else {
+        lines = cv_join_braces(lines)
+    }
+    let skipping = false
+    for l in lines {
+        let t = trim(l)
+        if skipping {
+            if t == ")" {
+                skipping = false
+            }
+            continue
+        }
+        if t == "import (" or t == "const (" or t == "var (" {
+            skipping = t == "import ("
+            if not skipping {
+                cv_todo(t)
+                skipping = true
+            }
+            continue
+        }
+        cv_line(l)
+    }
+    # leave out blank lines at the end
+    while len(cv_out) > 0 and trim(cv_out[len(cv_out) - 1]) == "" {
+        pop(cv_out)
+    }
+    return join(cv_out, "\n") + "\n"
+}
