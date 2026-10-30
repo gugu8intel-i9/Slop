@@ -1,4 +1,0 @@
-fn main(args: array[string]) {
-    print("SIR pipeline direct from Slop")
-    print("C and ELF backends")
-}

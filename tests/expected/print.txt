@@ -1,0 +1,2 @@
+Slop prints straight to the terminal
+no C, no assembler, no linker

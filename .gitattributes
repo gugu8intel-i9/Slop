@@ -1,0 +1,3 @@
+# keep every file byte-for-byte identical on all systems (no CRLF conversion);
+# the compilers in bin/ must match what compiler.slop builds
+* -text

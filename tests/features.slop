@@ -1,0 +1,167 @@
+# Exercises most of the language. tests/run.slop checks the output.
+
+struct Point {
+    x: int,
+    y: int
+
+    fn sum() -> int {
+        return this.x + this.y
+    }
+}
+
+struct Person {
+    name: string,
+    age: int,
+    tags: array[string]
+}
+
+struct Team {
+    title: string,
+    members: array[Person],
+    lead: Person
+}
+
+fn make_person(name: string, age: int) -> Person {
+    tags: array[string] = []
+    push(tags, "t-" + name)
+    return Person("Dr. " + name, age, tags)
+}
+
+fn names(team: Team) -> array[string] {
+    return [p.name for p in team.members]
+}
+
+fn build_line(n: int) -> string {
+    s = ""
+    for i in 0..n {
+        s += int_to_string(i)
+    }
+    return s
+}
+
+fn countdown(n: int) -> string {
+    if n == 0 {
+        return "go"
+    }
+    return int_to_string(n) + " " + countdown(n - 1)
+}
+
+log: array[string] = []
+counter = 0
+
+fn remember(msg: string) {
+    push(log, "#" + int_to_string(counter) + " " + msg)
+    counter += 1
+}
+
+# structs, methods, fields
+p = Point(3, 4)
+print("point", p.x, p.y, p.sum())
+p.x = 10
+p.y += 5
+print("moved", p.sum())
+
+# structs holding strings and arrays, returned from functions
+a = make_person("Ada", 36)
+b = make_person("Bob", 41)
+print(a.name, a.age, a.tags[0])
+team = Team("core", [a, b], b)
+print(team.title, len(team.members), team.lead.name, team.members[0].tags[0])
+print(names(team))
+team.members[1].age = 42
+print(team.members[1].age)
+
+# globals changed inside functions
+remember("first")
+remember("second")
+print(log, counter)
+
+# strings
+s = build_line(5)
+print(s, len(s))
+print(countdown(3))
+word = "Slop"
+for ch in word {
+    print(ch)
+}
+print(word[0] + word[3], slice(word, 1, 3), upper(word), lower(word))
+print(find("hello world", "world"), contains("abc", "bc"), starts_with("abc", "ab"), ends_with("abc", "bc"))
+print(trim("  hi  ") + "|", replace("a-b-c", "-", "+"), repeat("ab", 3))
+print(split("a,b,,c", ","), join(["x", "y", "z"], "/"))
+print(to_int("123") + 1, to_int("-7"), str(99) + "!")
+
+# arrays
+nums = [5, 3, 8]
+push(nums, 1)
+nums[0] = 50
+nums[1] += 2
+print(nums, len(nums), pop(nums), nums)
+evens = [x * 10 for x in nums if x % 2 == 0]
+print(evens)
+squares = [i * i for i in 0..5]
+print(squares)
+grid: array[array[int]] = []
+push(grid, [1, 2])
+push(grid, [3, 4])
+print(grid[1][0])
+words = ["b", "a"]
+words[0] = "first-" + "word"
+print(words)
+
+# control flow
+total = 0
+i = 0
+while true {
+    i += 1
+    if i % 2 == 0 {
+        continue
+    }
+    if i > 9 {
+        break
+    }
+    total += i
+}
+print("odd sum", total)
+
+fn kind_of(n: int) -> string {
+    match n {
+        0 => {
+            return "zero"
+        }
+        1 | 2 | 3 => {
+            return "small"
+        }
+        else => {
+            return "big"
+        }
+    }
+    return "?"
+}
+print(kind_of(0), kind_of(2), kind_of(50))
+
+fn greet(lang: string) -> string {
+    match lang {
+        "en" => {
+            return "hello"
+        }
+        "fr" => {
+            return "bonjour"
+        }
+        _ => {
+            return "hi"
+        }
+    }
+    return ""
+}
+print(greet("fr"), greet("xx"))
+
+# numbers
+print(7 / 2, -7 / 2, 7 % 3, 1 << 10, 1024 >> 3, 0xff & 0x0f, 6 | 1, 6 ^ 3, -5)
+print(9223372036854775807, -9223372036854775807 - 1)
+print(1 < 2 and 2 < 3, not (1 == 1) or false, 3 >= 3, 3 != 4)
+x = 10
+x *= 3
+x -= 5
+x /= 5
+print(x)
+print(10 |> int_to_string() |> len())

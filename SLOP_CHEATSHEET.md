@@ -43,19 +43,20 @@ Extras: `and`, `or`, `not`, `+=`, `-=`, `len(list)`, and `x |> f()` (same as `f(
 ## Types
 
 ```slop
-let n: int = 42
-let f: float = 3.14
-let ok: bool = true
-let s: string = "hello"
-let xs: array[int] = [1, 2, 3]
+n: int = 42
+ok: bool = true
+s: string = "hello"
+xs: array[int] = [1, 2, 3]
 ```
 
 Most of the time, Slop can infer the type:
 
 ```slop
-let n = 42
-let s = "hello"
+n = 42
+s = "hello"
 ```
+
+Numbers: `1_000_000`, `0xff`. Floats are not supported yet.
 
 ## Functions
 
@@ -71,36 +72,57 @@ fn add(a: int, b: int) -> int {
 struct Player {
     name: string,
     score: int
+
+    fn label() -> string {
+        return this.name + ": " + str(this.score)
+    }
 }
 
-let p = Player("Gugu", 9001)
-print(p.name)
+p = Player("Gugu", 9001)
+print(p.name, p.label())
+p.score += 1
 ```
 
 ## Arrays
 
 ```slop
-let names: array[string] = ["Gugu", "Slop"]
+names: array[string] = ["Gugu", "Slop"]
 push(names, "World")
-print(names[0])
+print(names[0], len(names), pop(names))
 ```
 
 ## Comprehensions
 
 ```slop
-let doubled = [x * 2 for x in nums]
+doubled = [x * 2 for x in nums]
+small = [x for x in nums if x < 10]
+squares = [i * i for i in 0..10]
 ```
 
-## Parallel
+## Match
 
 ```slop
-let doubled = parallel [x * 2 for x in nums]
+match n {
+    0 => {
+        print("zero")
+    }
+    1 | 2 => {
+        print("small")
+    }
+    else => {
+        print("big")
+    }
+}
 ```
+
+## Built-ins
+
+`print`, `eprint`, `input`, `len`, `push`, `pop`, `int_to_string`/`str`, `to_int`, `char_at`, `byte_at`, `chr`, `slice`, `split`, `join`, `find`, `contains`, `starts_with`, `ends_with`, `trim`, `upper`, `lower`, `replace`, `repeat`, `read_file`, `write_file`, `exit`, `run`, `exec`, `clock_ns`, `socket_*`, `slop_pack`, `slop_unpack`.
 
 ## Mental model
 
-Write code like a simple scripting language. Slop lowers it to SIR, optimizes it, then emits native/C backend code.
+Write code like a simple scripting language. The Slop compiler (written in Slop) turns it straight into a small program for Linux, macOS or Windows: no C compiler, no linker, no C library.
 
 ```text
-simple Slop -> SIR -> optimizer -> backend
+app.slop -> bin/slop -> ./app
 ```

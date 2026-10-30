@@ -1,0 +1,336 @@
+# Slop runtime for Windows: calls kernel32 (and ws2_32 for networking).
+# File descriptors 0, 1, 2 mean the console's standard input, output and error;
+# any other number is a Windows handle.
+
+__win_sock_ready = false
+
+fn __os_name() -> string {
+    return "windows"
+}
+
+fn __std_handle(fd: int) -> int {
+    # STD_INPUT_HANDLE -10, STD_OUTPUT_HANDLE -11, STD_ERROR_HANDLE -12
+    if fd == 0 {
+        return __ccall("GetStdHandle", -10)
+    }
+    if fd == 1 {
+        return __ccall("GetStdHandle", -11)
+    }
+    if fd == 2 {
+        return __ccall("GetStdHandle", -12)
+    }
+    return fd
+}
+
+# reserve address space for the 3 memory buckets; memory is committed as it is used
+fn __rt_init() {
+    for b in 0..3 {
+        size = 17179869184
+        p = 0
+        while p == 0 and size >= 16777216 {
+            # MEM_RESERVE, PAGE_READWRITE
+            p = __ccall("VirtualAlloc", 0, size, 8192, 4)
+            if p == 0 {
+                size = size / 4
+            }
+        }
+        __store64(__data() + 16 + b * 8, p)
+        __store64(__data() + 40 + b * 8, p)
+        __store64(__data() + 64 + b * 8, p + size)
+    }
+}
+
+fn __grow(b: int, need: int) {
+    lim = __load64(__data() + 40 + b * 8)
+    end = __load64(__data() + 64 + b * 8)
+    if need > end {
+        __eprint("Slop: out of memory")
+        __os_exit(1)
+    }
+    step = 1048576
+    new = lim + (need - lim + step - 1) / step * step
+    if new > end {
+        new = end
+    }
+    # MEM_COMMIT, PAGE_READWRITE
+    if __ccall("VirtualAlloc", lim, new - lim, 4096, 4) == 0 {
+        __eprint("Slop: out of memory")
+        __os_exit(1)
+    }
+    __store64(__data() + 40 + b * 8, new)
+}
+
+fn __os_write(fd: int, p: int, n: int) -> int {
+    done = __scratch() + 56
+    __store64(done, 0)
+    if __ccall32("WriteFile", __std_handle(fd), p, n, done, 0) == 0 {
+        return -1
+    }
+    return __load64(done) & 4294967295
+}
+
+fn __os_read(fd: int, p: int, n: int) -> int {
+    got = __scratch() + 56
+    __store64(got, 0)
+    if __ccall32("ReadFile", __std_handle(fd), p, n, got, 0) == 0 {
+        return 0
+    }
+    return __load64(got) & 4294967295
+}
+
+fn __os_open_read(path: int) -> int {
+    # GENERIC_READ, share read+write, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL
+    return __ccall("CreateFileA", path, 2147483648, 3, 0, 3, 128, 0)
+}
+
+fn __os_open_write(path: int) -> int {
+    # GENERIC_WRITE, CREATE_ALWAYS
+    return __ccall("CreateFileA", path, 1073741824, 0, 0, 2, 128, 0)
+}
+
+fn __os_close(fd: int) {
+    __ccall32("CloseHandle", fd)
+}
+
+fn __os_size(fd: int) -> int {
+    size = __scratch() + 48
+    __store64(size, 0)
+    if __ccall32("GetFileSizeEx", fd, size) == 0 {
+        return -1
+    }
+    s = __load64(size)
+    if s <= 0 {
+        return -1
+    }
+    return s
+}
+
+fn __os_exit(code: int) {
+    __ccall("ExitProcess", code)
+}
+
+fn __os_remove(path: int) {
+    __ccall32("DeleteFileA", path)
+}
+
+fn __make_executable(path: string) {
+}
+
+# splits the command line the way Windows programs do
+fn __args() -> array[string] {
+    p = __ccall("GetCommandLineA")
+    n = __strlen(p)
+    out: array[string] = []
+    cur = ""
+    quoted = false
+    has = false
+    i = 0
+    while i < n {
+        c = __load8(p + i)
+        if c == 92 {
+            k = i
+            while k < n and __load8(p + k) == 92 {
+                k += 1
+            }
+            if k < n and __load8(p + k) == 34 {
+                cur = cur + __repeat("\\", (k - i) / 2)
+                if (k - i) % 2 == 1 {
+                    cur = cur + "\""
+                    i = k + 1
+                } else {
+                    i = k
+                }
+            } else {
+                cur = cur + __str(p + i, k - i)
+                i = k
+            }
+            has = true
+            continue
+        }
+        if c == 34 {
+            quoted = not quoted
+            has = true
+            i += 1
+            continue
+        }
+        if (c == 32 or c == 9) and not quoted {
+            if has {
+                push(out, cur)
+                cur = ""
+                has = false
+            }
+            i += 1
+            continue
+        }
+        cur = cur + __str(p + i, 1)
+        has = true
+        i += 1
+    }
+    if has {
+        push(out, cur)
+    }
+    return out
+}
+
+fn __quote_arg(a: string) -> string {
+    if len(a) > 0 and not __contains(a, " ") and not __contains(a, "\t") and not __contains(a, "\"") {
+        return a
+    }
+    return "\"" + __replace(a, "\"", "\\\"") + "\""
+}
+
+fn __command_line(args: array[string]) -> int {
+    parts: array[string] = []
+    for a in args {
+        push(parts, __quote_arg(a))
+    }
+    return __cstr(__join(parts, " "))
+}
+
+# starts a program; returns the process handle (0 on failure)
+fn __spawn(path: string, args: array[string], out_handle: int) -> int {
+    si = __alloc(104)
+    __memzero(si, 104)
+    __store64(si, 104)
+    if out_handle != 0 {
+        # STARTF_USESTDHANDLES
+        __store64(si + 60, 256)
+        __store64(si + 80, __ccall("GetStdHandle", -10))
+        __store64(si + 88, out_handle)
+        __store64(si + 96, out_handle)
+    }
+    pi = __alloc(24)
+    __memzero(pi, 24)
+    ok = __ccall32("CreateProcessA", __cstr(path), __command_line(args), 0, 0, 1, 0, 0, 0, si, pi)
+    if ok == 0 {
+        return 0
+    }
+    __ccall32("CloseHandle", __load64(pi + 8))
+    return __load64(pi)
+}
+
+fn __wait_exit_code(proc: int) -> int {
+    __ccall32("WaitForSingleObject", proc, 4294967295)
+    code = __scratch() + 48
+    __store64(code, 0)
+    __ccall32("GetExitCodeProcess", proc, code)
+    __ccall32("CloseHandle", proc)
+    return __load64(code) & 4294967295
+}
+
+fn __exec(path: string, args: array[string]) {
+    __flush()
+    proc = __spawn(path, args, 0)
+    if proc == 0 {
+        __eprint("cannot run " + path)
+        __os_exit(127)
+    }
+    __os_exit(__wait_exit_code(proc))
+}
+
+fn __run(path: string, args: array[string]) -> string {
+    __flush()
+    # pipe whose write end the child inherits
+    sa = __alloc(24)
+    __store64(sa, 24)
+    __store64(sa + 8, 0)
+    __store64(sa + 16, 1)
+    ends = __scratch() + 32
+    if __ccall32("CreatePipe", ends, ends + 8, sa, 0) == 0 {
+        return ""
+    }
+    rd = __load64(ends)
+    wr = __load64(ends + 8)
+    # HANDLE_FLAG_INHERIT off for our end
+    __ccall32("SetHandleInformation", rd, 1, 0)
+    proc = __spawn(path, args, wr)
+    __ccall32("CloseHandle", wr)
+    if proc == 0 {
+        __ccall32("CloseHandle", rd)
+        __last_status = 127
+        return ""
+    }
+    p = __alloc_bytes(0)
+    total = 0
+    while true {
+        __alloc_bytes(4096)
+        r = __os_read(rd, p + total, 4096)
+        if r <= 0 {
+            break
+        }
+        total += r
+    }
+    __ccall32("CloseHandle", rd)
+    __last_status = __wait_exit_code(proc)
+    return __str(p, total)
+}
+
+fn __clock_ns() -> int {
+    c = __scratch() + 48
+    f = __scratch() + 56
+    __ccall("QueryPerformanceCounter", c)
+    __ccall("QueryPerformanceFrequency", f)
+    count = __load64(c)
+    freq = __load64(f)
+    return count / freq * 1000000000 + count % freq * 1000000000 / freq
+}
+
+fn __socket_init() {
+    if not __win_sock_ready {
+        data = __alloc(512)
+        __ccall32("WSAStartup", 514, data)
+        __win_sock_ready = true
+    }
+}
+
+fn __socket_listen(port: int) -> int {
+    __socket_init()
+    fd = __ccall("socket", 2, 1, 6)
+    if fd == -1 {
+        return -1
+    }
+    one = __scratch()
+    __store64(one, 1)
+    __ccall32("setsockopt", fd, 65535, 4, one, 4)
+    a = __scratch() + 16
+    __memzero(a, 16)
+    __store8(a, 2)
+    __store8(a + 2, port / 256)
+    __store8(a + 3, port % 256)
+    if __ccall32("bind", fd, a, 16) != 0 or __ccall32("listen", fd, 128) != 0 {
+        __ccall32("closesocket", fd)
+        return -1
+    }
+    return fd
+}
+
+fn __socket_accept(fd: int) -> int {
+    __flush()
+    return __ccall("accept", fd, 0, 0)
+}
+
+fn __socket_read(fd: int) -> string {
+    p = __alloc_bytes(8192)
+    r = __ccall32("recv", fd, p, 8192, 0)
+    if r <= 0 {
+        return ""
+    }
+    return __str(p, r)
+}
+
+fn __socket_write(fd: int, s: string) {
+    p = __str_ptr(s)
+    n = len(s)
+    while n > 0 {
+        w = __ccall32("send", fd, p, n, 0)
+        if w <= 0 {
+            return
+        }
+        p += w
+        n -= w
+    }
+}
+
+fn __socket_close(fd: int) {
+    __ccall32("closesocket", fd)
+}

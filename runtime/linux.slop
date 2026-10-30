@@ -1,0 +1,188 @@
+# Slop runtime for Linux: talks to the kernel through system calls.
+
+fn __os_name() -> string {
+    return "linux"
+}
+
+# reserve address space for the 3 memory buckets (pages appear when touched)
+fn __rt_init() {
+    for b in 0..3 {
+        size = 17179869184
+        p = -1
+        while p < 0 and size >= 16777216 {
+            p = __syscall(9, 0, size, 3, 16418, -1, 0)
+            if p < 0 {
+                size = size / 4
+            }
+        }
+        __store64(__data() + 16 + b * 8, p)
+        __store64(__data() + 40 + b * 8, p + size)
+    }
+}
+
+fn __grow(b: int, need: int) {
+    __eprint("Slop: out of memory")
+    __os_exit(1)
+}
+
+fn __os_write(fd: int, p: int, n: int) -> int {
+    return __syscall(1, fd, p, n)
+}
+
+fn __os_read(fd: int, p: int, n: int) -> int {
+    return __syscall(0, fd, p, n)
+}
+
+fn __os_open_read(path: int) -> int {
+    return __syscall(2, path, 0, 0)
+}
+
+fn __os_open_write(path: int) -> int {
+    return __syscall(2, path, 577, 420)
+}
+
+fn __os_close(fd: int) {
+    __syscall(3, fd)
+}
+
+# file size, or -1 when unknown (like files in /proc)
+fn __os_size(fd: int) -> int {
+    size = __syscall(8, fd, 0, 2)
+    __syscall(8, fd, 0, 0)
+    if size <= 0 {
+        return -1
+    }
+    return size
+}
+
+fn __os_exit(code: int) {
+    __syscall(60, code)
+}
+
+fn __os_remove(path: int) {
+    __syscall(87, path)
+}
+
+fn __make_executable(path: string) {
+    __syscall(90, __cstr(path), 493)
+}
+
+fn __args() -> array[string] {
+    sp = __sp0()
+    argc = __load64(sp)
+    out: array[string] = []
+    for i in 0..argc {
+        a = __load64(sp + 8 + i * 8)
+        push(out, __str(a, __strlen(a)))
+    }
+    return out
+}
+
+fn __argv_block(args: array[string]) -> int {
+    n = len(args)
+    argv = __alloc((n + 1) * 8)
+    for i in 0..n {
+        __store64(argv + i * 8, __cstr(args[i]))
+    }
+    __store64(argv + n * 8, 0)
+    return argv
+}
+
+fn __envp() -> int {
+    sp = __sp0()
+    return sp + 16 + __load64(sp) * 8
+}
+
+fn __exec(path: string, args: array[string]) {
+    argv = __argv_block(args)
+    __flush()
+    __syscall(59, __cstr(path), argv, __envp())
+    __eprint("cannot run " + path)
+    __os_exit(127)
+}
+
+# runs a program and returns everything it printed (stdout and stderr)
+fn __run(path: string, args: array[string]) -> string {
+    __flush()
+    fds = __scratch()
+    if __syscall(22, fds) < 0 {
+        return ""
+    }
+    rd = __load64(fds) & 4294967295
+    wr = (__load64(fds) >> 32) & 4294967295
+    argv = __argv_block(args)
+    cpath = __cstr(path)
+    pid = __syscall(57)
+    if pid == 0 {
+        __syscall(33, wr, 1)
+        __syscall(33, wr, 2)
+        __syscall(3, rd)
+        __syscall(59, cpath, argv, __envp())
+        __syscall(60, 127)
+    }
+    __syscall(3, wr)
+    p = __alloc_bytes(0)
+    total = 0
+    while true {
+        __alloc_bytes(4096)
+        r = __syscall(0, rd, p + total, 4096)
+        if r <= 0 {
+            break
+        }
+        total += r
+    }
+    __syscall(3, rd)
+    st = __scratch() + 32
+    __store64(st, 0)
+    __syscall(61, pid, st, 0, 0)
+    __last_status = (__load64(st) >> 8) & 255
+    return __str(p, total)
+}
+
+fn __clock_ns() -> int {
+    t = __scratch()
+    __syscall(228, 1, t)
+    return __load64(t) * 1000000000 + __load64(t + 8)
+}
+
+fn __socket_listen(port: int) -> int {
+    fd = __syscall(41, 2, 1, 0)
+    if fd < 0 {
+        return -1
+    }
+    one = __scratch()
+    __store64(one, 1)
+    __syscall(54, fd, 1, 2, one, 4)
+    a = __scratch() + 16
+    __memzero(a, 16)
+    __store8(a, 2)
+    __store8(a + 2, port / 256)
+    __store8(a + 3, port % 256)
+    if __syscall(49, fd, a, 16) < 0 or __syscall(50, fd, 128) < 0 {
+        __syscall(3, fd)
+        return -1
+    }
+    return fd
+}
+
+fn __socket_accept(fd: int) -> int {
+    __flush()
+    return __syscall(43, fd, 0, 0)
+}
+
+fn __socket_read(fd: int) -> string {
+    p = __alloc_bytes(8192)
+    r = __syscall(0, fd, p, 8192)
+    if r <= 0 {
+        return ""
+    }
+    return __str(p, r)
+}
+
+fn __socket_write(fd: int, s: string) {
+    __write_all(fd, __str_ptr(s), len(s))
+}
+
+fn __socket_close(fd: int) {
+    __syscall(3, fd)
+}

@@ -1,0 +1,186 @@
+# Slop runtime for macOS: calls the system library (libSystem), which is how
+# every macOS program talks to the kernel.
+
+fn __os_name() -> string {
+    return "macos"
+}
+
+fn __rt_init() {
+    for b in 0..3 {
+        size = 17179869184
+        p = -1
+        while p == -1 and size >= 16777216 {
+            # PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON|MAP_NORESERVE
+            p = __ccall("mmap", 0, size, 3, 4162, -1, 0)
+            if p == -1 {
+                size = size / 4
+            }
+        }
+        __store64(__data() + 16 + b * 8, p)
+        __store64(__data() + 40 + b * 8, p + size)
+    }
+}
+
+fn __grow(b: int, need: int) {
+    __eprint("Slop: out of memory")
+    __os_exit(1)
+}
+
+fn __os_write(fd: int, p: int, n: int) -> int {
+    return __ccall("write", fd, p, n)
+}
+
+fn __os_read(fd: int, p: int, n: int) -> int {
+    return __ccall("read", fd, p, n)
+}
+
+fn __os_open_read(path: int) -> int {
+    return __ccall32("open", path, 0, 0)
+}
+
+fn __os_open_write(path: int) -> int {
+    # O_WRONLY|O_CREAT|O_TRUNC
+    return __ccall32("open", path, 1537, 420)
+}
+
+fn __os_close(fd: int) {
+    __ccall32("close", fd)
+}
+
+fn __os_size(fd: int) -> int {
+    size = __ccall("lseek", fd, 0, 2)
+    __ccall("lseek", fd, 0, 0)
+    if size <= 0 {
+        return -1
+    }
+    return size
+}
+
+fn __os_exit(code: int) {
+    __ccall("_exit", code)
+}
+
+fn __os_remove(path: int) {
+    __ccall32("unlink", path)
+}
+
+fn __make_executable(path: string) {
+    __ccall32("chmod", __cstr(path), 493)
+}
+
+fn __args() -> array[string] {
+    argc = __load64(__data() + 88)
+    argv = __load64(__data() + 96)
+    out: array[string] = []
+    for i in 0..argc {
+        a = __load64(argv + i * 8)
+        push(out, __str(a, __strlen(a)))
+    }
+    return out
+}
+
+fn __argv_block(args: array[string]) -> int {
+    n = len(args)
+    argv = __alloc((n + 1) * 8)
+    for i in 0..n {
+        __store64(argv + i * 8, __cstr(args[i]))
+    }
+    __store64(argv + n * 8, 0)
+    return argv
+}
+
+fn __exec(path: string, args: array[string]) {
+    argv = __argv_block(args)
+    __flush()
+    __ccall32("execve", __cstr(path), argv, __load64(__data() + 104))
+    __eprint("cannot run " + path)
+    __os_exit(127)
+}
+
+fn __run(path: string, args: array[string]) -> string {
+    __flush()
+    fds = __scratch()
+    if __ccall32("pipe", fds) != 0 {
+        return ""
+    }
+    rd = __load64(fds) & 4294967295
+    wr = (__load64(fds) >> 32) & 4294967295
+    argv = __argv_block(args)
+    cpath = __cstr(path)
+    pid = __ccall32("fork")
+    if pid == 0 {
+        __ccall32("dup2", wr, 1)
+        __ccall32("dup2", wr, 2)
+        __ccall32("close", rd)
+        __ccall32("execve", cpath, argv, __load64(__data() + 104))
+        __ccall("_exit", 127)
+    }
+    __ccall32("close", wr)
+    p = __alloc_bytes(0)
+    total = 0
+    while true {
+        __alloc_bytes(4096)
+        r = __ccall("read", rd, p + total, 4096)
+        if r <= 0 {
+            break
+        }
+        total += r
+    }
+    __ccall32("close", rd)
+    st = __scratch() + 32
+    __store64(st, 0)
+    __ccall32("waitpid", pid, st, 0)
+    __last_status = (__load64(st) >> 8) & 255
+    return __str(p, total)
+}
+
+fn __clock_ns() -> int {
+    t = __scratch()
+    # CLOCK_MONOTONIC
+    __ccall("clock_gettime", 6, t)
+    return __load64(t) * 1000000000 + __load64(t + 8)
+}
+
+fn __socket_listen(port: int) -> int {
+    fd = __ccall32("socket", 2, 1, 0)
+    if fd < 0 {
+        return -1
+    }
+    one = __scratch()
+    __store64(one, 1)
+    # SOL_SOCKET, SO_REUSEADDR
+    __ccall32("setsockopt", fd, 65535, 4, one, 4)
+    a = __scratch() + 16
+    __memzero(a, 16)
+    __store8(a, 16)
+    __store8(a + 1, 2)
+    __store8(a + 2, port / 256)
+    __store8(a + 3, port % 256)
+    if __ccall32("bind", fd, a, 16) != 0 or __ccall32("listen", fd, 128) != 0 {
+        __ccall32("close", fd)
+        return -1
+    }
+    return fd
+}
+
+fn __socket_accept(fd: int) -> int {
+    __flush()
+    return __ccall32("accept", fd, 0, 0)
+}
+
+fn __socket_read(fd: int) -> string {
+    p = __alloc_bytes(8192)
+    r = __ccall("read", fd, p, 8192)
+    if r <= 0 {
+        return ""
+    }
+    return __str(p, r)
+}
+
+fn __socket_write(fd: int, s: string) {
+    __write_all(fd, __str_ptr(s), len(s))
+}
+
+fn __socket_close(fd: int) {
+    __ccall32("close", fd)
+}
