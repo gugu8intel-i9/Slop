@@ -267,7 +267,7 @@ for f in converted {
     } else {
         if build(out, exe) {
             got = run_program(exe)
-            want = read_file(src + ".out")
+            want = read_file(src + ".expected")
             if got == want {
                 ok("slop convert " + f)
             } else {
