@@ -367,6 +367,13 @@ fn __eprint(s: string) {
     __write_all(2, __scratch(), 1)
 }
 
+fn __arch_name() -> string {
+    if __arch() == 2 {
+        return "arm64"
+    }
+    return "x86-64"
+}
+
 fn __exit(code: int) {
     __flush()
     __os_exit(code)

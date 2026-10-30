@@ -1,13 +1,21 @@
-# The Slop test suite, written in Slop. Run it from the repository root:
-#   bin/slop run tests/run.slop          (Linux)
-#   bin/slop-macos run tests/run.slop    (macOS)
-#   bin/slop.exe run tests/run.slop      (Windows)
+# The Slop test suite, written in Slop. Run it from the repository root with
+# the compiler for your system, for example:
+#   bin/slop run tests/run.slop                (Linux x86-64)
+#   bin/slop-macos-arm64 run tests/run.slop    (Apple Silicon Mac)
+#   bin\slop.exe run tests/run.slop            (Windows)
 
 os = os_name()
+arch = arch_name()
 exe_suffix = ""
 compiler = "bin/slop"
+if os == "linux" and arch == "arm64" {
+    compiler = "bin/slop-linux-arm64"
+}
 if os == "macos" {
     compiler = "bin/slop-macos"
+    if arch == "arm64" {
+        compiler = "bin/slop-macos-arm64"
+    }
 }
 if os == "windows" {
     compiler = "bin/slop.exe"
@@ -45,7 +53,7 @@ fn tmp(name: string) -> string {
     return "slop-test-" + name + exe_suffix
 }
 
-print("testing on " + os)
+print("testing on " + os + " " + arch)
 
 # 1. the compiler builds itself, and the shipped compilers match compiler.slop
 stage1 = tmp("stage1")
@@ -78,7 +86,14 @@ struct Shipped {
     path: string
 }
 
-for s in [Shipped("linux", "bin/slop"), Shipped("macos", "bin/slop-macos"), Shipped("windows", "bin/slop.exe")] {
+shipped = [
+    Shipped("linux", "bin/slop"),
+    Shipped("linux-arm64", "bin/slop-linux-arm64"),
+    Shipped("macos", "bin/slop-macos"),
+    Shipped("macos-arm64", "bin/slop-macos-arm64"),
+    Shipped("windows", "bin/slop.exe")
+]
+for s in shipped {
     out = tmp("cross-" + s.target)
     log = run(stage, [stage, "--target", s.target, "compiler.slop", out])
     if run_status() != 0 {
