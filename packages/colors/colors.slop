@@ -1,0 +1,31 @@
+# colors: colored and bold text in the terminal
+#   use "colors"
+#   print(green("ok") + " " + bold("done"))
+
+fn color_code(code: string, s: string) -> string {
+    return chr(27) + "[" + code + "m" + s + chr(27) + "[0m"
+}
+
+fn red(s: string) -> string {
+    return color_code("31", s)
+}
+
+fn green(s: string) -> string {
+    return color_code("32", s)
+}
+
+fn yellow(s: string) -> string {
+    return color_code("33", s)
+}
+
+fn blue(s: string) -> string {
+    return color_code("34", s)
+}
+
+fn bold(s: string) -> string {
+    return color_code("1", s)
+}
+
+fn underline(s: string) -> string {
+    return color_code("4", s)
+}

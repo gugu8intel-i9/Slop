@@ -1,0 +1,68 @@
+# text: helpers for strings
+#   use "text"
+#   print(pad_left("7", 3, "0"))   # 007
+
+fn pad_left(s: string, width: int, fill: string) -> string {
+    out = s
+    while len(out) < width {
+        out = fill + out
+    }
+    return out
+}
+
+fn pad_right(s: string, width: int, fill: string) -> string {
+    out = s
+    while len(out) < width {
+        out = out + fill
+    }
+    return out
+}
+
+fn center(s: string, width: int) -> string {
+    left = (width - len(s)) / 2
+    if left < 0 {
+        left = 0
+    }
+    return pad_right(repeat(" ", left) + s, width, " ")
+}
+
+# "hello big world" -> "Hello Big World"
+fn title_case(s: string) -> string {
+    out = ""
+    start = true
+    for i in 0..len(s) {
+        c = char_at(s, i)
+        if start {
+            out = out + upper(c)
+        } else {
+            out = out + c
+        }
+        start = c == " "
+    }
+    return out
+}
+
+fn word_count(s: string) -> int {
+    count = 0
+    for w in split(s, " ") {
+        if trim(w) != "" {
+            count += 1
+        }
+    }
+    return count
+}
+
+fn reverse(s: string) -> string {
+    out = ""
+    i = len(s) - 1
+    while i >= 0 {
+        out = out + char_at(s, i)
+        i -= 1
+    }
+    return out
+}
+
+fn is_palindrome(s: string) -> bool {
+    t = lower(replace(s, " ", ""))
+    return t == reverse(t)
+}

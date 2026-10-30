@@ -20,6 +20,10 @@ let g_tk_num: array[int] = []
 let g_pos: int = 0
 let g_user_tok: int = 0
 let g_src_dir: string = ""
+# which source file each token came from: "" is the main file
+let g_tk_file: array[int] = []
+let g_files: array[string] = [""]
+let g_cur_file: int = 0
 
 # ---------- output ----------
 let g_code: array[int] = []
@@ -125,7 +129,15 @@ fn err(msg: string) {
     if g_pos < g_user_tok {
         print("error in runtime prelude, line " + int_to_string(line) + ": " + msg)
     } else {
-        print("error: line " + int_to_string(line) + ": " + msg)
+        let file = ""
+        if g_pos < len(g_tk_file) {
+            file = g_files[g_tk_file[g_pos]]
+        }
+        if file != "" {
+            print("error: " + file + " line " + int_to_string(line) + ": " + msg)
+        } else {
+            print("error: line " + int_to_string(line) + ": " + msg)
+        }
     }
     exit(1)
 }
@@ -182,6 +194,7 @@ fn add_tok(kind: int, text: string, line: int, num: int) {
     push(g_tk_text, text)
     push(g_tk_line, line)
     push(g_tk_num, num)
+    push(g_tk_file, g_cur_file)
 }
 
 fn is_two_char_symbol(s: string) -> bool {
@@ -221,6 +234,13 @@ fn tokenize(src: string, with_eof: bool) {
                 i += 1
             }
             let w = slice(src, st, i)
+            if w == "use" and byte_at(src, i) == 32 and byte_at(src, i + 1) == 34 {
+                # use "name" lines are read before compiling (see load_uses)
+                while i < n and byte_at(src, i) != 10 {
+                    i += 1
+                }
+                continue
+            }
             if w == "true" or w == "false" or w == "and" or w == "or" or w == "not" {
                 add_tok(2, w, line, 0)
             } else {
@@ -3483,7 +3503,7 @@ fn builtin_alias(name: string) -> string {
     if name == "replace" or name == "repeat" or name == "lock" or name == "unlock" or name == "cpu_count" {
         return "__" + name
     }
-    if name == "env" or name == "make_dir" or name == "program_path" or name == "input_ended" {
+    if name == "env" or name == "make_dir" or name == "program_path" or name == "input_ended" or name == "file_exists" {
         return "__" + name
     }
     if name == "round" or name == "pow" or name == "exp" or name == "log" or name == "sin" or name == "cos" or name == "tan" or name == "atan" {
@@ -5114,9 +5134,71 @@ fn e_ccall(name: string, n: int) {
     e_add_rsp(n * 8)
 }
 
+# ---------- use "package" / use "file.slop" ----------
+# Used files are read first (each once), so their functions, structs and
+# top-level code come before the file that uses them.
+
+# the names in the `use "..."` lines of a source file
+fn use_lines(src: string) -> array[string] {
+    let names: array[string] = []
+    for raw in split(src, "\n") {
+        let line = trim(raw)
+        if starts_with_s(line, "use \"") and ends_with(line, "\"") and len(line) > 6 {
+            push(names, slice(line, 5, len(line) - 1))
+        }
+    }
+    return names
+}
+
+# where a use line points: a file next to the one using it, or an installed package
+fn resolve_use(name: string, dir: string) -> string {
+    if ends_with(name, ".slop") {
+        return dir + name
+    }
+    let roots = [g_src_dir + "slop_packages/", "slop_packages/"]
+    for root in roots {
+        let base = root + name + "/"
+        if file_exists(base + name + ".slop") {
+            return base + name + ".slop"
+        }
+        if file_exists(base + "lib.slop") {
+            return base + "lib.slop"
+        }
+    }
+    print("error: package '" + name + "' is not installed. Add it with: slop add " + name)
+    exit(1)
+    return ""
+}
+
+fn load_uses(src: string, dir: string) {
+    for name in use_lines(src) {
+        let path = resolve_use(name, dir)
+        let seen = false
+        for f in g_files {
+            if f == path {
+                seen = true
+            }
+        }
+        if not seen {
+            push(g_files, path)
+            let idx = len(g_files) - 1
+            let text = read_file(path)
+            if len(text) == 0 {
+                print("error: cannot read " + path + " (used as \"" + name + "\")")
+                exit(1)
+            }
+            load_uses(text, dir_of(path))
+            g_cur_file = idx
+            tokenize(text, false)
+        }
+    }
+}
+
 fn compile_program(main_src: string) {
     tokenize(runtime_source(), false)
     g_user_tok = len(g_tk_kind)
+    load_uses(main_src, g_src_dir)
+    g_cur_file = 0
     tokenize(main_src, true)
     collect_struct_names(0)
     collect_all(0)
@@ -5966,7 +6048,350 @@ fn set_target(name: string) -> bool {
     return false
 }
 
-let g_version = "1.0"
+# ============================================================================
+# packages: slop add / remove / sync / update / list / search
+# A package is a folder in slop_packages/ with NAME.slop (or lib.slop) in it.
+# slop.pkg lists the packages a program uses, one "name source" per line.
+# Sources: a name from the package list, github:user/repo[@branch-or-tag],
+# or a link (or path) to one .slop file. Downloads use curl and tar, which
+# come with Linux, macOS and Windows 10 and later.
+# ============================================================================
+struct Package {
+    name: string,
+    source: string,
+    about: string
+}
+
+let g_index_url = "https://raw.githubusercontent.com/gugu8intel-i9/Slop/main/packages/index.txt"
+let g_index: array[Package] = []
+let g_index_loaded = false
+
+fn is_windows() -> bool {
+    return os_name() == "windows"
+}
+
+fn find_program(name: string) -> string {
+    let sep = ":"
+    let slash = "/"
+    let exe = name
+    if is_windows() {
+        sep = ";"
+        slash = "\\"
+        exe = name + ".exe"
+        let sys = env("SystemRoot") + "\\System32\\" + exe
+        if file_exists(sys) {
+            return sys
+        }
+    }
+    for dir in split(env("PATH"), sep) {
+        if dir != "" and file_exists(dir + slash + exe) {
+            return dir + slash + exe
+        }
+    }
+    return ""
+}
+
+fn need_program(name: string) -> string {
+    let p = find_program(name)
+    if p == "" {
+        print("error: packages are downloaded with '" + name + "', which was not found. Install it and try again.")
+        exit(1)
+    }
+    return p
+}
+
+fn is_link(src: string) -> bool {
+    return starts_with_s(src, "https://") or starts_with_s(src, "http://")
+}
+
+# downloads a link (or copies a file) to dest
+fn fetch(src: string, dest: string) -> bool {
+    if is_link(src) {
+        let curl = need_program("curl")
+        run(curl, [curl, "-fsSL", "-o", dest, src])
+        return run_status() == 0 and file_exists(dest)
+    }
+    let text = read_file(src)
+    if len(text) == 0 {
+        return false
+    }
+    write_file(dest, text)
+    return true
+}
+
+fn fetch_text(src: string) -> string {
+    if is_link(src) {
+        let curl = need_program("curl")
+        let text = run(curl, [curl, "-fsSL", src])
+        if run_status() != 0 {
+            return ""
+        }
+        return text
+    }
+    return read_file(src)
+}
+
+fn remove_dir(dir: string) {
+    if is_windows() {
+        let cmd = env("ComSpec")
+        run(cmd, [cmd, "/c", "rmdir", "/s", "/q", replace(dir, "/", "\\")])
+    } else {
+        let rm = need_program("rm")
+        run(rm, [rm, "-rf", dir])
+    }
+}
+
+# "name | source | about" lines; # starts a comment
+fn parse_packages(text: string, sep: string) -> array[Package] {
+    let out: array[Package] = []
+    for raw in split(text, "\n") {
+        let line = trim(raw)
+        if line != "" and not starts_with_s(line, "#") {
+            let parts = split(line, sep)
+            let about = ""
+            if len(parts) > 2 {
+                about = trim(parts[2])
+            }
+            if len(parts) > 1 {
+                push(out, Package(trim(parts[0]), trim(parts[1]), about))
+            }
+        }
+    }
+    return out
+}
+
+# the list of known packages (SLOP_INDEX can point at another list)
+fn package_index() -> array[Package] {
+    if g_index_loaded {
+        return g_index
+    }
+    let where = env("SLOP_INDEX")
+    if where == "" {
+        where = g_index_url
+    }
+    let text = fetch_text(where)
+    if len(text) == 0 {
+        print("error: could not get the package list from " + where)
+        exit(1)
+    }
+    g_index = parse_packages(text, "|")
+    if not is_link(where) {
+        # file sources in a local list are relative to it
+        for i in 0..len(g_index) {
+            let src = g_index[i].source
+            if not is_link(src) and not starts_with_s(src, "github:") {
+                g_index[i].source = dir_of(where) + src
+            }
+        }
+    }
+    g_index_loaded = true
+    return g_index
+}
+
+fn read_pkg_file() -> array[Package] {
+    return parse_packages(read_file("slop.pkg"), " ")
+}
+
+fn write_pkg_file(list: array[Package]) {
+    let text = "# packages this program uses; slop add and slop remove keep it up to date\n"
+    for p in list {
+        text = text + p.name + " " + p.source + "\n"
+    }
+    write_file("slop.pkg", text)
+}
+
+fn base_name(path: string) -> string {
+    let d = dir_of(path)
+    let b = slice(path, len(d), len(path))
+    if ends_with(b, ".slop") {
+        b = slice(b, 0, len(b) - 5)
+    }
+    return b
+}
+
+# package name and source for what was typed after slop add
+fn package_for(spec: string) -> Package {
+    if starts_with_s(spec, "github:") {
+        let repo = slice(spec, 7, len(spec))
+        let at = find(repo, "@")
+        if at >= 0 {
+            repo = slice(repo, 0, at)
+        }
+        return Package(base_name(repo), spec, "")
+    }
+    if is_link(spec) or ends_with(spec, ".slop") {
+        return Package(base_name(spec), spec, "")
+    }
+    for p in package_index() {
+        if p.name == spec {
+            return p
+        }
+    }
+    print("error: there is no package called '" + spec + "'. See them all with: slop search")
+    exit(1)
+    return Package("", "", "")
+}
+
+fn package_entry(name: string) -> string {
+    let dir = "slop_packages/" + name + "/"
+    if file_exists(dir + name + ".slop") {
+        return dir + name + ".slop"
+    }
+    if file_exists(dir + "lib.slop") {
+        return dir + "lib.slop"
+    }
+    return ""
+}
+
+# downloads one package into slop_packages/, then the packages it uses
+fn install_package(p: Package) {
+    make_dir("slop_packages")
+    let dir = "slop_packages/" + p.name
+    remove_dir(dir)
+    make_dir(dir)
+    if starts_with_s(p.source, "github:") {
+        let repo = slice(p.source, 7, len(p.source))
+        let ref = "HEAD"
+        let at = find(repo, "@")
+        if at >= 0 {
+            ref = slice(repo, at + 1, len(repo))
+            repo = slice(repo, 0, at)
+        }
+        let tmp = "slop_packages/" + p.name + ".tar.gz"
+        if not fetch("https://codeload.github.com/" + repo + "/tar.gz/" + ref, tmp) {
+            print("error: could not download " + p.source)
+            exit(1)
+        }
+        let tar = need_program("tar")
+        let log = run(tar, [tar, "-xzf", tmp, "-C", dir, "--strip-components=1"])
+        let ok = run_status() == 0
+        remove_file(tmp)
+        if not ok {
+            print("error: could not unpack " + p.source + ":\n" + log)
+            exit(1)
+        }
+    } else {
+        if not fetch(p.source, dir + "/" + p.name + ".slop") {
+            print("error: could not download " + p.source)
+            exit(1)
+        }
+    }
+    let entry = package_entry(p.name)
+    if entry == "" {
+        print("error: " + p.source + " has no " + p.name + ".slop or lib.slop, so it is not a Slop package")
+        remove_dir(dir)
+        exit(1)
+    }
+    print("  got " + p.name)
+    for dep in use_lines(read_file(entry)) {
+        if not ends_with(dep, ".slop") and package_entry(dep) == "" {
+            install_package(package_for(dep))
+        }
+    }
+}
+
+fn pkg_add(specs: array[string]) {
+    if len(specs) == 0 {
+        usage_error("which package? like: slop add stats")
+    }
+    let list = read_pkg_file()
+    for spec in specs {
+        let p = package_for(spec)
+        install_package(p)
+        let kept: array[Package] = []
+        for q in list {
+            if q.name != p.name {
+                push(kept, q)
+            }
+        }
+        push(kept, Package(p.name, p.source, ""))
+        list = kept
+        print("added " + p.name + ". Use it with: use \"" + p.name + "\"")
+    }
+    write_pkg_file(list)
+}
+
+fn pkg_remove(names: array[string]) {
+    if len(names) == 0 {
+        usage_error("which package? like: slop remove stats")
+    }
+    let list = read_pkg_file()
+    for name in names {
+        let kept: array[Package] = []
+        let found = false
+        for q in list {
+            if q.name == name {
+                found = true
+            } else {
+                push(kept, q)
+            }
+        }
+        if not found and package_entry(name) == "" {
+            usage_error("'" + name + "' is not installed")
+        }
+        remove_dir("slop_packages/" + name)
+        list = kept
+        print("removed " + name)
+    }
+    write_pkg_file(list)
+}
+
+# sync: get what slop.pkg lists but is missing; update: get it all again
+fn pkg_sync(all: bool, only: array[string]) {
+    let list = read_pkg_file()
+    if len(list) == 0 {
+        print("no packages yet (slop.pkg is empty). Add one with: slop add NAME")
+        return
+    }
+    let n = 0
+    for p in list {
+        let wanted = len(only) == 0
+        for o in only {
+            if o == p.name {
+                wanted = true
+            }
+        }
+        if wanted and (all or package_entry(p.name) == "") {
+            install_package(p)
+            n += 1
+        }
+    }
+    print(int_to_string(len(list)) + " packages ready (" + int_to_string(n) + " downloaded)")
+}
+
+fn pkg_list() {
+    let list = read_pkg_file()
+    if len(list) == 0 {
+        print("no packages yet. Find some with: slop search")
+        return
+    }
+    for p in list {
+        let note = ""
+        if package_entry(p.name) == "" {
+            note = "   (missing: run slop sync)"
+        }
+        print(p.name + "   " + p.source + note)
+    }
+}
+
+fn pkg_search(words: array[string]) {
+    let word = ""
+    if len(words) > 0 {
+        word = lower(words[0])
+    }
+    let shown = 0
+    for p in package_index() {
+        if word == "" or contains(lower(p.name), word) or contains(lower(p.about), word) {
+            print(p.name + " - " + p.about)
+            shown += 1
+        }
+    }
+    if shown == 0 {
+        print("no packages match '" + word + "'")
+    }
+}
+
+let g_version = "1.1"
 
 fn help() {
     print("Slop " + g_version + " - a small, fast programming language")
@@ -5977,6 +6402,15 @@ fn help() {
     print("  slop new hello             start a new program in hello.slop")
     print("  slop repl                  type Slop code and see results right away")
     print("  slop install               copy slop to a folder for programs on this computer")
+    print("")
+    print("Packages (put 'use \"name\"' at the top of your program to use one):")
+    print("  slop add NAME              get a package: a name from 'slop search',")
+    print("                             github:user/repo, or a link to a .slop file")
+    print("  slop remove NAME           remove a package")
+    print("  slop list                  show this program's packages (from slop.pkg)")
+    print("  slop sync                  get every package slop.pkg lists that is missing")
+    print("  slop update [NAME]         get the newest version of packages")
+    print("  slop search [WORD]         find packages")
     print("  slop version               show the version and system")
     print("  slop help                  show this help")
     print("")
@@ -6221,6 +6655,34 @@ fn main(args: array[string]) {
     }
     if cmd == "install" {
         install()
+        return
+    }
+    let rest: array[string] = []
+    for i in 1..len(words) {
+        push(rest, words[i])
+    }
+    if cmd == "add" {
+        pkg_add(rest)
+        return
+    }
+    if cmd == "remove" {
+        pkg_remove(rest)
+        return
+    }
+    if cmd == "sync" {
+        pkg_sync(false, rest)
+        return
+    }
+    if cmd == "update" {
+        pkg_sync(true, rest)
+        return
+    }
+    if cmd == "list" {
+        pkg_list()
+        return
+    }
+    if cmd == "search" {
+        pkg_search(rest)
         return
     }
     if cmd == "new" {

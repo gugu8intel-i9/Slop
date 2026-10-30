@@ -113,7 +113,7 @@ for s in shipped {
 }
 
 # 2. test programs: output must match tests/expected/<name>.txt exactly
-tests = ["array", "array_struct_string", "core", "features", "fib", "float", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop", "thread"]
+tests = ["array", "array_struct_string", "core", "features", "fib", "float", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop", "thread", "use"]
 for name in tests {
     exe = tmp(name)
     if build("tests/" + name + ".slop", exe) {
@@ -220,6 +220,38 @@ if contains(read_file("slop-test-made.slop"), "print(") {
     fail("slop new printed:\n" + log)
 }
 remove_file("slop-test-made.slop")
+
+# 6. packages, with a package from this repository (no network needed)
+log = run(stage, [stage, "add", "packages/stats/stats.slop"])
+if run_status() == 0 and contains(read_file("slop.pkg"), "stats packages/stats/stats.slop") {
+    ok("slop add")
+} else {
+    fail("slop add printed:\n" + log)
+}
+write_file("slop-test-pkg.slop", "use \"stats\"\nprint(median([3.0, 1.0, 2.0]))\n")
+exe = tmp("pkg")
+if build("slop-test-pkg.slop", exe) {
+    got = run_program(exe)
+    if got == "2.0\n" {
+        ok("use \"stats\"")
+    } else {
+        fail("use \"stats\" printed:\n" + got)
+    }
+}
+log = run(stage, [stage, "list"])
+if contains(log, "stats") {
+    ok("slop list")
+} else {
+    fail("slop list printed:\n" + log)
+}
+log = run(stage, [stage, "remove", "stats"])
+if run_status() == 0 and not contains(read_file("slop.pkg"), "stats") {
+    ok("slop remove")
+} else {
+    fail("slop remove printed:\n" + log)
+}
+remove_file("slop.pkg")
+remove_file("slop-test-pkg.slop")
 
 print("")
 print(int_to_string(passed) + " passed, " + int_to_string(failures) + " failed")

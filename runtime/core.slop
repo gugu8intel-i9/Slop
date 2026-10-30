@@ -455,6 +455,15 @@ fn __remove_file(path: string) {
 
 
 
+fn __file_exists(path: string) -> bool {
+    fd = __os_open_read(__cstr(path))
+    if fd < 0 {
+        return false
+    }
+    __os_close(fd)
+    return true
+}
+
 # true once input() has reached the end of what was typed or piped in
 fn __input_ended() -> bool {
     return __in_eof
