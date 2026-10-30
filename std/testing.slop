@@ -1,0 +1,40 @@
+# testing: small checks with a summary
+#   use "testing"
+#   check_int("add", 1 + 1, 2)
+#   test_summary()     # prints the result; exits with 1 if anything failed
+
+__tests_passed = 0
+__tests_failed = 0
+
+fn __test_result(name: string, ok: bool, got: string, want: string) {
+    if ok {
+        __tests_passed += 1
+    } else {
+        __tests_failed += 1
+        print("FAIL " + name + ": got " + got + ", expected " + want)
+    }
+}
+
+fn check(name: string, ok: bool) {
+    __test_result(name, ok, "false", "true")
+}
+
+fn check_int(name: string, got: int, want: int) {
+    __test_result(name, got == want, str(got), str(want))
+}
+
+fn check_float(name: string, got: float, want: float) {
+    close = abs(got - want) <= 1e-9 * (1.0 + abs(want))
+    __test_result(name, close, str(got), str(want))
+}
+
+fn check_string(name: string, got: string, want: string) {
+    __test_result(name, got == want, "\"" + got + "\"", "\"" + want + "\"")
+}
+
+fn test_summary() {
+    print(str(__tests_passed) + " passed, " + str(__tests_failed) + " failed")
+    if __tests_failed > 0 {
+        exit(1)
+    }
+}

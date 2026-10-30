@@ -1,0 +1,43 @@
+# time: pausing and measuring
+#   use "time"
+#   start = now_ms()
+#   sleep(250)
+#   print(elapsed_ms(start))
+
+# waits ms milliseconds
+fn sleep(ms: int) {
+    if ms > 0 {
+        __sleep_ms(ms)
+    }
+}
+
+fn now_ns() -> int {
+    return clock_ns()
+}
+
+fn now_ms() -> int {
+    return clock_ns() / 1000000
+}
+
+# milliseconds since a now_ms() reading
+fn elapsed_ms(start_ms: int) -> int {
+    return now_ms() - start_ms
+}
+
+# 3723000 -> "1h 2m 3s"; 1500 -> "1.5s"; 42 -> "42ms"
+fn format_duration(ms: int) -> string {
+    if ms < 1000 {
+        return str(ms) + "ms"
+    }
+    if ms < 60000 {
+        return str(float(ms) / 1000.0) + "s"
+    }
+    s = ms / 1000
+    h = s / 3600
+    m = s % 3600 / 60
+    out = ""
+    if h > 0 {
+        out = str(h) + "h "
+    }
+    return out + str(m) + "m " + str(s % 60) + "s"
+}

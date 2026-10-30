@@ -1,0 +1,84 @@
+# files: working with files and paths
+#   use "files"
+#   for line in read_lines("notes.txt") { print(line) }
+
+# the lines of a file, without line endings
+fn read_lines(path: string) -> array[string] {
+    out: array[string] = []
+    for line in split(read_file(path), "\n") {
+        if ends_with(line, "\r") {
+            line = slice(line, 0, len(line) - 1)
+        }
+        push(out, line)
+    }
+    if len(out) > 0 and out[len(out) - 1] == "" {
+        pop(out)
+    }
+    return out
+}
+
+fn write_lines(path: string, lines: array[string]) {
+    text = ""
+    for line in lines {
+        text = text + line + "\n"
+    }
+    write_file(path, text)
+}
+
+fn append_file(path: string, text: string) {
+    write_file(path, read_file(path) + text)
+}
+
+# "a/b" + "c.txt" -> "a/b/c.txt"
+fn join_path(a: string, b: string) -> string {
+    if a == "" {
+        return b
+    }
+    if ends_with(a, "/") or ends_with(a, "\\") {
+        return a + b
+    }
+    return a + "/" + b
+}
+
+# "a/b/c.txt" -> "c.txt"
+fn file_name(path: string) -> string {
+    i = len(path) - 1
+    while i >= 0 {
+        c = byte_at(path, i)
+        if c == 47 or c == 92 {
+            return slice(path, i + 1, len(path))
+        }
+        i -= 1
+    }
+    return path
+}
+
+# "a/b/c.txt" -> "a/b"
+fn dir_name(path: string) -> string {
+    i = len(path) - 1
+    while i >= 0 {
+        c = byte_at(path, i)
+        if c == 47 or c == 92 {
+            return slice(path, 0, i)
+        }
+        i -= 1
+    }
+    return ""
+}
+
+# "c.txt" -> ".txt"
+fn extension(path: string) -> string {
+    name = file_name(path)
+    i = len(name) - 1
+    while i > 0 {
+        if byte_at(name, i) == 46 {
+            return slice(name, i, len(name))
+        }
+        i -= 1
+    }
+    return ""
+}
+
+fn exists(path: string) -> bool {
+    return file_exists(path)
+}

@@ -196,6 +196,13 @@ fn __clock_ns() -> int {
     return __load64(t) * 1000000000 + __load64(t + 8)
 }
 
+fn __sleep_ms(ms: int) {
+    t = __scratch()
+    __store64(t, ms / 1000)
+    __store64(t + 8, ms % 1000 * 1000000)
+    __ccall("nanosleep", t, 0)
+}
+
 fn __socket_listen(port: int) -> int {
     fd = __ccall32("socket", 2, 1, 0)
     if fd < 0 {

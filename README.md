@@ -59,6 +59,7 @@ bin/slop install
 | `slop install` | copies `slop` into a folder for programs on your computer |
 | `slop add NAME` / `slop remove NAME` | adds or removes a package (see below) |
 | `slop list` / `slop search [word]` | shows your packages / finds packages |
+| `slop std [NAME]` | lists the standard library / shows one module |
 | `slop sync` / `slop update` | gets missing packages / gets the newest versions |
 | `slop version` / `slop help` | shows the version / all commands |
 | `--target SYSTEM` | builds for another system from any system: `linux`, `linux-arm64`, `macos`, `macos-arm64`, `windows`, `windows-arm64` |
@@ -197,6 +198,7 @@ Run `bin/slop run examples/benchmark.slop` to time a few more workloads on your 
 | `compiler.slop` | the compiler, in Slop |
 | `runtime/` | the runtime built into every program: `core.slop` plus one file per system |
 | `bin/` | the compiler for each system (`slop`, `slop-linux-arm64`, `slop-macos`, `slop-macos-arm64`, `slop.exe`, `slop-windows-arm64.exe`) |
+| `std/` | the standard library, in Slop |
 | `packages/` | the package list and the packages that come with Slop (`stats`, `text`, `colors`) |
 | `examples/` | example programs |
 | `tests/` | the test suite (`bin/slop run tests/run.slop`) |
@@ -235,6 +237,34 @@ bin/slop run tests/run.slop
 ```
 
 The tests check that the compiler reproduces itself byte for byte and that all six compilers in `bin/` match the source. GitHub Actions runs them on Linux, macOS and Windows, on both Intel/AMD and ARM64, for every push.
+
+## Standard library
+
+Modules that come with Slop, built into `slop` itself (nothing to download). Put `use "NAME"` at the top of a program:
+
+| Module | What it has |
+|---|---|
+| `math` | `PI`, `E`, `gcd`, `lcm`, `is_prime`, `factorial`, `ipow`, `clamp`, `lerp`, `hypot`, `radians`, `min_int`/`max_float`, ... |
+| `lists` | `sum_ints`, `sort_ints`, `sort_floats`, `sort_strings`, `reverse_ints`, `unique_ints`, `index_of_int`, `range_list`, ... |
+| `strings` | `pad_left`, `center`, `title_case`, `capitalize`, `words`, `lines`, `count`, `is_digit`, `trim_left`, `strip_suffix`, ... |
+| `random` | `random_int`, `random_float`, `coin_flip`, `pick_string`, `shuffle_ints`, `seed` |
+| `time` | `sleep(ms)`, `now_ms`, `elapsed_ms`, `format_duration` |
+| `files` | `read_lines`, `write_lines`, `append_file`, `join_path`, `file_name`, `extension`, `exists` |
+| `csv` | `read_csv`, `parse_csv`, `write_csv`, `to_csv_line` |
+| `testing` | `check`, `check_int`, `check_float`, `check_string`, `test_summary` |
+
+```slop
+use "random"
+use "lists"
+
+roll = random_int(1, 6)
+print("you rolled", roll)
+print(sort_ints([5, 3, 9, 1]))
+```
+
+`slop std` lists the modules; `slop std NAME` shows everything in one.
+
+A function's variables stay its own: a plain `x = 1` inside a function changes a global `x` only when that global is in the same file. So a library can never change your program's variables by accident (it can still read them, like `PI`).
 
 ## Packages
 
