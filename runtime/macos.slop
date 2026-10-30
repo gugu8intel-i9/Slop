@@ -99,6 +99,30 @@ fn __make_executable(path: string) {
     __ccall32("chmod", __cstr(path), 493)
 }
 
+fn __make_dir(path: string) -> bool {
+    return __ccall32("mkdir", __cstr(path), 493) == 0
+}
+
+# full path of this program
+fn __program_path() -> string {
+    buf = __alloc_bytes(4096)
+    size = __scratch()
+    __store64(size, 4096)
+    if __ccall32("_NSGetExecutablePath", buf, size) != 0 {
+        return ""
+    }
+    return __str(buf, __strlen(buf))
+}
+
+# value of an environment variable, or "" when it is not set
+fn __env(name: string) -> string {
+    p = __ccall("getenv", __cstr(name))
+    if p == 0 {
+        return ""
+    }
+    return __str(p, __strlen(p))
+}
+
 fn __args() -> array[string] {
     argc = __load64(__data() + 88)
     argv = __load64(__data() + 96)

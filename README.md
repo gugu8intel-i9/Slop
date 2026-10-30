@@ -22,7 +22,7 @@ bin/slop run hello.slop
 
 ## Get started
 
-Slop runs on Linux (Intel/AMD and ARM64), macOS (Apple Silicon and Intel) and Windows (Intel/AMD). Nothing else needs to be installed.
+Slop runs on Linux, macOS and Windows, on both Intel/AMD and ARM64 machines. Nothing else needs to be installed.
 
 ```bash
 git clone https://github.com/gugu8intel-i9/Slop
@@ -38,20 +38,29 @@ cd Slop
 | Linux (ARM64, e.g. Raspberry Pi 4/5) | `bin/slop-linux-arm64` | `bin/slop-linux-arm64 run examples/hello.slop` |
 | macOS (Apple Silicon) | `bin/slop-macos-arm64` | `bin/slop-macos-arm64 run examples/hello.slop` |
 | macOS (Intel) | `bin/slop-macos` | `bin/slop-macos run examples/hello.slop` |
-| Windows | `bin\slop.exe` | `bin\slop.exe run examples/hello.slop` |
+| Windows (Intel/AMD) | `bin\slop.exe` | `bin\slop.exe run examples/hello.slop` |
+| Windows (ARM64, e.g. Surface, Snapdragon laptops) | `bin\slop-windows-arm64.exe` | `bin\slop-windows-arm64.exe run examples/hello.slop` |
 
-To use `slop` from anywhere, copy the one for your system onto your PATH and name it `slop`:
+To use `slop` from anywhere, let it install itself (it tells you if a folder needs adding to your PATH):
 
 ```bash
-cp bin/slop ~/.local/bin/
+bin/slop install
 ```
+
+### The `slop` command
 
 | Command | What it does |
 |---|---|
-| `slop app.slop` | builds `./app` (`app.exe` on Windows) |
-| `slop app.slop out` | builds `./out` |
-| `slop run app.slop [args]` | builds and runs |
-| `slop --target windows app.slop` | builds for another system from any system: `linux`, `linux-arm64`, `macos`, `macos-arm64`, `windows` |
+| `slop run app.slop [args]` | builds and runs a program |
+| `slop build app.slop` | builds `./app` (`app.exe` on Windows); `-o name` picks the name |
+| `slop check app.slop` | looks for mistakes without building |
+| `slop new hello` | starts a new program in `hello.slop` |
+| `slop repl` | type Slop code line by line and see results right away |
+| `slop install` | copies `slop` into a folder for programs on your computer |
+| `slop version` / `slop help` | shows the version / all commands |
+| `--target SYSTEM` | builds for another system from any system: `linux`, `linux-arm64`, `macos`, `macos-arm64`, `windows`, `windows-arm64` |
+
+`slop app.slop` (with no command) still builds `./app`.
 
 ## The language in one page
 
@@ -147,8 +156,8 @@ Types: `int`, `float`, `bool`, `string`, `array[T]`, `thread[T]` and your struct
 | Numbers | `float(x)`, `int(x)` (cuts off the fraction), `abs`, `sqrt`, `floor`, `ceil`, `round`, `pow`, `exp`, `log`, `sin`, `cos`, `tan`, `atan`, `float_bits`, `float_from_bits` |
 | Lists | `len`, `push`, `pop`, `a[i]`, `for x in a` |
 | Threads | `spawn f(args)`, `join(t)`, `lock()`, `unlock()`, `cpu_count()` |
-| Files | `read_file`, `write_file`, `make_executable` |
-| Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()` |
+| Files | `read_file`, `write_file`, `remove_file`, `make_dir`, `make_executable` |
+| Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()`, `env(name)`, `program_path()`, `input_ended()` |
 | Network | `socket_listen`, `socket_accept`, `socket_read`, `socket_write`, `socket_close` |
 | Packing | `slop_pack(list)`, `slop_unpack(packed)` |
 | Low level | see [LOW_LEVEL.md](LOW_LEVEL.md) |
@@ -184,7 +193,7 @@ Run `bin/slop run examples/benchmark.slop` to time a few more workloads on your 
 |---|---|
 | `compiler.slop` | the compiler, in Slop |
 | `runtime/` | the runtime built into every program: `core.slop` plus one file per system |
-| `bin/` | the compiler for each system (`slop`, `slop-linux-arm64`, `slop-macos`, `slop-macos-arm64`, `slop.exe`) |
+| `bin/` | the compiler for each system (`slop`, `slop-linux-arm64`, `slop-macos`, `slop-macos-arm64`, `slop.exe`, `slop-windows-arm64.exe`) |
 | `examples/` | example programs |
 | `tests/` | the test suite (`bin/slop run tests/run.slop`) |
 | [LEARN_SLOP_IN_10_MINUTES.md](LEARN_SLOP_IN_10_MINUTES.md) | a short tutorial |
@@ -214,10 +223,14 @@ bin/slop --target windows compiler.slop bin/slop.exe
 ```
 
 ```bash
+bin/slop --target windows-arm64 compiler.slop bin/slop-windows-arm64.exe
+```
+
+```bash
 bin/slop run tests/run.slop
 ```
 
-The tests check that the compiler reproduces itself byte for byte and that all five compilers in `bin/` match the source. GitHub Actions runs them on Linux (Intel/AMD and ARM64), macOS (Apple Silicon and Intel) and Windows for every push.
+The tests check that the compiler reproduces itself byte for byte and that all six compilers in `bin/` match the source. GitHub Actions runs them on Linux, macOS and Windows, on both Intel/AMD and ARM64, for every push.
 
 ## Threads in short
 
@@ -226,9 +239,6 @@ The tests check that the compiler reproduces itself byte for byte and that all f
 - Global variables are shared. Wrap changes to shared values in `lock()` / `unlock()`.
 - Join a thread before the function that started it returns if you passed it strings or lists.
 
-## Not supported yet
-
-Windows on ARM.
 
 ## License
 

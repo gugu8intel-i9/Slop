@@ -15,6 +15,7 @@ __user_word = 0
 __in_ptr = 0
 __in_len = 0
 __in_pos = 0
+__in_eof = false
 
 fn __write_all(fd: int, p: int, n: int) {
     while n > 0 {
@@ -454,6 +455,11 @@ fn __remove_file(path: string) {
 
 
 
+# true once input() has reached the end of what was typed or piped in
+fn __input_ended() -> bool {
+    return __in_eof
+}
+
 fn __input() -> string {
     __flush()
     if __in_ptr == 0 {
@@ -464,6 +470,7 @@ fn __input() -> string {
         if __in_pos >= __in_len {
             r = __os_read(0, __in_ptr, 65536)
             if r <= 0 {
+                __in_eof = true
                 return out
             }
             __in_len = r

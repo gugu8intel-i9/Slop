@@ -3,6 +3,7 @@
 #   bin/slop run tests/run.slop                (Linux x86-64)
 #   bin/slop-macos-arm64 run tests/run.slop    (Apple Silicon Mac)
 #   bin\slop.exe run tests/run.slop            (Windows)
+#   bin\slop-windows-arm64.exe run tests/run.slop   (Windows on ARM)
 
 os = os_name()
 arch = arch_name()
@@ -19,6 +20,9 @@ if os == "macos" {
 }
 if os == "windows" {
     compiler = "bin/slop.exe"
+    if arch == "arm64" {
+        compiler = "bin/slop-windows-arm64.exe"
+    }
     exe_suffix = ".exe"
 }
 stage = compiler
@@ -91,7 +95,8 @@ shipped = [
     Shipped("linux-arm64", "bin/slop-linux-arm64"),
     Shipped("macos", "bin/slop-macos"),
     Shipped("macos-arm64", "bin/slop-macos-arm64"),
-    Shipped("windows", "bin/slop.exe")
+    Shipped("windows", "bin/slop.exe"),
+    Shipped("windows-arm64", "bin/slop-windows-arm64.exe")
 ]
 for s in shipped {
     out = tmp("cross-" + s.target)
@@ -181,6 +186,40 @@ for b in bad {
         fail("expected an error containing '" + b.expect + "', got:\n" + log)
     }
 }
+
+# 5. the slop command
+struct CliCase {
+    args: array[string],
+    expect: string,
+    status: int
+}
+
+cli = [
+    CliCase(["version"], "Slop ", 0),
+    CliCase(["help"], "slop run app.slop", 0),
+    CliCase(["check", "tests/fib.slop"], "ok: no mistakes", 0),
+    CliCase(["frobnicate"], "unknown command 'frobnicate'", 2),
+    CliCase(["run"], "which file?", 2)
+]
+for c in cli {
+    all = [stage]
+    for a in c.args {
+        push(all, a)
+    }
+    log = run(stage, all)
+    if run_status() == c.status and contains(log, c.expect) {
+        ok("slop " + join(c.args, " "))
+    } else {
+        fail("slop " + join(c.args, " ") + " printed:\n" + log)
+    }
+}
+log = run(stage, [stage, "new", "slop-test-made"])
+if contains(read_file("slop-test-made.slop"), "print(") {
+    ok("slop new")
+} else {
+    fail("slop new printed:\n" + log)
+}
+remove_file("slop-test-made.slop")
 
 print("")
 print(int_to_string(passed) + " passed, " + int_to_string(failures) + " failed")

@@ -148,6 +148,30 @@ fn __os_remove(path: int) {
 fn __make_executable(path: string) {
 }
 
+fn __make_dir(path: string) -> bool {
+    return __ccall32("CreateDirectoryA", __cstr(path), 0) != 0
+}
+
+# full path of this program
+fn __program_path() -> string {
+    buf = __alloc_bytes(4096)
+    n = __ccall32("GetModuleFileNameA", 0, buf, 4096)
+    if n <= 0 {
+        return ""
+    }
+    return __str(buf, n)
+}
+
+# value of an environment variable, or "" when it is not set
+fn __env(name: string) -> string {
+    buf = __alloc_bytes(32768)
+    n = __ccall32("GetEnvironmentVariableA", __cstr(name), buf, 32768)
+    if n <= 0 or n > 32768 {
+        return ""
+    }
+    return __str(buf, n)
+}
+
 # splits the command line the way Windows programs do
 fn __args() -> array[string] {
     p = __ccall("GetCommandLineA")
