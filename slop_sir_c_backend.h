@@ -76,14 +76,14 @@ static inline int sir_emit_c_backend(FILE* out, const SIRModule* m) {
 
     fprintf(out, "// Generated from Slop SIR by the SIR C backend MVP\n");
     fprintf(out, "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
-    fprintf(out, "typedef struct { const char* names[32]; int64_t ivals[32]; const char* svals[32]; uint8_t types[32]; uint64_t length; } SirStruct;\n");
-    fprintf(out, "typedef struct { int64_t* ivals; const char** svals; SirStruct* ovals; uint8_t elem_type; uint64_t length; uint64_t capacity; } SirArray;\n");
+    fprintf(out, "typedef struct { const char* names[32]; union { int64_t ivals[32]; const char* svals[32]; }; uint64_t length; } SirStruct;\n");
+    fprintf(out, "typedef struct { union { void* data; int64_t* ivals; const char** svals; SirStruct* ovals; }; uint8_t elem_type; uint64_t length; uint64_t capacity; } SirArray;\n");
     fprintf(out, "static uint64_t sir_struct_slot(SirStruct* s, const char* name) { for (uint64_t i=0;i<s->length;i++) if (strcmp(s->names[i], name)==0) return i; if (s->length >= 32) exit(1); s->names[s->length]=name; return s->length++; }\n");
-    fprintf(out, "static void sir_struct_set_i64(SirStruct* s, const char* name, int64_t v) { uint64_t i=sir_struct_slot(s,name); s->ivals[i]=v; s->types[i]=1; }\n");
-    fprintf(out, "static void sir_struct_set_str(SirStruct* s, const char* name, const char* v) { uint64_t i=sir_struct_slot(s,name); s->svals[i]=v; s->types[i]=4; }\n");
+    fprintf(out, "static void sir_struct_set_i64(SirStruct* s, const char* name, int64_t v) { uint64_t i=sir_struct_slot(s,name); s->ivals[i]=v; }\n");
+    fprintf(out, "static void sir_struct_set_str(SirStruct* s, const char* name, const char* v) { uint64_t i=sir_struct_slot(s,name); s->svals[i]=v; }\n");
     fprintf(out, "static int64_t sir_struct_get_i64(SirStruct* s, const char* name) { for (uint64_t i=0;i<s->length;i++) if (strcmp(s->names[i], name)==0) return s->ivals[i]; fprintf(stderr, \"SIR struct field not found: %%s\\n\", name); exit(1); }\n");
     fprintf(out, "static const char* sir_struct_get_str(SirStruct* s, const char* name) { for (uint64_t i=0;i<s->length;i++) if (strcmp(s->names[i], name)==0) return s->svals[i] ? s->svals[i] : \"\"; fprintf(stderr, \"SIR struct field not found: %%s\\n\", name); exit(1); }\n");
-    fprintf(out, "static void sir_array_reserve(SirArray* a) { if (a->length == a->capacity) { a->capacity = a->capacity ? a->capacity * 2 : 8; a->ivals=(int64_t*)realloc(a->ivals,a->capacity*sizeof(int64_t)); a->svals=(const char**)realloc(a->svals,a->capacity*sizeof(const char*)); a->ovals=(SirStruct*)realloc(a->ovals,a->capacity*sizeof(SirStruct)); if(!a->ivals||!a->svals||!a->ovals) exit(1); } }\n");
+    fprintf(out, "static void sir_array_reserve(SirArray* a) { if (a->length == a->capacity) { a->capacity = a->capacity ? a->capacity * 2 : 8; a->data=realloc(a->data,a->capacity*(a->elem_type==7?sizeof(SirStruct):sizeof(int64_t))); if(!a->data) exit(1); } }\n");
     fprintf(out, "static void sir_array_i64_push(SirArray* a, int64_t v) { a->elem_type=1; sir_array_reserve(a); a->ivals[a->length++] = v; }\n");
     fprintf(out, "static void sir_array_str_push(SirArray* a, const char* v) { a->elem_type=4; sir_array_reserve(a); a->svals[a->length++] = v; }\n");
     fprintf(out, "static void sir_array_struct_push(SirArray* a, SirStruct v) { a->elem_type=7; sir_array_reserve(a); a->ovals[a->length++] = v; }\n");

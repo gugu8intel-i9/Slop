@@ -85,6 +85,18 @@ Slop introduces **Sloppy-Escape Arena Allocation (SEAA)**: a zero-overhead, garb
 
 ---
 
+## Memory & Speed Design
+
+- **Two-bucket relay**: each thread has just two memory buckets. A call at depth `d` uses bucket `d % 2` and hands its result to its caller's bucket. Memory grows with live data, never with how deep calls go, and there is no call-depth limit.
+- **Frameless leaf functions**: functions that never allocate and call nothing (like `square(x)`) compile to plain C with no memory bookkeeping, so the C compiler can inline them.
+- **Free string literals and slices**: literals point at static memory and `char_at` / `split` return views. No allocation, no copy.
+- **Inline lists**: ints, floats and bools live directly inside the list (8 bytes each instead of 16 plus an allocation).
+- **Recycled blocks**: one emptied block is kept for reuse, so hot loops never hammer `malloc`/`free`.
+
+On a mixed test (3M-element int list, 3M string-returning calls, deep recursion) this is about **4x faster with half the peak memory** compared to the previous runtime.
+
+---
+
 ## High-Performance Benchmark Results
 
 To verify the speed, memory efficiency, and CPU overhead of Slop, we benchmarked Slop directly against **Rust**, **Go**, and **C++** on the following **test hardware environment**:
@@ -293,7 +305,7 @@ Slop's learning rule is: **write simple code; the compiler makes it fast**. The 
 - `bootstrap/prebuilt/` - Trusted prebuilt stage0 Slop binaries; Linux x86_64 installs use these instead of Python/GCC bootstrapping.
 - `slop_boot.py` - One-time bootstrap transpiler used only as fallback when no prebuilt compiler exists for the platform.
 - `compiler.slop` - **The self-hosting native Slop compiler/lexer written in Slop itself!**
-- `compiler_v2.slop` - Current self-hosting compiler source; mirrored into `compiler.slop` for the primary install path.
+- `easy_syntax.slop` - The short syntax: no `fn main`, no `let`, `for` loops, `and`/`or`/`not`, `+=`, `|>`.
 - `slop_ir.h` / `slop_ir_tools.h` / `SLOP_IR.md` - Slop Intermediate Representation, verifier, textual dump/load, fingerprints, and backend-safe effect classification.
 - `slop_lowering.h` / `slop_sir_optimizer.h` / `slop_sir_c_backend.h` / `FULL_LANGUAGE_LOWERING.md` - Full-language lowering layer, phase-3 high-performance optimizer, and MVP SIR-consuming C backend.
 - `LEARN_SLOP_IN_10_MINUTES.md` / `SLOP_CHEATSHEET.md` / `easy_start.slop` - beginner-first learning path designed to be easier than Python/JS.

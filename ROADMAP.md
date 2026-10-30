@@ -6,7 +6,7 @@ This roadmap tracks the work needed to turn Slop from a self-hosted C-emitting c
 
 Done:
 
-- Self-hosting Slop compiler source: `compiler.slop` / `compiler_v2.slop`
+- Self-hosting Slop compiler source: `compiler.slop`
 - Stable portable C backend
 - Direct native backend MVP: `slop_native_backend.c`
 - Native assembly targets:

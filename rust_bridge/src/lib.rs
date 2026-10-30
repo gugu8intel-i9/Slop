@@ -2,11 +2,10 @@ use std::ffi::{c_void};
 use std::os::raw::c_char;
 
 // Raw FFI representations of Slop's core structures
+// Opaque: only ever handled through a pointer.
 #[repr(C)]
 pub struct SlopArena {
-    pub buffer: *mut u8,
-    pub capacity: usize,
-    pub offset: usize,
+    _private: [u8; 0],
 }
 
 #[repr(C)]
@@ -25,7 +24,9 @@ pub struct SlopArray {
 
 // Global state and FFI bindings linking to slop_rt.c
 extern "C" {
-    pub static mut slop_arena_depth: i32;
+    // Thread-local in C, so it is reached through a pointer.
+    #[link_name = "ext_slop_arena_depth"]
+    pub fn slop_arena_depth() -> *mut i32;
     
     #[link_name = "ext_slop_arena_create"]
     pub fn slop_arena_create(capacity: usize) -> *mut SlopArena;
@@ -59,6 +60,9 @@ extern "C" {
     
     #[link_name = "ext_slop_array_push"]
     pub fn slop_array_push(arena: *mut SlopArena, arr: *mut SlopArray, item: *mut c_void);
+
+    #[link_name = "ext_slop_array_push_slot"]
+    pub fn slop_array_push_slot(arena: *mut SlopArena, arr: *mut SlopArray, elem_size: usize) -> *mut c_void;
     
     #[link_name = "ext_slop_print_string"]
     pub fn slop_print_string(s: SlopString);
@@ -76,8 +80,9 @@ pub struct SlopScope {
 impl SlopScope {
     pub fn new() -> Self {
         unsafe {
-            slop_arena_depth += 1;
-            let arena_ptr = slop_get_arena(slop_arena_depth);
+            let depth = slop_arena_depth();
+            *depth += 1;
+            let arena_ptr = slop_get_arena(*depth);
             let saved_offset = slop_arena_save(arena_ptr);
             SlopScope {
                 arena_ptr,
@@ -110,9 +115,9 @@ impl SlopScope {
         unsafe {
             let mut arr = slop_array_create(self.arena_ptr);
             for &item in vec {
-                let ptr = slop_arena_alloc(self.arena_ptr, std::mem::size_of::<i64>()) as *mut i64;
-                *ptr = item;
-                slop_array_push(self.arena_ptr, &mut arr, ptr as *mut c_void);
+                // Ints are stored directly in the array slot (no per-element allocation).
+                let slot = slop_array_push_slot(self.arena_ptr, &mut arr, std::mem::size_of::<i64>()) as *mut i64;
+                *slot = item;
             }
             arr
         }
@@ -124,7 +129,7 @@ impl Drop for SlopScope {
         unsafe {
             // Instant O(1) reclamation of all memory allocated in this scope
             slop_arena_restore(self.arena_ptr, self.saved_offset);
-            slop_arena_depth -= 1;
+            *slop_arena_depth() -= 1;
         }
     }
 }

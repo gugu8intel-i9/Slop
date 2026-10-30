@@ -36,7 +36,7 @@ $CC -O3 -std=gnu11 -ffast-math -flto -march=native -I. "$TMP/compiler_self.c" -o
 diff -q "$TMP/compiler_self.c" "$TMP/compiler_self2.c"
 
 printf '\n== portable C backend examples ==\n'
-for src in easy_start.slop low_level_demo.slop; do
+for src in easy_start.slop low_level_demo.slop easy_syntax.slop hello.slop; do
   base="$TMP/${src%.slop}"
   "$PREBUILT_COMPILER" "$src" "$base.c"
   $CC -O3 -std=gnu11 -I. "$base.c" -o "$base"
@@ -47,6 +47,12 @@ done
 grep -q "Hello Gugu" "$TMP/easy_start.out"
 grep -q "Optional unsafe low-level mode" "$TMP/low_level_demo.out"
 grep -q "1337" "$TMP/low_level_demo.out"
+grep -q "Easy Slop" "$TMP/easy_syntax.out"
+grep -q "Hello Gugu" "$TMP/easy_syntax.out"
+grep -q "285" "$TMP/easy_syntax.out"
+grep -q "top: A" "$TMP/easy_syntax.out"
+grep -q "count: 3" "$TMP/easy_syntax.out"
+grep -q "Pipeline result" "$TMP/hello.out"
 
 printf '\n== direct ELF native backend ==\n'
 "$PREBUILT_NATIVE" native_backend_demo.slop "$TMP/native_demo" x86_64-linux-elf
