@@ -3483,6 +3483,9 @@ fn builtin_alias(name: string) -> string {
     if name == "replace" or name == "repeat" or name == "lock" or name == "unlock" or name == "cpu_count" {
         return "__" + name
     }
+    if name == "env" or name == "make_dir" or name == "program_path" or name == "input_ended" {
+        return "__" + name
+    }
     if name == "round" or name == "pow" or name == "exp" or name == "log" or name == "sin" or name == "cos" or name == "tan" or name == "atan" {
         return "__f" + name
     }
@@ -5040,22 +5043,26 @@ fn e_ccall(name: string, n: int) {
     }
     let idx = import_index(name)
     if arm() {
-        if g_target == 3 {
-            err("Windows on ARM64 is not supported yet")
+        if n > 16 {
+            err("__ccall takes at most 16 arguments")
         }
-        if n > 8 {
-            err("__ccall takes at most 8 arguments")
-        }
-        # arguments go in x0-x7; Apple passes the variable arguments of open() on the stack
+        # arguments go in x0-x7, the rest on the stack; Apple passes the
+        # variable arguments of open() on the stack
         for i in 0..n {
-            a_ldst(true, i, 28, (n - 1 - i) * 8)
+            if i < 8 {
+                a_ldst(true, i, 28, (n - 1 - i) * 8)
+            }
         }
         # the system library gets a 16-byte aligned hardware stack below ours
         a_mov(16, 28)
         a32(3544514064)
         a32(3548179984)
-        a_sub_imm(16, 16, 16)
+        a_sub_imm(16, 16, 64)
         a32(2432696832 + 31)
+        for i in 8..n {
+            a_ldst(true, 17, 28, (n - 1 - i) * 8)
+            a_ldst(false, 17, 31, (i - 8) * 8)
+        }
         if name == "open" and n == 3 {
             # str x2, [sp]
             a32(4177527778)
@@ -5745,7 +5752,16 @@ fn build_pe() {
     }
     let idata_size = at
     let idata_raw = align_up(idata_size, 512)
-    let data_va = align_up(idata_va + idata_size, 4096)
+    # ARM64 Windows only loads relocatable programs: our code is all relative,
+    # so the relocation table holds one empty block
+    let nsect = 3
+    let reloc_va = align_up(idata_va + idata_size, 4096)
+    let reloc_off = 512 + text_raw + idata_raw
+    let data_va = reloc_va
+    if arm() {
+        nsect = 4
+        data_va = reloc_va + 4096
+    }
     let bss = bss_size()
     let image_size = align_up(data_va + bss, 4096)
     let imp: array[int] = []
@@ -5763,13 +5779,21 @@ fn build_pe() {
     o_text("MZ", 60)
     o32(64)
     o_text("PE", 4)
-    o16(34404)
-    o16(3)
+    if arm() {
+        o16(43620)
+    } else {
+        o16(34404)
+    }
+    o16(nsect)
     o32(0)
     o32(0)
     o32(0)
     o16(240)
-    o16(35)
+    if arm() {
+        o16(34)
+    } else {
+        o16(35)
+    }
     # optional header (PE32+)
     o16(523)
     o8(14)
@@ -5793,7 +5817,11 @@ fn build_pe() {
     o32(512)
     o32(0)
     o16(3)
-    o16(33024)
+    if arm() {
+        o16(33120)
+    } else {
+        o16(33024)
+    }
     o64(8388608)
     o64(8388608)
     o64(1048576)
@@ -5809,13 +5837,21 @@ fn build_pe() {
                 o32(idata_va + iat_start)
                 o32(iat_size)
             } else {
-                o32(0)
-                o32(0)
+                if d == 5 and arm() {
+                    o32(reloc_va)
+                    o32(12)
+                } else {
+                    o32(0)
+                    o32(0)
+                }
             }
         }
     }
     o_section(".text", text_size, text_va, text_raw, 512, 1610612768)
     o_section(".idata", idata_size, idata_va, idata_raw, 512 + text_raw, 3221225536)
+    if arm() {
+        o_section(".reloc", 12, reloc_va, 512, reloc_off, 1107296320)
+    }
     o_section(".data", bss, data_va, 0, 0, 3221225600)
     o_pad_to(512)
     o_code_and_ro(512 + ro_off)
@@ -5850,6 +5886,13 @@ fn build_pe() {
         o_text(nm, align_up(len(nm) + 1, 2))
     }
     o_pad_to(idata_at + idata_raw)
+    if arm() {
+        # one block for page 0x1000 with two padding entries
+        o32(4096)
+        o32(12)
+        o32(0)
+        o_pad_to(reloc_off + 512)
+    }
 }
 
 fn no_ints() -> array[int] {
@@ -5909,7 +5952,7 @@ fn build(src_path: string, out_path: string) {
 
 # target name -> system (g_target: 1 Linux, 2 macOS, 3 Windows) and CPU (g_arch: 1 x86-64, 2 ARM64)
 fn set_target(name: string) -> bool {
-    let names = ["linux", "macos", "windows", "linux-arm64", "macos-arm64"]
+    let names = ["linux", "macos", "windows", "linux-arm64", "macos-arm64", "windows-arm64"]
     for i in 0..len(names) {
         if names[i] == name {
             g_target = i % 3 + 1
@@ -5923,64 +5966,310 @@ fn set_target(name: string) -> bool {
     return false
 }
 
-fn usage() {
-    print("Slop compiler")
-    print("  slop app.slop             build ./app")
-    print("  slop app.slop out         build ./out")
-    print("  slop run app.slop [args]  build and run")
-    print("  --target linux|linux-arm64|macos|macos-arm64|windows   build for another system")
+let g_version = "1.0"
+
+fn help() {
+    print("Slop " + g_version + " - a small, fast programming language")
+    print("")
+    print("  slop run app.slop [args]   build and run a program")
+    print("  slop build app.slop        build ./app (app.exe on Windows)")
+    print("  slop check app.slop        look for mistakes without building")
+    print("  slop new hello             start a new program in hello.slop")
+    print("  slop repl                  type Slop code and see results right away")
+    print("  slop install               copy slop to a folder for programs on this computer")
+    print("  slop version               show the version and system")
+    print("  slop help                  show this help")
+    print("")
+    print("Options:")
+    print("  -o NAME           name of the program to write")
+    print("  --target SYSTEM   build for another system: linux, linux-arm64, macos,")
+    print("                    macos-arm64, windows, windows-arm64")
+}
+
+fn usage_error(msg: string) {
+    print("error: " + msg)
+    print("Try: slop help")
     exit(2)
 }
 
-fn main(args: array[string]) {
-    # programs are built for the system this compiler runs on, unless --target says otherwise
-    let target = ""
-    let rest: array[string] = []
-    let k = 1
-    # default: this system and CPU
-    target = os_name()
+fn host_target() -> string {
+    let t = os_name()
     if __arch() == 2 {
-        target = target + "-arm64"
+        t = t + "-arm64"
     }
-    while k < len(args) {
-        if args[k] == "--target" and k + 1 < len(args) {
-            target = args[k + 1]
-            k += 2
-        } else {
-            push(rest, args[k])
-            k += 1
-        }
+    return t
+}
+
+fn local_exe(path: string) -> string {
+    if starts_with_s(path, "/") or byte_at(path, 1) == 58 or starts_with_s(path, ".") {
+        return path
     }
-    if not set_target(target) {
-        print("unknown target '" + target + "' (use linux, linux-arm64, macos, macos-arm64 or windows)")
-        exit(2)
+    return "./" + path
+}
+
+fn new_program(name: string) {
+    let file = name
+    if not ends_with(file, ".slop") {
+        file = file + ".slop"
     }
-    if len(rest) < 1 {
-        usage()
+    if len(read_file(file)) > 0 {
+        usage_error(file + " already exists")
     }
-    if rest[0] == "run" {
-        if len(rest) < 2 {
-            usage()
-        }
-        let out = output_name(rest[1])
-        build(rest[1], out)
-        let exe = out
-        if not starts_with_s(exe, "/") and byte_at(exe, 1) != 58 {
-            exe = "./" + exe
-        }
-        let run_args: array[string] = []
-        push(run_args, exe)
-        let j = 2
-        while j < len(rest) {
-            push(run_args, rest[j])
-            j += 1
-        }
-        exec(exe, run_args)
+    write_file(file, "# " + file + "\nname = \"World\"\nprint(\"Hello \" + name + \"!\")\n")
+    print("created " + file)
+    print("run it with: slop run " + file)
+}
+
+fn install() {
+    let me = program_path()
+    let dir = ""
+    let dest = ""
+    if os_name() == "windows" {
+        let base = env("LOCALAPPDATA")
+        make_dir(base + "\\Programs")
+        dir = base + "\\Programs\\Slop"
+        dest = dir + "\\slop.exe"
+    } else {
+        let home = env("HOME")
+        make_dir(home + "/.local")
+        dir = home + "/.local/bin"
+        dest = dir + "/slop"
+    }
+    make_dir(dir)
+    if me == dest {
+        print("slop is already installed at " + dest)
         return
     }
-    let out = output_name(rest[0])
-    if len(rest) > 1 {
-        out = rest[1]
+    let program = read_file(me)
+    write_file(dest, program)
+    make_executable(dest)
+    if read_file(dest) != program {
+        print("error: could not write " + dest)
+        exit(1)
     }
-    build(rest[0], out)
+    print("installed " + dest)
+    let path = env("PATH")
+    if not contains(path, dir) {
+        print("")
+        print("Add that folder to your PATH so 'slop' works everywhere:")
+        if os_name() == "windows" {
+            print("  [Environment]::SetEnvironmentVariable(\"Path\", $env:Path + \";" + dir + "\", \"User\")")
+            print("(paste into PowerShell, then open a new window)")
+        } else {
+            print("  echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.profile")
+            print("(on macOS use ~/.zprofile; then open a new terminal)")
+        }
+    }
+}
+
+fn brace_depth(s: string) -> int {
+    let d = 0
+    for i in 0..len(s) {
+        let c = byte_at(s, i)
+        if c == 123 {
+            d += 1
+        }
+        if c == 125 {
+            d -= 1
+        }
+    }
+    return d
+}
+
+fn prompt(p: string) {
+    __out_str(p)
+    __flush()
+}
+
+fn starts_with_word(s: string, words: array[string]) -> bool {
+    for w in words {
+        if s == w or starts_with_s(s, w + " ") or starts_with_s(s, w + "(") {
+            return true
+        }
+    }
+    return false
+}
+
+# "error: line 3: unknown name 'x'" -> "error: unknown name 'x'"
+fn clean_error(log: string) -> string {
+    let out = trim(log)
+    if starts_with_s(out, "error: line ") {
+        let rest = slice(out, 12, len(out))
+        let k = find(rest, ": ")
+        if k > 0 {
+            out = "error: " + slice(rest, k + 2, len(rest))
+        }
+    }
+    return out
+}
+
+# Each line is added to a program that is built and run again; only the new
+# output is shown. A line that is just a value prints it.
+fn repl() {
+    let me = program_path()
+    let file = ".slop-repl.slop"
+    let exe = ".slop-repl"
+    if os_name() == "windows" {
+        exe = exe + ".exe"
+    }
+    print("Slop " + g_version + ". Type code and press Enter; 'exit' to quit.")
+    let code = ""
+    let shown = 0
+    let keywords = ["fn", "let", "if", "while", "for", "struct", "match", "return", "print", "break", "continue"]
+    while true {
+        prompt(">>> ")
+        let line = trim(input())
+        if input_ended() and line == "" {
+            print("")
+            break
+        }
+        if line == "exit" or line == "quit" {
+            break
+        }
+        if line == "" {
+            continue
+        }
+        let chunk = line
+        let depth = brace_depth(line)
+        while depth > 0 and not input_ended() {
+            prompt("... ")
+            let more = input()
+            chunk = chunk + "\n" + more
+            depth += brace_depth(more)
+        }
+        let tries: array[string] = []
+        if not contains(chunk, "\n") and not starts_with_word(chunk, keywords) {
+            push(tries, "print(" + chunk + ")")
+        }
+        push(tries, chunk)
+        let done = false
+        let problem = ""
+        for t in tries {
+            if done {
+                break
+            }
+            write_file(file, code + t + "\n")
+            let log = run(me, [me, "build", file, "-o", exe])
+            if run_status() != 0 {
+                if problem == "" or t == chunk {
+                    problem = clean_error(log)
+                }
+                continue
+            }
+            done = true
+            let out = run(local_exe(exe), [exe])
+            if len(out) > shown {
+                __out_str(slice(out, shown, len(out)))
+            }
+            if run_status() == 0 {
+                code = code + t + "\n"
+                shown = len(out)
+            }
+        }
+        if not done {
+            print(problem)
+        }
+    }
+    remove_file(file)
+    remove_file(exe)
+}
+
+fn main(args: array[string]) {
+    let target = host_target()
+    let out = ""
+    let words: array[string] = []
+    let program_args: array[string] = []
+    let k = 1
+    while k < len(args) {
+        let a = args[k]
+        if len(words) >= 2 and words[0] == "run" {
+            # everything after the program's file goes to the program
+            push(program_args, a)
+        } else {
+            if (a == "--target" or a == "-o") and k + 1 < len(args) {
+                if a == "--target" {
+                    target = args[k + 1]
+                } else {
+                    out = args[k + 1]
+                }
+                k += 1
+            } else {
+                push(words, a)
+            }
+        }
+        k += 1
+    }
+    if not set_target(target) {
+        usage_error("unknown target '" + target + "' (use linux, linux-arm64, macos, macos-arm64, windows or windows-arm64)")
+    }
+    if len(words) == 0 {
+        help()
+        exit(2)
+    }
+    let cmd = words[0]
+    if cmd == "help" or cmd == "-h" or cmd == "--help" {
+        help()
+        return
+    }
+    if cmd == "version" or cmd == "--version" or cmd == "-v" {
+        print("Slop " + g_version + " (" + os_name() + " " + arch_name() + ")")
+        return
+    }
+    if cmd == "repl" {
+        repl()
+        return
+    }
+    if cmd == "install" {
+        install()
+        return
+    }
+    if cmd == "new" {
+        if len(words) < 2 {
+            usage_error("give the new program a name, like: slop new hello")
+        }
+        new_program(words[1])
+        return
+    }
+    let file = ""
+    if cmd == "run" or cmd == "build" or cmd == "check" {
+        if len(words) < 2 {
+            usage_error("which file? like: slop " + cmd + " app.slop")
+        }
+        file = words[1]
+        if len(words) > 2 and out == "" {
+            out = words[2]
+        }
+    } else {
+        if not ends_with(cmd, ".slop") {
+            usage_error("unknown command '" + cmd + "'")
+        }
+        # slop app.slop [out] is the same as slop build
+        file = cmd
+        cmd = "build"
+        if len(words) > 1 and out == "" {
+            out = words[1]
+        }
+    }
+    if out == "" {
+        out = output_name(file)
+    }
+    if cmd == "check" {
+        g_src_dir = dir_of(file)
+        let source = read_file(file)
+        if len(source) == 0 {
+            usage_error("cannot read " + file + " (missing or empty)")
+        }
+        compile_program(source)
+        print("ok: no mistakes found in " + file)
+        return
+    }
+    build(file, out)
+    if cmd == "run" {
+        let exe = local_exe(out)
+        let run_args: array[string] = [exe]
+        for a in program_args {
+            push(run_args, a)
+        }
+        exec(exe, run_args)
+    }
 }

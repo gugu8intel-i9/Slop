@@ -188,6 +188,43 @@ fn __make_executable(path: string) {
     }
 }
 
+fn __make_dir(path: string) -> bool {
+    if __arm() {
+        return __syscall(34, -100, __cstr(path), 493) == 0
+    }
+    return __syscall(83, __cstr(path), 493) == 0
+}
+
+# full path of this program
+fn __program_path() -> string {
+    buf = __alloc_bytes(4096)
+    n = 0
+    if __arm() {
+        n = __syscall(78, -100, __cstr("/proc/self/exe"), buf, 4096)
+    } else {
+        n = __syscall(89, __cstr("/proc/self/exe"), buf, 4096)
+    }
+    if n <= 0 {
+        return ""
+    }
+    return __str(buf, n)
+}
+
+# value of an environment variable, or "" when it is not set
+fn __env(name: string) -> string {
+    p = __envp()
+    while __load64(p) != 0 {
+        s = __load64(p)
+        n = __strlen(s)
+        entry = __str(s, n)
+        if __starts_with(entry, name + "=") {
+            return __slice(entry, len(name) + 1, n)
+        }
+        p += 8
+    }
+    return ""
+}
+
 fn __execve(path: int, argv: int, envp: int) {
     if __arm() {
         __syscall(221, path, argv, envp)
