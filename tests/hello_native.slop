@@ -1,0 +1,7 @@
+fn main(args: array[string]) {
+    print("Hello from a Slop-built executable")
+    let answer = 42
+    print(answer)
+    let target = "x86-64 Linux, talking to the kernel directly"
+    print(target)
+}

@@ -1,0 +1,66 @@
+# Times a few workloads and reports peak memory.
+#   bin/slop run examples/benchmark.slop
+
+struct Packet {
+    pts: int,
+    size: int,
+    data: string
+}
+
+fn fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+# every call makes a packet and a string; all of it is freed when the call returns
+fn process_frame(n: int) -> int {
+    pkt = Packet(n, 128, "frame " + int_to_string(n))
+    pkt.pts += 1
+    return pkt.size + len(pkt.data)
+}
+
+fn report(name: string, start: int, result: int) {
+    ms = (clock_ns() - start) / 1000000
+    print(name + ": " + int_to_string(ms) + " ms (result " + int_to_string(result) + ")")
+}
+
+fn peak_memory() -> string {
+    for line in split(read_file("/proc/self/status"), "\n") {
+        if starts_with(line, "VmHWM:") {
+            return trim(slice(line, 6, len(line)))
+        }
+    }
+    return "unknown"
+}
+
+t = clock_ns()
+counter = 0
+for i in 0..1000000000 {
+    counter += 1
+}
+report("1 billion loop steps", t, counter)
+
+t = clock_ns()
+report("fib(32)", t, fib(32))
+
+t = clock_ns()
+total = 0
+for i in 0..10000000 {
+    total += process_frame(i)
+}
+report("10 million frames", t, total)
+
+t = clock_ns()
+nums: array[int] = []
+for i in 0..10000000 {
+    push(nums, i)
+}
+sum = 0
+for x in nums {
+    sum += x
+}
+report("10 million item list", t, sum)
+
+print("peak memory: " + peak_memory())

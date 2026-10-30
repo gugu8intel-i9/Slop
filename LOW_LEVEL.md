@@ -25,19 +25,17 @@ Normal app code should keep using normal Slop arrays, strings, structs, function
 ## Example
 
 ```slop
-fn main(args: array[string]) {
-    let cell = 0
-    let addr = addr_of(cell)
+cell = 0
+addr = addr_of(cell)
 
-    unsafe_store64(addr, 1337)
-    print(unsafe_load64(addr))
+unsafe_store64(addr, 1337)
+print(unsafe_load64(addr))
 
-    cpu_fence()
-    cpu_prefetch(addr)
+cpu_fence()
+cpu_prefetch(addr)
 
-    ram_zero(addr, 8)
-    print(unsafe_load64(addr))
-}
+ram_zero(addr, 8)
+print(unsafe_load64(addr))
 ```
 
 ## APIs
@@ -49,7 +47,7 @@ addr_of(x) -> int
 component_base(addr: int) -> int
 ```
 
-`addr_of` returns the address of a Slop local/value in generated native C.
+`addr_of` returns the memory address of a variable. Variables passed to `addr_of` are kept in memory rather than in a register.
 
 `component_base` is a zero-cost marker for hardware/component base addresses. It makes driver-style code read clearly:
 
@@ -91,9 +89,9 @@ cpu_relax()
 cpu_prefetch(addr: int)
 ```
 
-- `cpu_cycles`: low-level cycle counter where supported.
+- `cpu_cycles`: the CPU's time-stamp counter (`rdtsc`).
 - `cpu_fence`: full memory fence.
-- `cpu_relax`: spin-loop hint (`pause`, `yield`, or equivalent).
+- `cpu_relax`: spin-loop hint (`pause`).
 - `cpu_prefetch`: prefetches a memory address for high-performance loops.
 
 ### RAM bulk operations
@@ -103,7 +101,7 @@ ram_copy(dst: int, src: int, bytes: int)
 ram_zero(dst: int, bytes: int)
 ```
 
-Zero-cost wrappers around native memory copy/zero operations.
+These compile to single `rep movsb` / `rep stosb` instructions.
 
 ### Device/GPU synchronization
 
@@ -124,17 +122,3 @@ unsafe Slop: explicit hardware control
 ```
 
 The compiler can keep normal code beginner-friendly while still allowing systems programmers to drop down to raw memory, CPU, GPU/device synchronization, and MMIO when needed.
-
-Future SIR/native backend work can recognize these operations as first-class effects:
-
-```text
-unsafe.load
-unsafe.store
-mmio.read
-mmio.write
-cpu.fence
-gpu.fence
-prefetch
-```
-
-That lets Slop optimize around hardware operations without incorrectly deleting or reordering them.

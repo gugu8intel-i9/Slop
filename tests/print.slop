@@ -1,0 +1,4 @@
+fn main(args: array[string]) {
+    print("Slop prints straight to the terminal")
+    print("no C, no assembler, no linker")
+}

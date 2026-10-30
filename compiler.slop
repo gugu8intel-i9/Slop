@@ -1,2045 +1,4525 @@
-# Self-hosting Slop compiler (subset compiler)
-# Compiles a subset of Slop to C using the SEAA runtime.
-# This compiler is written in the same subset it compiles.
+# ============================================================================
+# The Slop compiler, written in Slop.
+#
+# It turns a .slop file straight into a Linux x86-64 program. There is no C
+# compiler, assembler or linker anywhere: this file writes the machine code and
+# the executable file itself. The runtime (memory, printing, files, strings)
+# is also Slop code: see prelude_source() at the bottom.
+#
+#   slop app.slop             build ./app
+#   slop app.slop out         build ./out
+#   slop run app.slop [args]  build and run
+# ============================================================================
 
-# ---------- Character / string helpers ----------
-fn is_space(ch: string) -> bool {
-    if ch == " " { return true }
-    if ch == "\n" { return true }
-    if ch == "\t" { return true }
-    if ch == "\r" { return true }
-    return false
+# ---------- tokens ----------
+# kinds: 1 name, 2 keyword, 3 number, 4 string, 5 symbol, 6 end of file
+let g_tk_kind: array[int] = []
+let g_tk_text: array[string] = []
+let g_tk_line: array[int] = []
+let g_tk_num: array[int] = []
+let g_pos: int = 0
+let g_user_tok: int = 0
+
+# ---------- output ----------
+let g_code: array[int] = []
+let g_code_len: int = 0
+let g_ro: array[int] = []
+let g_ro_strs: array[string] = []
+let g_ro_offs: array[int] = []
+let g_lbl: array[int] = []
+let g_fx_at: array[int] = []
+let g_fx_lbl: array[int] = []
+let g_rfx_at: array[int] = []
+let g_rfx_off: array[int] = []
+
+# ---------- program symbols ----------
+let g_st_name: array[string] = []
+let g_st_fnames: array[string] = []
+let g_st_ftypes: array[string] = []
+let g_fn_name: array[string] = []
+let g_fn_ret: array[string] = []
+let g_fn_pnames: array[string] = []
+let g_fn_ptypes: array[string] = []
+let g_fn_tok: array[int] = []
+let g_fn_label: array[int] = []
+let g_fn_state: array[int] = []
+let g_queue: array[int] = []
+let g_gl_name: array[string] = []
+let g_gl_type: array[string] = []
+let g_gl_addr: array[int] = []
+let g_gl_next: int = 0
+
+# ---------- current function ----------
+let g_lc_name: array[string] = []
+let g_lc_type: array[string] = []
+let g_lc_off: array[int] = []
+let g_lc_n: int = 0
+let g_frame: int = 0
+let g_cur_ret: string = ""
+let g_cur_framed: bool = false
+let g_cur_raw: bool = false
+let g_cur_epi: int = 0
+let g_in_top: bool = false
+let g_brk: array[int] = []
+let g_cont: array[int] = []
+let g_loop_n: int = 0
+let g_want: string = ""
+let g_lit_start: int = -1
+let g_lit_end: int = -1
+let g_cmp_end: int = -1
+let g_cmp_at: int = -1
+let g_cmp_cc: int = 0
+let g_place_perm: bool = false
+let g_simple_kind: int = 0
+let g_simple_val: int = 0
+let g_bounds_lbl: int = 0
+# int/bool locals live in the callee-saved registers rbx, r12-r15 when free.
+# Such a local's "offset" is 100000 + register number.
+let g_reg_owner: array[int] = [-1, -1, -1, -1, -1]
+let g_reg_used: array[int] = [0, 0, 0, 0, 0]
+let g_noreg: array[string] = []
+
+# ---------- generated program memory map ----------
+# code is loaded at 0x400000, data (all zero at start) at 0x20000000:
+#   +0 initial stack pointer   +8 call depth   +16 bump pointers of the 3 memory buckets
+#   +64 scratch (64 bytes)     +128 return buffer (256 words)   +4096 global variables
+fn text_base() -> int {
+    return 4194304
 }
 
-fn is_alpha(ch: string) -> bool {
-    if ch == "a" { return true } if ch == "b" { return true } if ch == "c" { return true }
-    if ch == "d" { return true } if ch == "e" { return true } if ch == "f" { return true }
-    if ch == "g" { return true } if ch == "h" { return true } if ch == "i" { return true }
-    if ch == "j" { return true } if ch == "k" { return true } if ch == "l" { return true }
-    if ch == "m" { return true } if ch == "n" { return true } if ch == "o" { return true }
-    if ch == "p" { return true } if ch == "q" { return true } if ch == "r" { return true }
-    if ch == "s" { return true } if ch == "t" { return true } if ch == "u" { return true }
-    if ch == "v" { return true } if ch == "w" { return true } if ch == "x" { return true }
-    if ch == "y" { return true } if ch == "z" { return true }
-    if ch == "A" { return true } if ch == "B" { return true } if ch == "C" { return true }
-    if ch == "D" { return true } if ch == "E" { return true } if ch == "F" { return true }
-    if ch == "G" { return true } if ch == "H" { return true } if ch == "I" { return true }
-    if ch == "J" { return true } if ch == "K" { return true } if ch == "L" { return true }
-    if ch == "M" { return true } if ch == "N" { return true } if ch == "O" { return true }
-    if ch == "P" { return true } if ch == "Q" { return true } if ch == "R" { return true }
-    if ch == "S" { return true } if ch == "T" { return true } if ch == "U" { return true }
-    if ch == "V" { return true } if ch == "W" { return true } if ch == "X" { return true }
-    if ch == "Y" { return true } if ch == "Z" { return true }
-    if ch == "_" { return true }
-    return false
+fn hdr_size() -> int {
+    return 232
 }
 
-fn is_digit(ch: string) -> bool {
-    if ch == "0" { return true }
-    if ch == "1" { return true }
-    if ch == "2" { return true }
-    if ch == "3" { return true }
-    if ch == "4" { return true }
-    if ch == "5" { return true }
-    if ch == "6" { return true }
-    if ch == "7" { return true }
-    if ch == "8" { return true }
-    if ch == "9" { return true }
-    return false
+fn data_base() -> int {
+    return 536870912
 }
 
-fn is_id_char(ch: string) -> bool {
-    if is_alpha(ch) { return true }
-    if is_digit(ch) { return true }
-    return false
+fn a_sp0() -> int {
+    return data_base()
 }
 
-fn is_keyword(s: string) -> bool {
-    if s == "fn" { return true }
-    if s == "let" { return true }
-    if s == "if" { return true }
-    if s == "else" { return true }
-    if s == "while" { return true }
-    if s == "return" { return true }
-    if s == "struct" { return true }
-    if s == "true" { return true }
-    if s == "false" { return true }
-    if s == "raw" { return true }
-    if s == "gpu" { return true }
-    if s == "parallel" { return true }
-    if s == "for" { return true }
-    if s == "in" { return true }
-    if s == "and" { return true }
-    if s == "or" { return true }
-    if s == "not" { return true }
-    return false
+fn a_depth() -> int {
+    return data_base() + 8
 }
 
-fn string_to_int(s: string) -> int {
-    let n = 0
+fn a_bump() -> int {
+    return data_base() + 16
+}
+
+fn a_scratch() -> int {
+    return data_base() + 64
+}
+
+fn a_retbuf() -> int {
+    return data_base() + 128
+}
+
+fn a_globals() -> int {
+    return data_base() + 4096
+}
+
+# ============================================================================
+# errors
+# ============================================================================
+fn err(msg: string) {
+    let line = 0
+    if g_pos < len(g_tk_line) {
+        line = g_tk_line[g_pos]
+    }
+    if g_pos < g_user_tok {
+        print("error in runtime prelude, line " + int_to_string(line) + ": " + msg)
+    } else {
+        print("error: line " + int_to_string(line) + ": " + msg)
+    }
+    exit(1)
+}
+
+# ============================================================================
+# tokenizer
+# ============================================================================
+fn is_ident_start(c: int) -> bool {
+    if c >= 97 and c <= 122 {
+        return true
+    }
+    if c >= 65 and c <= 90 {
+        return true
+    }
+    return c == 95
+}
+
+fn is_digit_b(c: int) -> bool {
+    return c >= 48 and c <= 57
+}
+
+fn is_ident_char(c: int) -> bool {
+    return is_ident_start(c) or is_digit_b(c)
+}
+
+fn is_keyword(w: string) -> bool {
+    if w == "fn" or w == "let" or w == "if" or w == "else" or w == "while" {
+        return true
+    }
+    if w == "for" or w == "in" or w == "return" or w == "struct" or w == "true" {
+        return true
+    }
+    if w == "false" or w == "and" or w == "or" or w == "not" or w == "break" {
+        return true
+    }
+    return w == "continue" or w == "match"
+}
+
+fn hex_val(c: int) -> int {
+    if c >= 48 and c <= 57 {
+        return c - 48
+    }
+    if c >= 97 and c <= 102 {
+        return c - 87
+    }
+    if c >= 65 and c <= 70 {
+        return c - 55
+    }
+    return -1
+}
+
+fn add_tok(kind: int, text: string, line: int, num: int) {
+    push(g_tk_kind, kind)
+    push(g_tk_text, text)
+    push(g_tk_line, line)
+    push(g_tk_num, num)
+}
+
+fn is_two_char_symbol(s: string) -> bool {
+    if s == "->" or s == "==" or s == "!=" or s == "<=" or s == ">=" or s == ".." {
+        return true
+    }
+    if s == "|>" or s == "+=" or s == "-=" or s == "*=" or s == "/=" or s == "=>" {
+        return true
+    }
+    return s == "&&" or s == "||" or s == "<<" or s == ">>"
+}
+
+fn tokenize(src: string, with_eof: bool) {
+    let n = len(src)
     let i = 0
-    while i < length(s) {
-        let c = char_at(s, i)
-        let code = 0
-        if c == "0" { code = 0 }
-        if c == "1" { code = 1 }
-        if c == "2" { code = 2 }
-        if c == "3" { code = 3 }
-        if c == "4" { code = 4 }
-        if c == "5" { code = 5 }
-        if c == "6" { code = 6 }
-        if c == "7" { code = 7 }
-        if c == "8" { code = 8 }
-        if c == "9" { code = 9 }
-        n = n * 10 + code
-        i = i + 1
+    let line = 1
+    while i < n {
+        let c = byte_at(src, i)
+        if c == 10 {
+            line += 1
+            i += 1
+            continue
+        }
+        if c == 32 or c == 9 or c == 13 or c == 59 {
+            i += 1
+            continue
+        }
+        if c == 35 {
+            while i < n and byte_at(src, i) != 10 {
+                i += 1
+            }
+            continue
+        }
+        if is_ident_start(c) {
+            let st = i
+            while i < n and is_ident_char(byte_at(src, i)) {
+                i += 1
+            }
+            let w = slice(src, st, i)
+            if w == "true" or w == "false" or w == "and" or w == "or" or w == "not" {
+                add_tok(2, w, line, 0)
+            } else {
+                if is_keyword(w) {
+                    add_tok(2, w, line, 0)
+                } else {
+                    add_tok(1, w, line, 0)
+                }
+            }
+            continue
+        }
+        if is_digit_b(c) {
+            let st = i
+            let v = 0
+            if c == 48 and (byte_at(src, i + 1) == 120 or byte_at(src, i + 1) == 88) {
+                i += 2
+                while i < n and (hex_val(byte_at(src, i)) >= 0 or byte_at(src, i) == 95) {
+                    if byte_at(src, i) != 95 {
+                        v = v * 16 + hex_val(byte_at(src, i))
+                    }
+                    i += 1
+                }
+            } else {
+                while i < n and (is_digit_b(byte_at(src, i)) or byte_at(src, i) == 95) {
+                    if byte_at(src, i) != 95 {
+                        v = v * 10 + byte_at(src, i) - 48
+                    }
+                    i += 1
+                }
+            }
+            add_tok(3, slice(src, st, i), line, v)
+            continue
+        }
+        if c == 34 {
+            let start_line = line
+            i += 1
+            let out = ""
+            let st = i
+            while i < n and byte_at(src, i) != 34 {
+                let d = byte_at(src, i)
+                if d == 10 {
+                    line += 1
+                }
+                if d == 92 {
+                    out = out + slice(src, st, i)
+                    let e = byte_at(src, i + 1)
+                    if e == 110 {
+                        out = out + chr(10)
+                    } else {
+                        if e == 116 {
+                            out = out + chr(9)
+                        } else {
+                            if e == 114 {
+                                out = out + chr(13)
+                            } else {
+                                if e == 48 {
+                                    out = out + chr(0)
+                                } else {
+                                    out = out + chr(e)
+                                }
+                            }
+                        }
+                    }
+                    i += 2
+                    st = i
+                } else {
+                    i += 1
+                }
+            }
+            out = out + slice(src, st, i)
+            i += 1
+            add_tok(4, out, start_line, 0)
+            continue
+        }
+        let two = slice(src, i, i + 2)
+        if is_two_char_symbol(two) {
+            add_tok(5, two, line, 0)
+            i += 2
+            continue
+        }
+        add_tok(5, slice(src, i, i + 1), line, 0)
+        i += 1
+    }
+    if with_eof {
+        add_tok(6, "", line, 0)
+    }
+}
+
+# ============================================================================
+# token cursor
+# ============================================================================
+fn tk() -> string {
+    return g_tk_text[g_pos]
+}
+
+fn tk_at(i: int) -> string {
+    if i >= len(g_tk_text) {
+        return ""
+    }
+    return g_tk_text[i]
+}
+
+fn kind() -> int {
+    return g_tk_kind[g_pos]
+}
+
+fn kind_at(i: int) -> int {
+    if i >= len(g_tk_kind) {
+        return 6
+    }
+    return g_tk_kind[i]
+}
+
+fn is_sym(s: string) -> bool {
+    return g_tk_kind[g_pos] == 5 and g_tk_text[g_pos] == s
+}
+
+fn is_sym_at(i: int, s: string) -> bool {
+    return kind_at(i) == 5 and tk_at(i) == s
+}
+
+fn is_kw(s: string) -> bool {
+    return g_tk_kind[g_pos] == 2 and g_tk_text[g_pos] == s
+}
+
+fn expect(s: string) {
+    if g_tk_kind[g_pos] == 4 or g_tk_text[g_pos] != s {
+        let found = g_tk_text[g_pos]
+        if g_tk_kind[g_pos] == 6 {
+            found = "end of file"
+        }
+        err("expected '" + s + "' but found '" + found + "'")
+    }
+    g_pos += 1
+}
+
+fn expect_name() -> string {
+    if g_tk_kind[g_pos] != 1 {
+        err("expected a name but found '" + g_tk_text[g_pos] + "'")
+    }
+    let s = g_tk_text[g_pos]
+    g_pos += 1
+    return s
+}
+
+# skips a { ... } block starting at the current '{'
+fn skip_block() {
+    expect("{")
+    let depth = 1
+    while depth > 0 {
+        if g_tk_kind[g_pos] == 6 {
+            err("missing '}'")
+        }
+        if is_sym("{") {
+            depth += 1
+        }
+        if is_sym("}") {
+            depth -= 1
+        }
+        g_pos += 1
+    }
+}
+
+# ============================================================================
+# types
+# ============================================================================
+fn starts_with_s(s: string, pre: string) -> bool {
+    return slice(s, 0, len(pre)) == pre
+}
+
+fn is_array_t(t: string) -> bool {
+    return starts_with_s(t, "array[")
+}
+
+fn elem_t(t: string) -> string {
+    return slice(t, 6, len(t) - 1)
+}
+
+fn struct_index(name: string) -> int {
+    let i = 0
+    while i < len(g_st_name) {
+        if g_st_name[i] == name {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn words(t: string) -> int {
+    if t == "int" or t == "bool" {
+        return 1
+    }
+    if t == "string" {
+        return 2
+    }
+    if t == "void" {
+        return 0
+    }
+    if is_array_t(t) {
+        return 3
+    }
+    let si = struct_index(t)
+    if si < 0 {
+        err("unknown type '" + t + "'")
+    }
+    let total = 0
+    for ft in split(g_st_ftypes[si], ",") {
+        total += words(ft)
+    }
+    if total == 0 {
+        total = 1
+    }
+    return total
+}
+
+fn has_heap(t: string) -> bool {
+    if t == "string" or is_array_t(t) {
+        return true
+    }
+    let si = struct_index(t)
+    if si < 0 {
+        return false
+    }
+    for ft in split(g_st_ftypes[si], ",") {
+        if has_heap(ft) {
+            return true
+        }
+    }
+    return false
+}
+
+# Struct fields are laid out last-field-first, so pushing the fields in order
+# builds the struct in memory. Returns -1 if the field does not exist.
+fn field_off(st: string, f: string) -> int {
+    let si = struct_index(st)
+    let names = split(g_st_fnames[si], ",")
+    let types = split(g_st_ftypes[si], ",")
+    let i = 0
+    let found = -1
+    while i < len(names) {
+        if names[i] == f {
+            found = i
+        }
+        i += 1
+    }
+    if found < 0 {
+        return -1
+    }
+    let off = 0
+    let j = found + 1
+    while j < len(names) {
+        off += words(types[j]) * 8
+        j += 1
+    }
+    return off
+}
+
+fn field_type(st: string, f: string) -> string {
+    let si = struct_index(st)
+    let names = split(g_st_fnames[si], ",")
+    let types = split(g_st_ftypes[si], ",")
+    let i = 0
+    while i < len(names) {
+        if names[i] == f {
+            return types[i]
+        }
+        i += 1
+    }
+    return ""
+}
+
+fn parse_type() -> string {
+    let name = expect_name()
+    if name == "array" or name == "list" {
+        expect("[")
+        let inner = parse_type()
+        expect("]")
+        return "array[" + inner + "]"
+    }
+    if name == "int" or name == "bool" or name == "string" or name == "void" {
+        return name
+    }
+    if name == "str" {
+        return "string"
+    }
+    if struct_index(name) >= 0 {
+        return name
+    }
+    if name == "float" {
+        err("float is not supported yet")
+    }
+    err("unknown type '" + name + "'")
+    return ""
+}
+
+# ============================================================================
+# machine code emitter (x86-64)
+# registers: rax 0, rcx 1, rdx 2, rbx 3, rsp 4, rbp 5, rsi 6, rdi 7
+# ============================================================================
+fn emit(b: int) {
+    if g_code_len < len(g_code) {
+        g_code[g_code_len] = b
+    } else {
+        push(g_code, b)
+    }
+    g_code_len += 1
+}
+
+fn emit2(a: int, b: int) {
+    emit(a)
+    emit(b)
+}
+
+fn emit3(a: int, b: int, c: int) {
+    emit(a)
+    emit(b)
+    emit(c)
+}
+
+fn emit4(a: int, b: int, c: int, d: int) {
+    emit(a)
+    emit(b)
+    emit(c)
+    emit(d)
+}
+
+fn emit32(v: int) {
+    if v < 0 {
+        v += 4294967296
+    }
+    emit(v % 256)
+    emit(v / 256 % 256)
+    emit(v / 65536 % 256)
+    emit(v / 16777216 % 256)
+}
+
+fn emit64(v: int) {
+    if v >= 0 {
+        for k in 0..8 {
+            emit(v % 256)
+            v = v / 256
+        }
+    } else {
+        let u = -(v + 1)
+        for k in 0..8 {
+            emit(255 - u % 256)
+            u = u / 256
+        }
+    }
+}
+
+fn patch32(at: int, v: int) {
+    if v < 0 {
+        v += 4294967296
+    }
+    g_code[at] = v % 256
+    g_code[at + 1] = v / 256 % 256
+    g_code[at + 2] = v / 65536 % 256
+    g_code[at + 3] = v / 16777216 % 256
+}
+
+fn fits32(v: int) -> bool {
+    return v >= -2147483648 and v <= 2147483647
+}
+
+fn new_label() -> int {
+    push(g_lbl, -1)
+    return len(g_lbl) - 1
+}
+
+fn place(l: int) {
+    g_lbl[l] = g_code_len
+}
+
+fn emit_rel(l: int) {
+    push(g_fx_at, g_code_len)
+    push(g_fx_lbl, l)
+    emit32(0)
+}
+
+fn e_jmp(l: int) {
+    emit(233)
+    emit_rel(l)
+}
+
+# condition codes: b 2, ae 3, e 4, ne 5, l 12, ge 13, le 14, g 15
+fn e_jcc(cc: int, l: int) {
+    emit2(15, 128 + cc)
+    emit_rel(l)
+}
+
+fn e_call(l: int) {
+    emit(232)
+    emit_rel(l)
+}
+
+fn e_push(r: int) {
+    if r >= 8 {
+        emit(65)
+    }
+    emit(80 + r % 8)
+}
+
+fn e_pop(r: int) {
+    if r >= 8 {
+        emit(65)
+    }
+    emit(88 + r % 8)
+}
+
+# REX.W prefix with the R (bit 2) and B (bit 0) extensions for registers 8-15
+fn rex(r: int, b: int) -> int {
+    let v = 72
+    if r >= 8 {
+        v += 4
+    }
+    if b >= 8 {
+        v += 1
+    }
+    return v
+}
+
+# mov dst, src
+fn e_mov_rr(dst: int, src: int) {
+    emit3(rex(src, dst), 137, 192 + src % 8 * 8 + dst % 8)
+}
+
+fn e_mov_imm(r: int, v: int) {
+    if fits32(v) {
+        emit3(rex(0, r), 199, 192 + r % 8)
+        emit32(v)
+    } else {
+        emit2(rex(0, r), 184 + r % 8)
+        emit64(v)
+    }
+}
+
+fn e_push_imm(v: int) {
+    if fits32(v) {
+        emit(104)
+        emit32(v)
+    } else {
+        e_mov_imm(0, v)
+        e_push(0)
+    }
+}
+
+# [base + disp32] memory operand; base 4 (rsp) needs a SIB byte
+fn e_modrm_mem(reg: int, base: int, disp: int) {
+    if disp >= 100000 {
+        err("internal: register variable used as memory")
+    }
+    emit(128 + reg * 8 + base)
+    if base == 4 {
+        emit(36)
+    }
+    emit32(disp)
+}
+
+# [absolute address] memory operand
+fn e_modrm_abs(reg: int, addr: int) {
+    emit2(4 + reg * 8, 37)
+    emit32(addr)
+}
+
+fn e_load(r: int, base: int, disp: int) {
+    emit2(72, 139)
+    e_modrm_mem(r, base, disp)
+}
+
+fn e_store(base: int, disp: int, r: int) {
+    emit2(72, 137)
+    e_modrm_mem(r, base, disp)
+}
+
+fn e_lea(r: int, base: int, disp: int) {
+    emit2(72, 141)
+    e_modrm_mem(r, base, disp)
+}
+
+fn e_push_mem(base: int, disp: int) {
+    emit(255)
+    e_modrm_mem(6, base, disp)
+}
+
+fn e_pop_mem(base: int, disp: int) {
+    emit(143)
+    e_modrm_mem(0, base, disp)
+}
+
+fn e_load_abs(r: int, addr: int) {
+    emit2(72, 139)
+    e_modrm_abs(r, addr)
+}
+
+fn e_store_abs(addr: int, r: int) {
+    emit2(72, 137)
+    e_modrm_abs(r, addr)
+}
+
+fn e_push_abs(addr: int) {
+    emit(255)
+    e_modrm_abs(6, addr)
+}
+
+fn e_pop_abs(addr: int) {
+    emit(143)
+    e_modrm_abs(0, addr)
+}
+
+fn e_add_rsp(n: int) {
+    if n > 0 {
+        emit3(72, 129, 196)
+        emit32(n)
+    }
+}
+
+# rcx <- index of the current memory bucket (call depth & 1)
+fn e_cur_bucket_rcx() {
+    e_load_abs(1, a_depth())
+    emit3(131, 225, 1)
+}
+
+fn e_test_rax() {
+    emit3(72, 133, 192)
+}
+
+fn e_setcc_rax(cc: int) {
+    g_cmp_at = g_code_len
+    g_cmp_cc = cc
+    emit3(15, 144 + cc, 192)
+    emit3(15, 182, 192)
+    g_cmp_end = g_code_len
+}
+
+fn invert_cc(cc: int) -> int {
+    if cc % 2 == 0 {
+        return cc + 1
+    }
+    return cc - 1
+}
+
+# string literal: pushes [ptr, len]
+fn ro_offset(s: string) -> int {
+    let i = 0
+    while i < len(g_ro_strs) {
+        if g_ro_strs[i] == s {
+            return g_ro_offs[i]
+        }
+        i += 1
+    }
+    let off = len(g_ro)
+    let n = len(s)
+    for k in 0..n {
+        push(g_ro, byte_at(s, k))
+    }
+    push(g_ro, 0)
+    push(g_ro_strs, s)
+    push(g_ro_offs, off)
+    return off
+}
+
+fn e_string_literal(s: string) {
+    g_lit_start = g_code_len
+    e_push_imm(len(s))
+    emit3(72, 141, 5)
+    push(g_rfx_at, g_code_len)
+    push(g_rfx_off, ro_offset(s))
+    emit32(0)
+    e_push(0)
+    g_lit_end = g_code_len
+}
+
+# ============================================================================
+# values: 1-word values live in rax, bigger ones on the stack (word 0 on top)
+# ============================================================================
+fn to_stack(t: string) {
+    if words(t) == 1 {
+        e_push(0)
+    }
+}
+
+fn from_stack(t: string) {
+    if words(t) == 1 {
+        e_pop(0)
+    }
+}
+
+fn discard(t: string) {
+    let w = words(t)
+    if w > 1 {
+        e_add_rsp(w * 8)
+    }
+}
+
+# address in rax -> value
+fn load_from_addr(t: string) {
+    let w = words(t)
+    if w == 1 {
+        e_load(0, 0, 0)
+    } else {
+        let i = w - 1
+        while i >= 0 {
+            e_push_mem(0, i * 8)
+            i -= 1
+        }
+    }
+}
+
+# value on the stack (always, even 1 word), address in rax -> memory
+fn store_to_addr(t: string) {
+    let w = words(t)
+    for i in 0..w {
+        e_pop_mem(0, i * 8)
+    }
+}
+
+# ============================================================================
+# locals and globals
+# ============================================================================
+fn add_local(name: string, t: string) -> int {
+    if (t == "int" or t == "bool") and name != "" {
+        let regs = [3, 12, 13, 14, 15]
+        let promote = true
+        for nr in g_noreg {
+            if nr == name {
+                promote = false
+            }
+        }
+        let k = 0
+        while promote and k < 5 {
+            let owner = g_reg_owner[k]
+            if owner < 0 or owner >= g_lc_n {
+                g_reg_owner[k] = g_lc_n
+                g_reg_used[k] = 1
+                let reg = regs[k]
+                return set_local(name, t, 100000 + reg)
+            }
+            k += 1
+        }
+    }
+    let w = words(t)
+    if w < 1 {
+        w = 1
+    }
+    g_frame += w * 8
+    return set_local(name, t, -g_frame)
+}
+
+fn set_local(name: string, t: string, off: int) -> int {
+    if g_lc_n < len(g_lc_name) {
+        g_lc_name[g_lc_n] = name
+        g_lc_type[g_lc_n] = t
+        g_lc_off[g_lc_n] = off
+    } else {
+        push(g_lc_name, name)
+        push(g_lc_type, t)
+        push(g_lc_off, off)
+    }
+    g_lc_n += 1
+    return off
+}
+
+fn is_reg_local(off: int) -> bool {
+    return off >= 100000
+}
+
+fn loc_load(r: int, off: int) {
+    if is_reg_local(off) {
+        e_mov_rr(r, off - 100000)
+    } else {
+        e_load(r, 5, off)
+    }
+}
+
+fn loc_store(off: int, r: int) {
+    if is_reg_local(off) {
+        e_mov_rr(off - 100000, r)
+    } else {
+        e_store(5, off, r)
+    }
+}
+
+fn loc_inc(off: int) {
+    if is_reg_local(off) {
+        let r = off - 100000
+        emit3(rex(0, r), 255, 192 + r % 8)
+    } else {
+        emit3(72, 255, 133)
+        emit32(off)
+    }
+}
+
+fn loc_set0(off: int) {
+    if is_reg_local(off) {
+        e_mov_imm(off - 100000, 0)
+    } else {
+        emit3(72, 199, 133)
+        emit32(off)
+        emit32(0)
+    }
+}
+
+fn find_local(name: string) -> int {
+    let i = g_lc_n - 1
+    while i >= 0 {
+        if g_lc_name[i] == name {
+            return i
+        }
+        i -= 1
+    }
+    return -1
+}
+
+fn find_global(name: string) -> int {
+    # runtime functions only see the runtime's own globals
+    if g_cur_raw and not starts_with_s(name, "__") {
+        return -1
+    }
+    let i = 0
+    while i < len(g_gl_name) {
+        if g_gl_name[i] == name {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn add_global(name: string, t: string) -> int {
+    push(g_gl_name, name)
+    push(g_gl_type, t)
+    push(g_gl_addr, a_globals() + g_gl_next)
+    let w = words(t)
+    if w < 1 {
+        w = 1
+    }
+    g_gl_next += w * 8
+    return len(g_gl_name) - 1
+}
+
+fn find_fn(name: string) -> int {
+    let i = 0
+    while i < len(g_fn_name) {
+        if g_fn_name[i] == name {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn request_fn(i: int) {
+    if g_fn_state[i] == 0 {
+        g_fn_state[i] = 1
+        push(g_queue, i)
+    }
+}
+
+fn call_named(name: string) {
+    let f = find_fn(name)
+    if f < 0 {
+        err("internal: missing runtime function " + name)
+    }
+    request_fn(f)
+    e_call(g_fn_label[f])
+    # a memory frame is only needed to give back memory this call may use
+    if starts_with_s(name, "__") and not (starts_with_s(name, "__out") or name == "__streq" or name == "__flush") {
+        g_cur_framed = true
+    }
+    if has_heap(g_fn_ret[f]) {
+        g_cur_framed = true
+    }
+}
+
+# pushes the result of a call that just returned
+fn take_result(t: string) {
+    let w = words(t)
+    if w > 1 {
+        let i = w - 1
+        while i >= 0 {
+            e_push_abs(a_retbuf() + i * 8)
+            i -= 1
+        }
+    }
+}
+
+# ============================================================================
+# deep copies of values (when a value leaves the memory bucket it was made in)
+# ============================================================================
+fn mangle(t: string) -> string {
+    let out = ""
+    let n = len(t)
+    let st = 0
+    for i in 0..n {
+        let c = byte_at(t, i)
+        if c == 91 or c == 93 {
+            out = out + slice(t, st, i) + "_"
+            st = i + 1
+        }
+    }
+    return out + slice(t, st, n)
+}
+
+fn clone_source(t: string) -> string {
+    let name = "__clone_" + mangle(t)
+    let s = "fn " + name + "(a: int, b: int) {\n"
+    if t == "string" {
+        s = s + "n = __load64(a + 8)\nif n > 0 {\np = __alloc_bytes_in(b, n)\n__memcpy(p, __load64(a), n)\n__store64(a, p)\n}\n}\n"
+        return s
+    }
+    if is_array_t(t) {
+        let e = elem_t(t)
+        let w = words(e)
+        s = s + "n = __load64(a + 8)\nif n == 0 {\n__store64(a, 0)\n__store64(a + 16, 0)\nreturn\n}\n"
+        s = s + "p = __alloc_in(b, n * 8)\n__memcpy(p, __load64(a), n * 8)\n__store64(a, p)\n__store64(a + 16, n)\n"
+        if w > 1 {
+            s = s + "for i in 0..n {\nnb = __alloc_in(b, " + int_to_string(w * 8) + ")\n__memcpy(nb, __load64(p + i * 8), " + int_to_string(w * 8) + ")\n"
+            if has_heap(e) {
+                s = s + "__clone_" + mangle(e) + "(nb, b)\n"
+            }
+            s = s + "__store64(p + i * 8, nb)\n}\n"
+        }
+        return s + "}\n"
+    }
+    let si = struct_index(t)
+    for f in split(g_st_fnames[si], ",") {
+        let ft = field_type(t, f)
+        if has_heap(ft) {
+            s = s + "__clone_" + mangle(ft) + "(a + " + int_to_string(field_off(t, f)) + ", b)\n"
+        }
+    }
+    return s + "}\n"
+}
+
+fn ensure_clone_fn(t: string) {
+    let name = "__clone_" + mangle(t)
+    if find_fn(name) >= 0 {
+        return
+    }
+    let saved = g_pos
+    let start = len(g_tk_kind)
+    tokenize(clone_source(t), false)
+    g_pos = start
+    collect_fn("")
+    g_pos = saved
+    # nested types get their own copy functions
+    if is_array_t(t) {
+        if has_heap(elem_t(t)) {
+            ensure_clone_fn(elem_t(t))
+        }
+    }
+    let si = struct_index(t)
+    if si >= 0 {
+        for ft in split(g_st_ftypes[si], ",") {
+            if has_heap(ft) {
+                ensure_clone_fn(ft)
+            }
+        }
+    }
+}
+
+# value of type t on the stack -> deep copy into bucket: 0 parent, 2 permanent
+fn e_clone(t: string, target: int) {
+    if not has_heap(t) {
+        return
+    }
+    ensure_clone_fn(t)
+    e_mov_rr(0, 4)
+    e_push(0)
+    if target == 2 {
+        e_push_imm(2)
+    } else {
+        e_load_abs(0, a_depth())
+        emit3(72, 255, 200)
+        emit3(131, 224, 1)
+        e_push(0)
+    }
+    call_named("__clone_" + mangle(t))
+    e_add_rsp(16)
+}
+
+# ============================================================================
+# expressions
+# ============================================================================
+fn binop_prec(s: string) -> int {
+    if s == "*" or s == "/" or s == "%" {
+        return 10
+    }
+    if s == "+" or s == "-" {
+        return 9
+    }
+    if s == "<<" or s == ">>" {
+        return 8
+    }
+    if s == "<" or s == ">" or s == "<=" or s == ">=" {
+        return 7
+    }
+    if s == "==" or s == "!=" {
+        return 6
+    }
+    if s == "&" {
+        return 5
+    }
+    if s == "^" {
+        return 4
+    }
+    if s == "|" {
+        return 3
+    }
+    return 0
+}
+
+# Is the next operand a plain number or int variable that can be used directly?
+# Sets g_simple_kind: 1 number, 2 local (g_simple_val = rbp offset), 3 global (address)
+fn simple_operand(level: int) -> bool {
+    g_simple_kind = 0
+    let k = kind()
+    let nxt = g_pos + 1
+    if kind_at(nxt) == 5 {
+        let ns = tk_at(nxt)
+        if ns == "(" or ns == "[" or ns == "." {
+            return false
+        }
+        if binop_prec(ns) > level {
+            return false
+        }
+    }
+    if k == 3 {
+        if fits32(g_tk_num[g_pos]) {
+            g_simple_kind = 1
+            g_simple_val = g_tk_num[g_pos]
+            return true
+        }
+        return false
+    }
+    if k == 1 {
+        let name = tk()
+        let li = find_local(name)
+        if li >= 0 {
+            if g_lc_type[li] == "int" {
+                g_simple_kind = 2
+                g_simple_val = g_lc_off[li]
+                if is_reg_local(g_simple_val) {
+                    g_simple_kind = 4
+                    g_simple_val -= 100000
+                }
+                return true
+            }
+            return false
+        }
+        let gi = find_global(name)
+        if gi >= 0 {
+            if g_gl_type[gi] == "int" {
+                g_simple_kind = 3
+                g_simple_val = g_gl_addr[gi]
+                return true
+            }
+        }
+    }
+    return false
+}
+
+# rax = rax OP simple operand. op: 0 add, 1 sub, 2 cmp, 3 and, 4 or, 5 xor, 6 imul
+fn e_op_simple(op: int) {
+    let mem_ops = [3, 43, 59, 35, 11, 51]
+    let imm_ops = [5, 45, 61, 37, 13, 53]
+    let rr_ops = [1, 41, 57, 33, 9, 49]
+    if g_simple_kind == 4 {
+        let r = g_simple_val
+        if op == 6 {
+            emit4(rex(0, r), 15, 175, 192 + r % 8)
+        } else {
+            emit3(rex(r, 0), rr_ops[op], 192 + r % 8 * 8)
+        }
+        g_pos += 1
+        return
+    }
+    if g_simple_kind == 1 {
+        if op == 6 {
+            emit3(72, 105, 192)
+        } else {
+            emit2(72, imm_ops[op])
+        }
+        emit32(g_simple_val)
+    } else {
+        if op == 6 {
+            emit3(72, 15, 175)
+        } else {
+            emit2(72, mem_ops[op])
+        }
+        if g_simple_kind == 2 {
+            e_modrm_mem(0, 5, g_simple_val)
+        } else {
+            e_modrm_abs(0, g_simple_val)
+        }
+    }
+    g_pos += 1
+}
+
+# rcx <- simple operand
+fn e_simple_to_rcx() {
+    if g_simple_kind == 4 {
+        e_mov_rr(1, g_simple_val)
+        g_pos += 1
+        return
+    }
+    if g_simple_kind == 1 {
+        e_mov_imm(1, g_simple_val)
+    } else {
+        if g_simple_kind == 2 {
+            e_load(1, 5, g_simple_val)
+        } else {
+            e_load_abs(1, g_simple_val)
+        }
+    }
+    g_pos += 1
+}
+
+# rax = rax OP rcx
+fn e_op_rcx(op: int) {
+    let rr_ops = [1, 41, 57, 33, 9, 49]
+    if op == 6 {
+        emit4(72, 15, 175, 193)
+    } else {
+        emit3(72, rr_ops[op], 200)
+    }
+}
+
+fn gen_expr() -> string {
+    let t = gen_or()
+    while is_sym("|>") {
+        g_pos += 1
+        to_stack(t)
+        let name = expect_name()
+        if not is_sym("(") {
+            err("expected '(' after " + name + " in a |> pipe")
+        }
+        t = gen_call(name, t)
+    }
+    return t
+}
+
+fn gen_or() -> string {
+    let t = gen_and()
+    if not is_kw("or") and not is_sym("||") {
+        return t
+    }
+    let l_true = new_label()
+    let l_end = new_label()
+    while is_kw("or") or is_sym("||") {
+        g_pos += 1
+        e_test_rax()
+        e_jcc(5, l_true)
+        gen_and()
+    }
+    e_test_rax()
+    e_jcc(5, l_true)
+    emit2(49, 192)
+    e_jmp(l_end)
+    place(l_true)
+    emit(184)
+    emit32(1)
+    place(l_end)
+    return "bool"
+}
+
+fn gen_and() -> string {
+    let t = gen_bitor()
+    if not is_kw("and") and not is_sym("&&") {
+        return t
+    }
+    let l_false = new_label()
+    let l_end = new_label()
+    while is_kw("and") or is_sym("&&") {
+        g_pos += 1
+        e_test_rax()
+        e_jcc(4, l_false)
+        gen_bitor()
+    }
+    e_test_rax()
+    e_jcc(4, l_false)
+    emit(184)
+    emit32(1)
+    e_jmp(l_end)
+    place(l_false)
+    emit2(49, 192)
+    place(l_end)
+    return "bool"
+}
+
+fn need_int(t: string, op: string) {
+    if t != "int" and t != "bool" {
+        err("'" + op + "' needs numbers, not " + t)
+    }
+}
+
+# generic left-assoc integer level: ops listed with their op codes
+fn gen_int_rhs(op: string, level: int, opcode: int) {
+    if simple_operand(level) {
+        e_op_simple(opcode)
+    } else {
+        e_push(0)
+        let rt = gen_level(level + 1)
+        need_int(rt, op)
+        e_mov_rr(1, 0)
+        e_pop(0)
+        e_op_rcx(opcode)
+    }
+}
+
+fn gen_bitor() -> string {
+    let t = gen_level(4)
+    while is_sym("|") {
+        need_int(t, "|")
+        g_pos += 1
+        gen_int_rhs("|", 3, 4)
+        t = "int"
+    }
+    return t
+}
+
+# levels: 4 xor, 5 and, 6 equality, 7 compare, 8 shift, 9 add, 10 multiply
+fn gen_level(level: int) -> string {
+    if level == 4 {
+        let t = gen_level(5)
+        while is_sym("^") {
+            need_int(t, "^")
+            g_pos += 1
+            gen_int_rhs("^", 4, 5)
+            t = "int"
+        }
+        return t
+    }
+    if level == 5 {
+        let t = gen_level(6)
+        while is_sym("&") {
+            need_int(t, "&")
+            g_pos += 1
+            gen_int_rhs("&", 5, 3)
+            t = "int"
+        }
+        return t
+    }
+    if level == 6 {
+        return gen_equality()
+    }
+    if level == 7 {
+        return gen_compare()
+    }
+    if level == 8 {
+        return gen_shift()
+    }
+    if level == 9 {
+        return gen_additive()
+    }
+    if level == 10 {
+        return gen_multiplicative()
+    }
+    return gen_unary()
+}
+
+fn gen_equality() -> string {
+    let t = gen_compare()
+    while is_sym("==") or is_sym("!=") {
+        let op = tk()
+        g_pos += 1
+        if t == "string" {
+            let rt = gen_compare()
+            if rt != "string" {
+                err("cannot compare string with " + rt)
+            }
+            call_named("__streq")
+            e_add_rsp(32)
+            if op == "!=" {
+                emit4(72, 131, 240, 1)
+            }
+        } else {
+            if t != "int" and t != "bool" {
+                err("cannot compare values of type " + t + " with " + op)
+            }
+            if simple_operand(6) {
+                e_op_simple(2)
+            } else {
+                e_push(0)
+                let rt = gen_compare()
+                if rt != "int" and rt != "bool" {
+                    err("cannot compare " + t + " with " + rt)
+                }
+                e_mov_rr(1, 0)
+                e_pop(0)
+                e_op_rcx(2)
+            }
+            if op == "==" {
+                e_setcc_rax(4)
+            } else {
+                e_setcc_rax(5)
+            }
+        }
+        t = "bool"
+    }
+    return t
+}
+
+fn compare_cc(op: string) -> int {
+    if op == "<" {
+        return 12
+    }
+    if op == ">=" {
+        return 13
+    }
+    if op == "<=" {
+        return 14
+    }
+    return 15
+}
+
+fn gen_compare() -> string {
+    let t = gen_shift()
+    while is_sym("<") or is_sym(">") or is_sym("<=") or is_sym(">=") {
+        let op = tk()
+        need_int(t, op)
+        g_pos += 1
+        gen_int_rhs(op, 7, 2)
+        e_setcc_rax(compare_cc(op))
+        t = "bool"
+    }
+    return t
+}
+
+fn gen_shift() -> string {
+    let t = gen_additive()
+    while is_sym("<<") or is_sym(">>") {
+        let op = tk()
+        need_int(t, op)
+        g_pos += 1
+        if simple_operand(8) {
+            e_simple_to_rcx()
+        } else {
+            e_push(0)
+            need_int(gen_additive(), op)
+            e_mov_rr(1, 0)
+            e_pop(0)
+        }
+        if op == "<<" {
+            emit3(72, 211, 224)
+        } else {
+            emit3(72, 211, 248)
+        }
+        t = "int"
+    }
+    return t
+}
+
+fn gen_additive() -> string {
+    let t = gen_multiplicative()
+    while is_sym("+") or is_sym("-") {
+        let op = tk()
+        g_pos += 1
+        if t == "string" {
+            if op != "+" {
+                err("strings can only be joined with +")
+            }
+            let rt = gen_multiplicative()
+            if rt != "string" {
+                err("cannot add " + rt + " to a string (use int_to_string)")
+            }
+            call_named("__concat")
+            e_add_rsp(32)
+            take_result("string")
+        } else {
+            need_int(t, op)
+            let opcode = 0
+            if op == "-" {
+                opcode = 1
+            }
+            gen_int_rhs(op, 9, opcode)
+            t = "int"
+        }
+    }
+    return t
+}
+
+fn gen_multiplicative() -> string {
+    let t = gen_unary()
+    while is_sym("*") or is_sym("/") or is_sym("%") {
+        let op = tk()
+        need_int(t, op)
+        g_pos += 1
+        if op == "*" {
+            gen_int_rhs(op, 10, 6)
+        } else {
+            if kind() == 3 and g_tk_num[g_pos] == 10 and binop_prec(tk_at(g_pos + 1)) <= 10 and not is_sym_at(g_pos + 1, "(") {
+                # x / 10 by multiplying with a magic constant (much faster than idiv)
+                g_pos += 1
+                e_mov_rr(1, 0)
+                e_mov_imm(0, 7378697629483820647)
+                emit3(72, 247, 233)
+                emit4(72, 193, 250, 2)
+                e_mov_rr(0, 1)
+                emit4(72, 193, 248, 63)
+                emit3(72, 41, 194)
+                if op == "/" {
+                    e_mov_rr(0, 2)
+                } else {
+                    emit4(72, 107, 210, 10)
+                    e_mov_rr(0, 1)
+                    emit3(72, 41, 208)
+                }
+                t = "int"
+                continue
+            }
+            if simple_operand(10) {
+                e_simple_to_rcx()
+            } else {
+                e_push(0)
+                need_int(gen_unary(), op)
+                e_mov_rr(1, 0)
+                e_pop(0)
+            }
+            emit2(72, 153)
+            emit3(72, 247, 249)
+            if op == "%" {
+                e_mov_rr(0, 2)
+            }
+        }
+        t = "int"
+    }
+    return t
+}
+
+fn gen_unary() -> string {
+    if is_sym("-") {
+        g_pos += 1
+        if kind() == 3 and not is_sym_at(g_pos + 1, "(") and not is_sym_at(g_pos + 1, "[") {
+            e_mov_imm(0, -g_tk_num[g_pos])
+            g_pos += 1
+            return "int"
+        }
+        let t = gen_unary()
+        need_int(t, "-")
+        emit3(72, 247, 216)
+        return "int"
+    }
+    if is_kw("not") or is_sym("!") {
+        g_pos += 1
+        let t = gen_unary()
+        need_int(t, "not")
+        emit4(72, 131, 240, 1)
+        return "bool"
+    }
+    return gen_postfix()
+}
+
+# index into an array whose header address is in rcx, index in rax -> element address in rax
+fn e_index(t: string) {
+    emit3(72, 59, 129)
+    emit32(8)
+    e_jcc(3, g_bounds_lbl)
+    e_load(2, 1, 0)
+    emit4(72, 141, 4, 194)
+    if words(elem_t(t)) > 1 {
+        e_load(0, 0, 0)
+    }
+}
+
+# variable address -> rax. Returns the type or "" when the name is not a variable.
+fn e_var_addr(name: string) -> string {
+    let li = find_local(name)
+    if li >= 0 {
+        e_lea(0, 5, g_lc_off[li])
+        return g_lc_type[li]
+    }
+    let gi = find_global(name)
+    if gi >= 0 {
+        emit(184)
+        emit32(g_gl_addr[gi])
+        g_place_perm = true
+        return g_gl_type[gi]
+    }
+    return ""
+}
+
+# load a whole variable as a value (fast path, no address math)
+fn e_var_value(name: string) -> string {
+    let li = find_local(name)
+    if li >= 0 {
+        let t = g_lc_type[li]
+        let w = words(t)
+        let off = g_lc_off[li]
+        if w == 1 {
+            loc_load(0, off)
+        } else {
+            let i = w - 1
+            while i >= 0 {
+                e_push_mem(5, off + i * 8)
+                i -= 1
+            }
+        }
+        return t
+    }
+    let gi = find_global(name)
+    if gi >= 0 {
+        let t = g_gl_type[gi]
+        let w = words(t)
+        let a = g_gl_addr[gi]
+        if w == 1 {
+            e_load_abs(0, a)
+        } else {
+            let i = w - 1
+            while i >= 0 {
+                e_push_abs(a + i * 8)
+                i -= 1
+            }
+        }
+        return t
+    }
+    return ""
+}
+
+# postfix chains: calls, a[i], s[i], x.field, x.method()
+# while `addr` is true the place's address is in rax instead of its value
+fn gen_postfix() -> string {
+    let t = ""
+    let addr = false
+    if kind() == 1 {
+        let name = tk()
+        if is_sym_at(g_pos + 1, "(") {
+            g_pos += 1
+            t = gen_call(name, "")
+        } else {
+            let chained = is_sym_at(g_pos + 1, "[") or is_sym_at(g_pos + 1, ".")
+            if chained {
+                t = e_var_addr(name)
+                addr = true
+            } else {
+                t = e_var_value(name)
+            }
+            if t == "" {
+                err("unknown name '" + name + "'")
+            }
+            g_pos += 1
+        }
+    } else {
+        t = gen_primary()
+    }
+    let going = true
+    while going {
+        if is_sym("[") {
+            g_pos += 1
+            if t == "string" {
+                if addr {
+                    load_from_addr(t)
+                    addr = false
+                }
+                let it = gen_expr()
+                need_int(it, "[]")
+                expect("]")
+                e_push(0)
+                call_named("__char_at")
+                e_add_rsp(24)
+                take_result("string")
+            } else {
+                if not is_array_t(t) {
+                    err("cannot index a value of type " + t)
+                }
+                if addr {
+                    if simple_operand(0) and is_sym_at(g_pos + 1, "]") {
+                        e_mov_rr(1, 0)
+                        if g_simple_kind == 1 {
+                            e_mov_imm(0, g_simple_val)
+                        } else {
+                            if g_simple_kind == 4 {
+                                e_mov_rr(0, g_simple_val)
+                            }
+                            if g_simple_kind == 2 {
+                                e_load(0, 5, g_simple_val)
+                            }
+                            if g_simple_kind == 3 {
+                                e_load_abs(0, g_simple_val)
+                            }
+                        }
+                        g_pos += 1
+                    } else {
+                        e_push(0)
+                        need_int(gen_expr(), "[]")
+                        e_pop(1)
+                    }
+                    expect("]")
+                    e_index(t)
+                } else {
+                    need_int(gen_expr(), "[]")
+                    expect("]")
+                    e_mov_rr(1, 4)
+                    e_index(t)
+                    e_add_rsp(24)
+                }
+                g_place_perm = true
+                addr = true
+                t = elem_t(t)
+            }
+        } else {
+            if is_sym(".") and kind_at(g_pos + 1) == 1 {
+                let f = tk_at(g_pos + 1)
+                if is_sym_at(g_pos + 2, "(") {
+                    if struct_index(t) < 0 {
+                        err("cannot call ." + f + "() on a value of type " + t)
+                    }
+                    if addr {
+                        load_from_addr(t)
+                        addr = false
+                    }
+                    to_stack(t)
+                    g_pos += 2
+                    t = gen_call(t + "_" + f, t)
+                } else {
+                    if struct_index(t) < 0 {
+                        err("cannot read ." + f + " of a value of type " + t)
+                    }
+                    let off = field_off(t, f)
+                    if off < 0 {
+                        err(t + " has no field '" + f + "'")
+                    }
+                    let ft = field_type(t, f)
+                    if addr {
+                        if off > 0 {
+                            emit2(72, 5)
+                            emit32(off)
+                        }
+                    } else {
+                        let w = words(t)
+                        let fw = words(ft)
+                        if fw == 1 {
+                            e_load(0, 4, off)
+                            e_add_rsp(w * 8)
+                        } else {
+                            let i = fw - 1
+                            while i >= 0 {
+                                e_load(0, 4, off + i * 8)
+                                e_store(4, (w - fw) * 8 + i * 8, 0)
+                                i -= 1
+                            }
+                            e_add_rsp((w - fw) * 8)
+                        }
+                    }
+                    t = ft
+                    g_pos += 2
+                }
+            } else {
+                going = false
+            }
+        }
+    }
+    if addr {
+        load_from_addr(t)
+    }
+    return t
+}
+
+# address of an assignable place -> rax. Sets g_place_perm when the place
+# lives in long-lived memory (a global, or inside an array).
+fn gen_place() -> string {
+    g_place_perm = false
+    let name = expect_name()
+    let t = e_var_addr(name)
+    if t == "" {
+        err("unknown name '" + name + "'")
+    }
+    let going = true
+    while going {
+        if is_sym("[") {
+            if not is_array_t(t) {
+                err("cannot assign into a value of type " + t)
+            }
+            g_pos += 1
+            e_push(0)
+            need_int(gen_expr(), "[]")
+            e_pop(1)
+            expect("]")
+            e_index(t)
+            g_place_perm = true
+            t = elem_t(t)
+        } else {
+            if is_sym(".") {
+                g_pos += 1
+                let f = expect_name()
+                if struct_index(t) < 0 {
+                    err("cannot set ." + f + " on a value of type " + t)
+                }
+                let off = field_off(t, f)
+                if off < 0 {
+                    err(t + " has no field '" + f + "'")
+                }
+                if off > 0 {
+                    emit2(72, 5)
+                    emit32(off)
+                }
+                t = field_type(t, f)
+            } else {
+                going = false
+            }
+        }
+    }
+    return t
+}
+
+# true when the place starting at token i is a global or goes through an array
+fn place_is_perm(i: int) -> bool {
+    let name = tk_at(i)
+    if find_local(name) < 0 and find_global(name) >= 0 {
+        return true
+    }
+    let j = i + 1
+    while is_sym_at(j, "[") or is_sym_at(j, ".") {
+        if is_sym_at(j, "[") {
+            return true
+        }
+        j += 2
+    }
+    return false
+}
+
+# token index just after the [...] that starts at token j
+fn skip_brackets(j: int) -> int {
+    let depth = 0
+    while true {
+        if is_sym_at(j, "[") {
+            depth += 1
+        }
+        if is_sym_at(j, "]") {
+            depth -= 1
+            if depth == 0 {
+                return j + 1
+            }
+        }
+        if kind_at(j) == 6 {
+            err("missing ']'")
+        }
+        j += 1
+    }
+    return j
+}
+
+# token index just after a place expression starting at i
+fn skip_place(i: int) -> int {
+    let j = i + 1
+    let going = true
+    while going {
+        if is_sym_at(j, ".") {
+            j += 2
+        } else {
+            if is_sym_at(j, "[") {
+                j = skip_brackets(j)
+            } else {
+                going = false
+            }
+        }
+    }
+    return j
+}
+
+fn gen_primary() -> string {
+    let k = kind()
+    if k == 3 {
+        e_mov_imm(0, g_tk_num[g_pos])
+        g_pos += 1
+        return "int"
+    }
+    if k == 4 {
+        e_string_literal(tk())
+        g_pos += 1
+        return "string"
+    }
+    if is_kw("true") {
+        emit(184)
+        emit32(1)
+        g_pos += 1
+        return "bool"
+    }
+    if is_kw("false") {
+        emit2(49, 192)
+        g_pos += 1
+        return "bool"
+    }
+    if is_sym("(") {
+        g_pos += 1
+        let t = gen_expr()
+        expect(")")
+        return t
+    }
+    if is_sym("[") {
+        return gen_array_literal()
+    }
+    if k == 6 {
+        err("unexpected end of file")
+    }
+    err("unexpected '" + tk() + "'")
+    return ""
+}
+
+# zero a 3-word array header at rbp+off
+fn e_zero_header(off: int) {
+    for i in 0..3 {
+        emit3(72, 199, 133)
+        emit32(off + i * 8)
+        emit32(0)
+    }
+}
+
+# value of type et on the stack -> appended to the array whose header is at rbp+off
+fn e_push_into_local(off: int, et: string) {
+    e_lea(0, 5, off)
+    e_push(0)
+    e_cur_bucket_rcx()
+    e_push(1)
+    e_push_imm(words(et))
+    call_named("__push_slot")
+    e_add_rsp(24)
+    store_to_addr(et)
+}
+
+fn gen_array_literal() -> string {
+    expect("[")
+    if is_sym("]") {
+        g_pos += 1
+        let t = "array[int]"
+        if is_array_t(g_want) {
+            t = g_want
+        }
+        e_push_imm(0)
+        e_push_imm(0)
+        e_push_imm(0)
+        return t
+    }
+    # list comprehension?  [expr for x in items if cond]
+    let j = g_pos
+    let depth = 0
+    let comp_at = -1
+    while depth >= 0 and kind_at(j) != 6 {
+        if kind_at(j) == 5 {
+            let s = tk_at(j)
+            if s == "[" or s == "(" or s == "{" {
+                depth += 1
+            }
+            if s == "]" or s == ")" or s == "}" {
+                depth -= 1
+            }
+        }
+        if depth == 0 and kind_at(j) == 2 and tk_at(j) == "for" and comp_at < 0 {
+            comp_at = j
+        }
+        j += 1
+    }
+    if comp_at >= 0 {
+        return gen_comprehension(comp_at)
+    }
+    let hdr = add_local("", "array[int]")
+    e_zero_header(hdr)
+    let et = ""
+    let going = true
+    while going {
+        let saved_want = g_want
+        if is_array_t(g_want) {
+            g_want = elem_t(g_want)
+        }
+        let t = gen_expr()
+        g_want = saved_want
+        if et == "" {
+            et = t
+        } else {
+            if t != et {
+                err("array items must all have the same type (" + et + " vs " + t + ")")
+            }
+        }
+        to_stack(t)
+        e_push_into_local(hdr, t)
+        if is_sym(",") {
+            g_pos += 1
+            if is_sym("]") {
+                going = false
+            }
+        } else {
+            going = false
+        }
+    }
+    expect("]")
+    for i in 0..3 {
+        e_push_mem(5, hdr + 16 - i * 8)
+    }
+    return "array[" + et + "]"
+}
+
+fn gen_comprehension(comp_at: int) -> string {
+    let expr_at = g_pos
+    let saved_n = g_lc_n
+    g_pos = comp_at + 1
+    let var = expect_name()
+    expect("in")
+    let l_top = new_label()
+    let l_next = new_label()
+    let l_end = new_label()
+    let res = add_local("", "array[int]")
+    e_zero_header(res)
+    let var_off = 0
+    let it_t = gen_expr()
+    let is_range = false
+    let src = 0
+    let idx = add_local("#i", "int")
+    let lim = add_local("", "int")
+    if is_sym("..") {
+        need_int(it_t, "..")
+        is_range = true
+        g_pos += 1
+        loc_store(idx, 0)
+        need_int(gen_expr(), "..")
+        e_store(5, lim, 0)
+        var_off = add_local(var, "int")
+    } else {
+        if not is_array_t(it_t) {
+            err("can only loop over arrays and ranges, not " + it_t)
+        }
+        src = add_local("", it_t)
+        e_lea(0, 5, src)
+        store_to_addr(it_t)
+        loc_set0(idx)
+        var_off = add_local(var, elem_t(it_t))
+    }
+    let cond_at = -1
+    if is_kw("if") {
+        g_pos += 1
+        cond_at = g_pos
+    }
+    place(l_top)
+    loc_load(0, idx)
+    if is_range {
+        emit3(72, 59, 133)
+        emit32(lim)
+    } else {
+        emit3(72, 59, 133)
+        emit32(src + 8)
+    }
+    e_jcc(13, l_end)
+    if is_range {
+        loc_store(var_off, 0)
+    } else {
+        e_load(1, 5, src)
+        e_load_elem_to_local(elem_t(it_t), var_off)
+    }
+    let end_at = 0
+    if cond_at >= 0 {
+        g_pos = cond_at
+        gen_cond(l_next)
+    }
+    end_at = g_pos
+    g_pos = expr_at
+    let et = gen_expr()
+    if not is_kw("for") {
+        err("expected 'for' in list comprehension")
+    }
+    to_stack(et)
+    e_push_into_local(res, et)
+    place(l_next)
+    loc_inc(idx)
+    e_jmp(l_top)
+    place(l_end)
+    g_pos = end_at
+    expect("]")
+    g_lc_n = saved_n
+    for i in 0..3 {
+        e_push_mem(5, res + 16 - i * 8)
+    }
+    return "array[" + et + "]"
+}
+
+# rcx = array data pointer, rax = element number -> element copied to the local at rbp+dst
+fn e_load_elem_to_local(et: string, dst: int) {
+    emit4(72, 139, 4, 193)
+    let w = words(et)
+    if w == 1 {
+        loc_store(dst, 0)
+    } else {
+        for i in 0..w {
+            e_load(1, 0, i * 8)
+            e_store(5, dst + i * 8, 1)
+        }
+    }
+}
+
+# ============================================================================
+# calls and built-in functions
+# ============================================================================
+fn builtin_alias(name: string) -> string {
+    if name == "read_file" or name == "write_file" or name == "int_to_string" or name == "to_int" {
+        return "__" + name
+    }
+    if name == "char_at" or name == "byte_at" or name == "slice" or name == "split" or name == "join" {
+        return "__" + name
+    }
+    if name == "chr" or name == "find" or name == "contains" or name == "starts_with" or name == "ends_with" {
+        return "__" + name
+    }
+    if name == "trim" or name == "exit" or name == "make_executable" or name == "bytes_to_string" or name == "remove_file" {
+        return "__" + name
+    }
+    if name == "exec" or name == "clock_ns" or name == "eprint" or name == "input" or name == "upper" or name == "lower" {
+        return "__" + name
+    }
+    if name == "socket_listen" or name == "socket_accept" or name == "socket_read" or name == "socket_write" or name == "socket_close" {
+        return "__" + name
+    }
+    if name == "str" {
+        return "__int_to_string"
+    }
+    if name == "string_equal" {
+        return "__streq"
+    }
+    if name == "slop_pack" or name == "slop_unpack" or name == "run" or name == "run_status" {
+        return "__" + name
+    }
+    if name == "replace" or name == "repeat" {
+        return "__" + name
+    }
+    return ""
+}
+
+fn no_types() -> array[string] {
+    let none: array[string] = []
+    return none
+}
+
+# evaluates call arguments (pushing each one); pos is at '('
+fn gen_args(expected: array[string]) -> array[string] {
+    expect("(")
+    let types: array[string] = []
+    let i = 0
+    while not is_sym(")") {
+        let saved_want = g_want
+        if i < len(expected) {
+            g_want = expected[i]
+        }
+        let t = gen_expr()
+        g_want = saved_want
+        to_stack(t)
+        push(types, t)
+        i += 1
+        if is_sym(",") {
+            g_pos += 1
+        } else {
+            if not is_sym(")") {
+                err("expected ',' or ')' in call")
+            }
+        }
+    }
+    g_pos += 1
+    return types
+}
+
+fn gen_print(pre: string) {
+    let first = true
+    if pre != "" {
+        print_value(pre)
+        first = false
+    }
+    expect("(")
+    while not is_sym(")") {
+        if not first {
+            e_mov_imm(0, 32)
+            e_push(0)
+            call_named("__out_byte")
+            e_add_rsp(8)
+        }
+        let t = gen_expr()
+        to_stack(t)
+        print_value(t)
+        first = false
+        if is_sym(",") {
+            g_pos += 1
+        }
+    }
+    g_pos += 1
+    e_push_imm(10)
+    call_named("__out_byte")
+    e_add_rsp(8)
+}
+
+# value of type t on the stack -> written to the output
+fn print_value(t: string) {
+    if t == "string" {
+        call_named("__out_str")
+        e_add_rsp(16)
+        return
+    }
+    if t == "int" {
+        call_named("__out_int")
+        e_add_rsp(8)
+        return
+    }
+    if t == "bool" {
+        call_named("__out_bool")
+        e_add_rsp(8)
+        return
+    }
+    if t == "array[int]" {
+        call_named("__out_ints")
+        e_add_rsp(24)
+        return
+    }
+    if t == "array[string]" {
+        call_named("__out_strs")
+        e_add_rsp(24)
+        return
+    }
+    err("cannot print a value of type " + t)
+}
+
+fn gen_push_builtin() -> string {
+    expect("(")
+    let place_at = g_pos
+    if kind() != 1 {
+        err("push needs a variable as its first argument")
+    }
+    let perm = place_is_perm(place_at)
+    g_pos = skip_place(place_at)
+    expect(",")
+    # find the array's type without emitting code: dry run on a copy of the cursor
+    let arr_t = place_type(place_at)
+    if not is_array_t(arr_t) {
+        err("push needs an array, not " + arr_t)
+    }
+    let et = elem_t(arr_t)
+    let saved_want = g_want
+    g_want = et
+    let vt = gen_expr()
+    g_want = saved_want
+    if vt != et {
+        err("cannot push " + vt + " onto " + arr_t)
+    }
+    expect(")")
+    let end_at = g_pos
+    to_stack(et)
+    if perm {
+        e_clone(et, 2)
+    }
+    g_pos = place_at
+    gen_place()
+    g_pos = end_at
+    if words(et) == 1 and not perm {
+        # room left: write straight into the next slot
+        let l_slow = new_label()
+        let l_store = new_label()
+        e_mov_rr(1, 0)
+        e_load(2, 1, 8)
+        emit3(72, 59, 145)
+        emit32(16)
+        e_jcc(3, l_slow)
+        e_load(0, 1, 0)
+        emit4(72, 141, 4, 208)
+        emit3(72, 255, 129)
+        emit32(8)
+        e_jmp(l_store)
+        place(l_slow)
+        e_push(1)
+        e_cur_bucket_rcx()
+        e_push(1)
+        e_push_imm(1)
+        call_named("__push_slot")
+        e_add_rsp(24)
+        place(l_store)
+        store_to_addr(et)
+        return "void"
+    }
+    e_push(0)
+    if perm {
+        e_push_imm(2)
+    } else {
+        e_cur_bucket_rcx()
+        e_push(1)
+    }
+    e_push_imm(words(et))
+    call_named("__push_slot")
+    e_add_rsp(24)
+    store_to_addr(et)
+    return "void"
+}
+
+# type of the place starting at token i (no code)
+fn place_type(i: int) -> string {
+    let name = tk_at(i)
+    let t = ""
+    let li = find_local(name)
+    if li >= 0 {
+        t = g_lc_type[li]
+    } else {
+        let gi = find_global(name)
+        if gi < 0 {
+            err("unknown name '" + name + "'")
+        }
+        t = g_gl_type[gi]
+    }
+    let j = i + 1
+    let going = true
+    while going {
+        if is_sym_at(j, ".") {
+            if struct_index(t) < 0 {
+                err("no fields on " + t)
+            }
+            t = field_type(t, tk_at(j + 1))
+            if t == "" {
+                err("unknown field '" + tk_at(j + 1) + "'")
+            }
+            j += 2
+        } else {
+            if is_sym_at(j, "[") {
+                if not is_array_t(t) {
+                    err("cannot index " + t)
+                }
+                t = elem_t(t)
+                j = skip_brackets(j)
+            } else {
+                going = false
+            }
+        }
+    }
+    return t
+}
+
+fn gen_pop_builtin() -> string {
+    expect("(")
+    let place_at = g_pos
+    let arr_t = place_type(place_at)
+    if not is_array_t(arr_t) {
+        err("pop needs an array, not " + arr_t)
+    }
+    gen_place()
+    expect(")")
+    e_push(0)
+    call_named("__pop_slot")
+    e_add_rsp(8)
+    let et = elem_t(arr_t)
+    if words(et) > 1 {
+        e_load(0, 0, 0)
+    }
+    load_from_addr(et)
+    return et
+}
+
+# low-level and memory intrinsics; all arguments are already on the stack
+fn gen_intrinsic(name: string, n: int) -> string {
+    if name == "__load8" or name == "unsafe_load8" {
+        e_pop(0)
+        emit3(15, 182, 0)
+        return "int"
+    }
+    if name == "unsafe_load16" {
+        e_pop(0)
+        emit3(15, 183, 0)
+        return "int"
+    }
+    if name == "unsafe_load32" or name == "mmio_read32" {
+        e_pop(0)
+        emit2(139, 0)
+        if name == "mmio_read32" {
+            emit3(15, 174, 240)
+        }
+        return "int"
+    }
+    if name == "__load64" or name == "unsafe_load64" {
+        e_pop(0)
+        e_load(0, 0, 0)
+        return "int"
+    }
+    if name == "__store8" or name == "unsafe_store8" {
+        e_pop(0)
+        e_pop(1)
+        emit2(136, 1)
+        return "void"
+    }
+    if name == "unsafe_store16" {
+        e_pop(0)
+        e_pop(1)
+        emit3(102, 137, 1)
+        return "void"
+    }
+    if name == "unsafe_store32" or name == "mmio_write32" {
+        e_pop(0)
+        e_pop(1)
+        emit2(137, 1)
+        if name == "mmio_write32" {
+            emit3(15, 174, 240)
+        }
+        return "void"
+    }
+    if name == "__store64" or name == "unsafe_store64" {
+        e_pop(0)
+        e_pop(1)
+        emit3(72, 137, 1)
+        return "void"
+    }
+    if name == "__alloc" or name == "__alloc_bytes" or name == "__alloc_in" or name == "__alloc_bytes_in" {
+        e_pop(0)
+        if name == "__alloc_in" or name == "__alloc_bytes_in" {
+            e_pop(1)
+        } else {
+            e_cur_bucket_rcx()
+        }
+        # rdx = bump[rcx]
+        emit4(72, 139, 20, 205)
+        emit32(a_bump())
+        if name == "__alloc" or name == "__alloc_in" {
+            emit4(72, 131, 194, 7)
+            emit4(72, 131, 226, 248)
+        }
+        emit4(72, 141, 52, 2)
+        emit4(72, 137, 52, 205)
+        emit32(a_bump())
+        e_mov_rr(0, 2)
+        g_cur_framed = true
+        return "int"
+    }
+    if name == "__bump" {
+        e_pop(0)
+        emit4(72, 139, 4, 197)
+        emit32(a_bump())
+        return "int"
+    }
+    if name == "__cur_bucket" {
+        e_cur_bucket_rcx()
+        e_mov_rr(0, 1)
+        return "int"
+    }
+    if name == "__memcpy" or name == "ram_copy" {
+        e_pop(1)
+        e_pop(6)
+        e_pop(7)
+        emit2(243, 164)
+        return "void"
+    }
+    if name == "__memzero" or name == "ram_zero" {
+        e_pop(1)
+        e_pop(7)
+        emit2(49, 192)
+        emit2(243, 170)
+        return "void"
+    }
+    if name == "__memeq" {
+        e_pop(1)
+        e_pop(6)
+        e_pop(7)
+        emit2(49, 192)
+        emit2(243, 166)
+        emit3(15, 148, 192)
+        return "bool"
+    }
+    if name == "__syscall" {
+        let regs = [7, 6, 2, 10, 8, 9]
+        let i = n - 2
+        while i >= 0 {
+            let r = regs[i]
+            if r >= 8 {
+                emit2(65, 88 + r - 8)
+            } else {
+                e_pop(r)
+            }
+            i -= 1
+        }
+        e_pop(0)
+        emit2(15, 5)
+        return "int"
+    }
+    if name == "__str" {
+        e_pop(0)
+        e_pop(1)
+        e_push(0)
+        e_push(1)
+        return "string"
+    }
+    if name == "__str_ptr" {
+        e_pop(0)
+        e_add_rsp(8)
+        return "int"
+    }
+    if name == "__sp0" {
+        e_load_abs(0, a_sp0())
+        return "int"
+    }
+    if name == "__scratch" {
+        emit(184)
+        emit32(a_scratch())
+        return "int"
+    }
+    if name == "cpu_cycles" {
+        emit2(15, 49)
+        emit4(72, 193, 226, 32)
+        emit3(72, 9, 208)
+        return "int"
+    }
+    if name == "cpu_fence" or name == "device_fence" or name == "gpu_fence" {
+        emit3(15, 174, 240)
+        return "void"
+    }
+    if name == "cpu_relax" {
+        emit2(243, 144)
+        return "void"
+    }
+    if name == "cpu_prefetch" {
+        e_pop(0)
+        emit3(15, 24, 8)
+        return "void"
+    }
+    if name == "component_base" {
+        e_pop(0)
+        return "int"
+    }
+    return ""
+}
+
+fn intrinsic_arity(name: string) -> int {
+    if name == "__sp0" or name == "__scratch" or name == "__cur_bucket" or name == "cpu_cycles" or name == "cpu_fence" {
+        return 0
+    }
+    if name == "device_fence" or name == "gpu_fence" or name == "cpu_relax" {
+        return 0
+    }
+    if name == "__load8" or name == "__load64" or name == "__alloc" or name == "__alloc_bytes" or name == "__bump" {
+        return 1
+    }
+    if name == "unsafe_load8" or name == "unsafe_load16" or name == "unsafe_load32" or name == "unsafe_load64" {
+        return 1
+    }
+    if name == "mmio_read32" or name == "cpu_prefetch" or name == "component_base" {
+        return 1
+    }
+    if name == "__store8" or name == "__store64" or name == "__alloc_in" or name == "__alloc_bytes_in" or name == "__str" {
+        return 2
+    }
+    if name == "unsafe_store8" or name == "unsafe_store16" or name == "unsafe_store32" or name == "unsafe_store64" {
+        return 2
+    }
+    if name == "mmio_write32" or name == "ram_zero" or name == "__memzero" {
+        return 2
+    }
+    if name == "__memcpy" or name == "__memeq" or name == "ram_copy" {
+        return 3
+    }
+    if name == "__syscall" {
+        return 99
+    }
+    if name == "__str_ptr" {
+        return 50
+    }
+    return -1
+}
+
+# pos is at '('. pre is the type of an argument already pushed (pipes and methods), or ""
+fn gen_call(name: string, pre: string) -> string {
+    if pre == "" {
+        if name == "push" {
+            return gen_push_builtin()
+        }
+        if name == "pop" {
+            return gen_pop_builtin()
+        }
+        if name == "addr_of" {
+            expect("(")
+            gen_place()
+            expect(")")
+            return "int"
+        }
+    }
+    if name == "print" {
+        gen_print(pre)
+        return "void"
+    }
+    let ar = intrinsic_arity(name)
+    if ar >= 0 {
+        let types = gen_args(no_types())
+        let n = len(types)
+        if pre != "" {
+            n += 1
+        }
+        if ar == 50 {
+            if n != 1 or (pre == "" and types[0] != "string") {
+                err(name + " takes one string")
+            }
+        } else {
+            if ar == 99 {
+                if n < 1 or n > 7 {
+                    err("__syscall takes 1 to 7 numbers")
+                }
+            } else {
+                if n != ar {
+                    err(name + " takes " + int_to_string(ar) + " arguments")
+                }
+            }
+            for at in types {
+                need_int(at, name)
+            }
+        }
+        return gen_intrinsic(name, n)
+    }
+    if name == "len" or name == "length" {
+        let types = gen_args(no_types())
+        let t = pre
+        if pre == "" {
+            if len(types) != 1 {
+                err("len takes one argument")
+            }
+            t = types[0]
+        }
+        if t == "string" {
+            e_load(0, 4, 8)
+            e_add_rsp(16)
+        } else {
+            if not is_array_t(t) {
+                err("len needs a string or an array, not " + t)
+            }
+            e_load(0, 4, 8)
+            e_add_rsp(24)
+        }
+        return "int"
+    }
+    let target = name
+    let alias = builtin_alias(name)
+    if alias != "" and find_fn(name) < 0 {
+        target = alias
+    }
+    # struct constructor
+    let si = struct_index(target)
+    if si >= 0 {
+        let ftypes = split(g_st_ftypes[si], ",")
+        let types = gen_args(ftypes)
+        if pre != "" {
+            err("cannot pipe into a struct constructor")
+        }
+        if len(types) != len(ftypes) {
+            err(target + " needs " + int_to_string(len(ftypes)) + " values (" + join(ftypes, ", ") + ")")
+        }
+        for i in 0..len(types) {
+            if types[i] != ftypes[i] {
+                err(target + ": field " + int_to_string(i + 1) + " should be " + ftypes[i] + ", got " + types[i])
+            }
+        }
+        from_stack(target)
+        return target
+    }
+    let f = find_fn(target)
+    if f < 0 {
+        err("unknown function '" + name + "'")
+    }
+    let ptypes: array[string] = []
+    if g_fn_ptypes[f] != "" {
+        ptypes = split(g_fn_ptypes[f], ",")
+    }
+    let rest: array[string] = []
+    let skip = 0
+    if pre != "" {
+        skip = 1
+    }
+    let k = skip
+    while k < len(ptypes) {
+        push(rest, ptypes[k])
+        k += 1
+    }
+    let types = gen_args(rest)
+    let all: array[string] = []
+    if pre != "" {
+        push(all, pre)
+    }
+    for at in types {
+        push(all, at)
+    }
+    if len(all) != len(ptypes) {
+        err(name + " takes " + int_to_string(len(ptypes)) + " arguments (" + join(ptypes, ", ") + "), got " + int_to_string(len(all)))
+    }
+    let argbytes = 0
+    for i in 0..len(all) {
+        if all[i] != ptypes[i] {
+            err(name + ": argument " + int_to_string(i + 1) + " should be " + ptypes[i] + ", got " + all[i])
+        }
+        argbytes += words(all[i]) * 8
+    }
+    call_named(target)
+    e_add_rsp(argbytes)
+    let rt = g_fn_ret[f]
+    take_result(rt)
+    return rt
+}
+
+# ============================================================================
+# statements
+# ============================================================================
+# jumps to l_false when the condition is false
+fn gen_cond(l_false: int) {
+    g_cmp_end = -1
+    let t = gen_expr()
+    if t != "bool" and t != "int" {
+        err("a condition must be true/false, not " + t)
+    }
+    if g_cmp_end == g_code_len {
+        g_code_len = g_cmp_at
+        e_jcc(invert_cc(g_cmp_cc), l_false)
+    } else {
+        e_test_rax()
+        e_jcc(4, l_false)
+    }
+}
+
+fn gen_block() {
+    expect("{")
+    let saved = g_lc_n
+    while not is_sym("}") {
+        if kind() == 6 {
+            err("missing '}'")
+        }
+        gen_stmt()
+    }
+    g_pos += 1
+    g_lc_n = saved
+}
+
+# value of type t on the stack/rax -> stored into a new or existing variable
+fn store_var(name: string, t: string, declare: bool) {
+    let li = -1
+    if not declare {
+        li = find_local(name)
+    }
+    if li >= 0 {
+        if g_lc_type[li] != t {
+            err("'" + name + "' holds " + g_lc_type[li] + ", cannot assign " + t)
+        }
+        store_local(g_lc_off[li], t)
+        return
+    }
+    let gi = find_global(name)
+    if gi >= 0 and (not declare or g_in_top) {
+        if g_gl_type[gi] != t {
+            err("'" + name + "' holds " + g_gl_type[gi] + ", cannot assign " + t)
+        }
+        store_global(gi, t)
+        return
+    }
+    if g_in_top {
+        store_global(add_global(name, t), t)
+        return
+    }
+    store_local(add_local(name, t), t)
+}
+
+fn store_local(off: int, t: string) {
+    let w = words(t)
+    if w == 1 {
+        loc_store(off, 0)
+    } else {
+        for i in 0..w {
+            e_pop_mem(5, off + i * 8)
+        }
+    }
+}
+
+fn store_global(gi: int, t: string) {
+    let a = g_gl_addr[gi]
+    let w = words(t)
+    if has_heap(t) {
+        e_clone(t, 2)
+    }
+    if w == 1 {
+        e_store_abs(a, 0)
+    } else {
+        for i in 0..w {
+            e_pop_abs(a + i * 8)
+        }
+    }
+}
+
+fn gen_let() {
+    let name = expect_name()
+    let t = ""
+    if is_sym(":") {
+        g_pos += 1
+        t = parse_type()
+    }
+    expect("=")
+    let saved_want = g_want
+    g_want = t
+    let vt = gen_expr()
+    g_want = saved_want
+    if t != "" and vt != t {
+        err("'" + name + "' is declared as " + t + " but given " + vt)
+    }
+    if vt == "void" {
+        err("'" + name + "' cannot hold the result of a function that returns nothing")
+    }
+    store_var(name, vt, true)
+}
+
+fn is_assign_op(s: string) -> bool {
+    return s == "=" or s == "+=" or s == "-=" or s == "*=" or s == "/="
+}
+
+fn gen_assign() {
+    let lhs_at = g_pos
+    let after = skip_place(lhs_at)
+    let op = tk_at(after)
+    let simple = after == lhs_at + 1
+    let name = tk_at(lhs_at)
+    let known = find_local(name) >= 0 or find_global(name) >= 0
+    if not known {
+        if op == "=" and simple {
+            g_pos = lhs_at + 2
+            let vt = gen_expr()
+            if vt == "void" {
+                err("'" + name + "' cannot hold the result of a function that returns nothing")
+            }
+            store_var(name, vt, true)
+            return
+        }
+        err("unknown name '" + name + "'")
+    }
+    let lt = place_type(lhs_at)
+    let vt = ""
+    if simple and lt == "int" and (op == "+=" or op == "-=") {
+        g_pos = after + 1
+        let opc = 0
+        if op == "-=" {
+            opc = 1
+        }
+        let li = find_local(name)
+        let use_simple = simple_operand(0) and binop_prec(tk_at(g_pos + 1)) == 0 and not is_sym_at(g_pos + 1, "|>")
+        if not use_simple {
+            need_int(gen_expr(), op)
+            e_mov_rr(1, 0)
+        }
+        if li >= 0 {
+            loc_load(0, g_lc_off[li])
+        } else {
+            e_load_abs(0, g_gl_addr[find_global(name)])
+        }
+        if use_simple {
+            e_op_simple(opc)
+        } else {
+            e_op_rcx(opc)
+        }
+        if li >= 0 {
+            loc_store(g_lc_off[li], 0)
+        } else {
+            e_store_abs(g_gl_addr[find_global(name)], 0)
+        }
+        return
+    }
+    if op == "=" {
+        g_pos = after + 1
+        let saved_want = g_want
+        g_want = lt
+        vt = gen_expr()
+        g_want = saved_want
+    } else {
+        g_pos = lhs_at
+        vt = gen_postfix()
+        g_pos = after + 1
+        if vt == "string" and op == "+=" {
+            let rt = gen_expr()
+            if rt != "string" {
+                err("cannot add " + rt + " to a string")
+            }
+            call_named("__concat")
+            e_add_rsp(32)
+            take_result("string")
+        } else {
+            need_int(vt, op)
+            e_push(0)
+            need_int(gen_expr(), op)
+            e_mov_rr(1, 0)
+            e_pop(0)
+            if op == "+=" {
+                e_op_rcx(0)
+            }
+            if op == "-=" {
+                e_op_rcx(1)
+            }
+            if op == "*=" {
+                e_op_rcx(6)
+            }
+            if op == "/=" {
+                emit2(72, 153)
+                emit3(72, 247, 249)
+            }
+        }
+    }
+    if vt != lt {
+        err("cannot assign " + vt + " to " + name + " (" + lt + ")")
+    }
+    let end_at = g_pos
+    if simple {
+        store_var(name, lt, false)
+        return
+    }
+    to_stack(lt)
+    if place_is_perm(lhs_at) {
+        e_clone(lt, 2)
+    }
+    g_pos = lhs_at
+    gen_place()
+    g_pos = end_at
+    store_to_addr(lt)
+}
+
+fn gen_if() {
+    let l_else = new_label()
+    gen_cond(l_else)
+    gen_block()
+    if is_kw("else") {
+        g_pos += 1
+        let l_end = new_label()
+        e_jmp(l_end)
+        place(l_else)
+        if is_kw("if") {
+            g_pos += 1
+            gen_if()
+        } else {
+            gen_block()
+        }
+        place(l_end)
+    } else {
+        place(l_else)
+    }
+}
+
+fn push_loop(l_break: int, l_cont: int) {
+    if g_loop_n < len(g_brk) {
+        g_brk[g_loop_n] = l_break
+        g_cont[g_loop_n] = l_cont
+    } else {
+        push(g_brk, l_break)
+        push(g_cont, l_cont)
+    }
+    g_loop_n += 1
+}
+
+fn gen_while() {
+    let l_top = new_label()
+    let l_end = new_label()
+    place(l_top)
+    gen_cond(l_end)
+    push_loop(l_end, l_top)
+    gen_block()
+    g_loop_n -= 1
+    e_jmp(l_top)
+    place(l_end)
+}
+
+fn gen_for() {
+    let saved_n = g_lc_n
+    let var = expect_name()
+    expect("in")
+    let l_top = new_label()
+    let l_next = new_label()
+    let l_end = new_label()
+    let it_t = gen_expr()
+    let idx = add_local("#i", "int")
+    let lim = add_local("", "int")
+    let var_off = 0
+    let src = 0
+    let mode = 0
+    if is_sym("..") {
+        need_int(it_t, "..")
+        g_pos += 1
+        loc_store(idx, 0)
+        need_int(gen_expr(), "..")
+        e_store(5, lim, 0)
+        var_off = add_local(var, "int")
+    } else {
+        if it_t == "string" {
+            mode = 2
+        } else {
+            if not is_array_t(it_t) {
+                err("can only loop over ranges, arrays and strings, not " + it_t)
+            }
+            mode = 1
+        }
+        src = add_local("", it_t)
+        e_lea(0, 5, src)
+        store_to_addr(it_t)
+        loc_set0(idx)
+        if mode == 1 {
+            var_off = add_local(var, elem_t(it_t))
+        } else {
+            var_off = add_local(var, "string")
+        }
+    }
+    place(l_top)
+    loc_load(0, idx)
+    emit3(72, 59, 133)
+    if mode == 0 {
+        emit32(lim)
+    } else {
+        emit32(src + 8)
+    }
+    e_jcc(13, l_end)
+    if mode == 0 {
+        loc_store(var_off, 0)
+    }
+    if mode == 1 {
+        e_load(1, 5, src)
+        e_load_elem_to_local(elem_t(it_t), var_off)
+    }
+    if mode == 2 {
+        e_load(1, 5, src)
+        emit3(72, 1, 200)
+        e_store(5, var_off, 0)
+        emit3(72, 199, 133)
+        emit32(var_off + 8)
+        emit32(1)
+    }
+    push_loop(l_end, l_next)
+    gen_block()
+    g_loop_n -= 1
+    place(l_next)
+    loc_inc(idx)
+    e_jmp(l_top)
+    place(l_end)
+    g_lc_n = saved_n
+}
+
+fn gen_match() {
+    let t = gen_expr()
+    if t != "int" and t != "string" and t != "bool" {
+        err("match works on numbers, strings and bools, not " + t)
+    }
+    let tmp = add_local("", t)
+    to_stack(t)
+    e_lea(0, 5, tmp)
+    store_to_addr(t)
+    let l_end = new_label()
+    expect("{")
+    while not is_sym("}") {
+        if is_kw("else") or (kind() == 1 and tk() == "_") {
+            g_pos += 1
+            expect("=>")
+            gen_block()
+        } else {
+            let l_next = new_label()
+            let l_body = new_label()
+            let more = true
+            while more {
+                if t == "string" {
+                    e_push_mem(5, tmp + 8)
+                    e_push_mem(5, tmp)
+                    let pt = gen_level(4)
+                    if pt != "string" {
+                        err("match pattern should be a string")
+                    }
+                    call_named("__streq")
+                    e_add_rsp(32)
+                    e_test_rax()
+                    e_jcc(5, l_body)
+                } else {
+                    let pt = gen_level(4)
+                    need_int(pt, "match")
+                    emit3(72, 59, 133)
+                    emit32(tmp)
+                    e_jcc(4, l_body)
+                }
+                if is_sym("|") {
+                    g_pos += 1
+                } else {
+                    more = false
+                }
+            }
+            e_jmp(l_next)
+            place(l_body)
+            expect("=>")
+            gen_block()
+            e_jmp(l_end)
+            place(l_next)
+        }
+        if is_sym(",") {
+            g_pos += 1
+        }
+    }
+    g_pos += 1
+    place(l_end)
+}
+
+fn gen_return() {
+    let ends = is_sym("}") or kind() == 6
+    if ends or g_cur_ret == "void" {
+        if not ends {
+            let t = gen_expr()
+            if t != "void" {
+                err("this function returns nothing, but return has a value")
+            }
+        }
+        e_jmp(g_cur_epi)
+        return
+    }
+    g_lit_end = -1
+    let start = g_code_len
+    let t = gen_expr()
+    if t != g_cur_ret {
+        err("should return " + g_cur_ret + ", not " + t)
+    }
+    let w = words(t)
+    if w > 1 {
+        let literal = g_lit_end == g_code_len and g_lit_start == start
+        if has_heap(t) and not g_cur_raw and not literal {
+            e_clone(t, 0)
+        }
+        for i in 0..w {
+            e_pop_abs(a_retbuf() + i * 8)
+        }
+    }
+    e_jmp(g_cur_epi)
+}
+
+fn gen_stmt() {
+    let k = kind()
+    if k == 2 {
+        let w = tk()
+        if w == "let" {
+            g_pos += 1
+            gen_let()
+            return
+        }
+        if w == "if" {
+            g_pos += 1
+            gen_if()
+            return
+        }
+        if w == "while" {
+            g_pos += 1
+            gen_while()
+            return
+        }
+        if w == "for" {
+            g_pos += 1
+            gen_for()
+            return
+        }
+        if w == "match" {
+            g_pos += 1
+            gen_match()
+            return
+        }
+        if w == "return" {
+            g_pos += 1
+            gen_return()
+            return
+        }
+        if w == "break" or w == "continue" {
+            g_pos += 1
+            if g_loop_n == 0 {
+                err(w + " outside of a loop")
+            }
+            if w == "break" {
+                e_jmp(g_brk[g_loop_n - 1])
+            } else {
+                e_jmp(g_cont[g_loop_n - 1])
+            }
+            return
+        }
+        if w == "fn" or w == "struct" {
+            err("'" + w + "' must be at the top level")
+        }
+    }
+    if k == 1 and is_sym_at(g_pos + 1, ":") {
+        gen_let()
+        return
+    }
+    if k == 1 {
+        let after = skip_place(g_pos)
+        if kind_at(after) == 5 and is_assign_op(tk_at(after)) {
+            gen_assign()
+            return
+        }
+    }
+    let t = gen_expr()
+    discard(t)
+}
+
+# ============================================================================
+# functions
+# ============================================================================
+# reads `fn name(params) -> type { ... }` at the cursor and records it
+fn collect_fn(this_struct: string) {
+    expect("fn")
+    let name = expect_name()
+    if this_struct != "" {
+        name = this_struct + "_" + name
+    }
+    if find_fn(name) >= 0 {
+        err("function '" + name + "' is defined twice")
+    }
+    let open_at = g_pos
+    expect("(")
+    let pnames: array[string] = []
+    let ptypes: array[string] = []
+    if this_struct != "" {
+        push(pnames, "this")
+        push(ptypes, this_struct)
+    }
+    while not is_sym(")") {
+        push(pnames, expect_name())
+        expect(":")
+        push(ptypes, parse_type())
+        if is_sym(",") {
+            g_pos += 1
+        }
+    }
+    g_pos += 1
+    let rt = "void"
+    if is_sym("->") {
+        g_pos += 1
+        rt = parse_type()
+    }
+    push(g_fn_name, name)
+    push(g_fn_ret, rt)
+    push(g_fn_pnames, join(pnames, ","))
+    push(g_fn_ptypes, join(ptypes, ","))
+    push(g_fn_tok, open_at)
+    push(g_fn_label, new_label())
+    push(g_fn_state, 0)
+    skip_block()
+}
+
+fn collect_struct_names(from: int) {
+    g_pos = from
+    while kind() != 6 {
+        if is_kw("struct") {
+            g_pos += 1
+            let name = expect_name()
+            if struct_index(name) >= 0 {
+                err("struct '" + name + "' is defined twice")
+            }
+            push(g_st_name, name)
+            push(g_st_fnames, "")
+            push(g_st_ftypes, "")
+            skip_block()
+        } else {
+            g_pos += 1
+        }
+    }
+}
+
+fn collect_all(from: int) {
+    g_pos = from
+    while kind() != 6 {
+        if is_kw("fn") {
+            collect_fn("")
+        } else {
+            if is_kw("struct") {
+                g_pos += 1
+                let name = expect_name()
+                let si = struct_index(name)
+                expect("{")
+                let fnames: array[string] = []
+                let ftypes: array[string] = []
+                while not is_sym("}") {
+                    if is_kw("fn") {
+                        collect_fn(name)
+                    } else {
+                        push(fnames, expect_name())
+                        expect(":")
+                        push(ftypes, parse_type())
+                        if is_sym(",") {
+                            g_pos += 1
+                        }
+                    }
+                }
+                g_pos += 1
+                g_st_fnames[si] = join(fnames, ",")
+                g_st_ftypes[si] = join(ftypes, ",")
+            } else {
+                g_pos += 1
+            }
+        }
+    }
+}
+
+# the fixed-size memory-frame prologue (34 bytes)
+fn e_frame_prologue() {
+    emit4(72, 255, 4, 37)
+    emit32(a_depth())
+    e_load_abs(0, a_depth())
+    emit3(131, 224, 1)
+    emit4(72, 139, 4, 197)
+    emit32(a_bump())
+    e_store(5, -8, 0)
+}
+
+fn e_frame_epilogue() {
+    e_push(0)
+    e_load_abs(1, a_depth())
+    emit3(131, 225, 1)
+    e_load(7, 5, -8)
+    emit4(72, 139, 20, 205)
+    emit32(a_bump())
+    emit4(72, 137, 60, 205)
+    emit32(a_bump())
+    e_mov_rr(1, 2)
+    emit3(72, 41, 249)
+    emit2(116, 4)
+    emit2(49, 192)
+    emit2(243, 170)
+    emit4(72, 255, 12, 37)
+    emit32(a_depth())
+    e_pop(0)
+}
+
+fn begin_function(label: int, no_frame: bool) -> array[int] {
+    place(label)
+    e_push(5)
+    e_mov_rr(5, 4)
+    emit3(72, 129, 236)
+    let frame_at = g_code_len
+    emit32(0)
+    # room to save rbx and r12-r15 (filled in once the body is compiled)
+    let save_at = g_code_len
+    for k in 0..9 {
+        emit(144)
+    }
+    let pro_at = g_code_len
+    if not no_frame {
+        e_frame_prologue()
+    }
+    for k in 0..5 {
+        g_reg_owner[k] = -1
+        g_reg_used[k] = 0
+    }
+    g_lc_n = 0
+    g_frame = 8
+    g_loop_n = 0
+    g_cur_framed = false
+    g_cur_raw = no_frame
+    g_cur_epi = new_label()
+    let r: array[int] = []
+    push(r, frame_at)
+    push(r, pro_at)
+    push(r, save_at)
+    return r
+}
+
+# 1..9 byte no-op instructions
+fn nop_bytes(n: int) -> array[int] {
+    if n == 1 {
+        let r = [144]
+        return r
+    }
+    if n == 2 {
+        let r = [102, 144]
+        return r
+    }
+    if n == 3 {
+        let r = [15, 31, 0]
+        return r
+    }
+    if n == 4 {
+        let r = [15, 31, 64, 0]
+        return r
+    }
+    if n == 5 {
+        let r = [15, 31, 68, 0, 0]
+        return r
+    }
+    if n == 6 {
+        let r = [102, 15, 31, 68, 0, 0]
+        return r
+    }
+    if n == 7 {
+        let r = [15, 31, 128, 0, 0, 0, 0]
+        return r
+    }
+    if n == 8 {
+        let r = [15, 31, 132, 0, 0, 0, 0, 0]
+        return r
+    }
+    let r = [102, 15, 31, 132, 0, 0, 0, 0, 0]
+    return r
+}
+
+fn end_function(marks: array[int]) {
+    place(g_cur_epi)
+    if not g_cur_raw {
+        if g_cur_framed {
+            e_frame_epilogue()
+        } else {
+            g_code[marks[1]] = 235
+            g_code[marks[1] + 1] = 32
+        }
+    }
+    let regs = [3, 12, 13, 14, 15]
+    let saves: array[int] = []
+    for k in 0..5 {
+        if g_reg_used[k] == 1 {
+            let r = regs[k]
+            if r >= 8 {
+                push(saves, 65)
+            }
+            push(saves, 80 + r % 8)
+        }
+    }
+    let k = 4
+    while k >= 0 {
+        if g_reg_used[k] == 1 {
+            e_pop(regs[k])
+        }
+        k -= 1
+    }
+    let fill = 9 - len(saves)
+    if fill > 0 {
+        for b in nop_bytes(fill) {
+            push(saves, b)
+        }
+    }
+    for i in 0..9 {
+        g_code[marks[2] + i] = saves[i]
+    }
+    emit(201)
+    emit(195)
+    let size = g_frame
+    if size % 16 != 0 {
+        size += 16 - size % 16
+    }
+    patch32(marks[0], size)
+}
+
+fn compile_fn(f: int) {
+    g_fn_state[f] = 2
+    g_pos = g_fn_tok[f]
+    let name = g_fn_name[f]
+    let marks = begin_function(g_fn_label[f], starts_with_s(name, "__"))
+    g_in_top = false
+    g_cur_ret = g_fn_ret[f]
+    # parameters sit above the return address, last one first
+    let pnames: array[string] = []
+    let ptypes: array[string] = []
+    if g_fn_pnames[f] != "" {
+        pnames = split(g_fn_pnames[f], ",")
+        ptypes = split(g_fn_ptypes[f], ",")
+    }
+    let off = 16
+    let i = len(pnames) - 1
+    let offs: array[int] = []
+    for k in 0..len(pnames) {
+        push(offs, 0)
+    }
+    while i >= 0 {
+        offs[i] = off
+        off += words(ptypes[i]) * 8
+        i -= 1
+    }
+    for k in 0..len(pnames) {
+        if k < len(g_lc_name) {
+            g_lc_name[k] = pnames[k]
+            g_lc_type[k] = ptypes[k]
+            g_lc_off[k] = offs[k]
+        } else {
+            push(g_lc_name, pnames[k])
+            push(g_lc_type, ptypes[k])
+            push(g_lc_off, offs[k])
+        }
+    }
+    g_lc_n = len(pnames)
+    # skip the parameter list and return type
+    let depth = 0
+    let scanning = true
+    while scanning {
+        if is_sym("(") {
+            depth += 1
+        }
+        if is_sym(")") {
+            depth -= 1
+            if depth == 0 {
+                scanning = false
+            }
+        }
+        g_pos += 1
+    }
+    while not is_sym("{") {
+        g_pos += 1
+    }
+    gen_block()
+    end_function(marks)
+}
+
+# code outside of functions runs first, in order; its variables are globals
+fn compile_top(label: int) {
+    let marks = begin_function(label, false)
+    g_in_top = true
+    g_cur_ret = "void"
+    g_pos = 0
+    while kind() != 6 {
+        if is_kw("fn") {
+            g_pos += 1
+            expect_name()
+            while not is_sym("{") {
+                g_pos += 1
+            }
+            skip_block()
+        } else {
+            if is_kw("struct") {
+                g_pos += 2
+                skip_block()
+            } else {
+                gen_stmt()
+            }
+        }
+    }
+    end_function(marks)
+    g_in_top = false
+}
+
+# ============================================================================
+# program entry and the executable file
+# ============================================================================
+fn e_mmap_bucket(b: int) {
+    let l_ok = new_label()
+    let sizes = [17179869184, 1073741824, 134217728]
+    for s in sizes {
+        emit(184)
+        emit32(9)
+        emit2(49, 255)
+        emit2(72, 190)
+        emit64(s)
+        emit(186)
+        emit32(3)
+        emit2(65, 186)
+        emit32(16418)
+        emit3(73, 199, 192)
+        emit32(-1)
+        emit3(69, 49, 201)
+        emit2(15, 5)
+        e_test_rax()
+        e_jcc(13, l_ok)
+    }
+    place(l_ok)
+    e_store_abs(a_bump() + b * 8, 0)
+}
+
+fn compile_program(main_src: string) {
+    tokenize(prelude_source(), false)
+    g_user_tok = len(g_tk_kind)
+    tokenize(main_src, true)
+    collect_struct_names(0)
+    collect_all(0)
+    let ti = 0
+    while ti + 2 < len(g_tk_text) {
+        if g_tk_text[ti] == "addr_of" and g_tk_text[ti + 1] == "(" {
+            push(g_noreg, g_tk_text[ti + 2])
+        }
+        ti += 1
+    }
+    g_bounds_lbl = new_label()
+
+    # _start
+    emit4(72, 137, 36, 37)
+    emit32(a_sp0())
+    for b in 0..3 {
+        e_mmap_bucket(b)
+    }
+    let top_label = new_label()
+    e_call(top_label)
+    let mi = find_fn("main")
+    if mi >= 0 {
+        request_fn(mi)
+        if g_fn_ptypes[mi] == "array[string]" {
+            call_named("__args")
+            take_result("array[string]")
+            e_call(g_fn_label[mi])
+            e_add_rsp(24)
+        } else {
+            if g_fn_ptypes[mi] != "" {
+                err("main takes no parameters or (args: array[string])")
+            }
+            e_call(g_fn_label[mi])
+        }
+    }
+    call_named("__flush")
+    emit(184)
+    emit32(60)
+    emit2(49, 255)
+    emit2(15, 5)
+
+    compile_top(top_label)
+    let qi = 0
+    while qi < len(g_queue) {
+        compile_fn(g_queue[qi])
+        qi += 1
+    }
+
+    # shared out-of-bounds exit: index in rax, array header in rcx
+    place(g_bounds_lbl)
+    e_push(0)
+    e_push_mem(1, 8)
+    let bf = find_fn("__bounds_fail")
+    request_fn(bf)
+    e_call(g_fn_label[bf])
+    while qi < len(g_queue) {
+        compile_fn(g_queue[qi])
+        qi += 1
+    }
+}
+
+fn put16(out: array[int], v: int) -> array[int] {
+    push(out, v % 256)
+    push(out, v / 256 % 256)
+    return out
+}
+
+fn put32(out: array[int], v: int) -> array[int] {
+    out = put16(out, v % 65536)
+    out = put16(out, v / 65536 % 65536)
+    return out
+}
+
+fn put64(out: array[int], v: int) -> array[int] {
+    out = put32(out, v % 4294967296)
+    out = put32(out, v / 4294967296)
+    return out
+}
+
+fn put_phdr(out: array[int], ptype: int, flags: int, vaddr: int, filesz: int, memsz: int) -> array[int] {
+    out = put32(out, ptype)
+    out = put32(out, flags)
+    out = put64(out, 0)
+    out = put64(out, vaddr)
+    out = put64(out, vaddr)
+    out = put64(out, filesz)
+    out = put64(out, memsz)
+    out = put64(out, 4096)
+    return out
+}
+
+fn write_executable(path: string) {
+    let code_end = hdr_size() + g_code_len
+    let ro_start = code_end
+    if ro_start % 8 != 0 {
+        ro_start += 8 - ro_start % 8
+    }
+    # resolve jumps and calls
+    let i = 0
+    while i < len(g_fx_at) {
+        let at = g_fx_at[i]
+        let target = g_lbl[g_fx_lbl[i]]
+        if target < 0 {
+            print("internal error: unplaced label")
+            exit(1)
+        }
+        patch32(at, target - (at + 4))
+        i += 1
+    }
+    i = 0
+    while i < len(g_rfx_at) {
+        let at = g_rfx_at[i]
+        patch32(at, ro_start + g_rfx_off[i] - (hdr_size() + at + 4))
+        i += 1
+    }
+    let file_size = ro_start + len(g_ro)
+    let bss = 4096 + g_gl_next
+    if bss % 4096 != 0 {
+        bss += 4096 - bss % 4096
+    }
+    let out: array[int] = [127, 69, 76, 70, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    out = put16(out, 2)
+    out = put16(out, 62)
+    out = put32(out, 1)
+    out = put64(out, text_base() + hdr_size())
+    out = put64(out, 64)
+    out = put64(out, 0)
+    out = put32(out, 0)
+    out = put16(out, 64)
+    out = put16(out, 56)
+    out = put16(out, 3)
+    out = put16(out, 64)
+    out = put16(out, 0)
+    out = put16(out, 0)
+    out = put_phdr(out, 1, 5, text_base(), file_size, file_size)
+    out = put_phdr(out, 1, 6, data_base(), 0, bss)
+    out = put_phdr(out, 1685382481, 6, 0, 0, 0)
+    for k in 0..g_code_len {
+        push(out, g_code[k])
+    }
+    while len(out) < ro_start {
+        push(out, 0)
+    }
+    for b in g_ro {
+        push(out, b)
+    }
+    # a new file, so even a running program (like this compiler) can be replaced
+    remove_file(path)
+    write_file(path, bytes_to_string(out))
+    make_executable(path)
+}
+
+fn output_name(src: string) -> string {
+    let n = len(src)
+    if n > 5 and slice(src, n - 5, n) == ".slop" {
+        return slice(src, 0, n - 5)
+    }
+    return src + ".out"
+}
+
+fn build(src_path: string, out_path: string) {
+    let source = read_file(src_path)
+    if len(source) == 0 {
+        print("error: cannot read " + src_path + " (missing or empty)")
+        exit(1)
+    }
+    compile_program(source)
+    write_executable(out_path)
+}
+
+fn main(args: array[string]) {
+    if len(args) < 2 {
+        print("Slop compiler")
+        print("  slop app.slop             build ./app")
+        print("  slop app.slop out         build ./out")
+        print("  slop run app.slop [args]  build and run")
+        exit(2)
+    }
+    if args[1] == "run" {
+        if len(args) < 3 {
+            print("usage: slop run app.slop [args]")
+            exit(2)
+        }
+        let out = output_name(args[2])
+        build(args[2], out)
+        let run_args: array[string] = []
+        let exe = out
+        if not starts_with_s(exe, "/") {
+            exe = "./" + exe
+        }
+        push(run_args, exe)
+        let k = 3
+        while k < len(args) {
+            push(run_args, args[k])
+            k += 1
+        }
+        exec(exe, run_args)
+        return
+    }
+    let out = output_name(args[1])
+    if len(args) > 2 {
+        out = args[2]
+    }
+    build(args[1], out)
+}
+
+# ============================================================================
+# runtime prelude
+# ============================================================================
+# Compiled into every program, before the program itself.
+fn prelude_source() -> string {
+    return "# Slop runtime. Functions whose names start with __ have no memory frame of
+# their own: whatever they allocate lands in their caller's memory.
+
+__out_ptr = __alloc_in(2, 65536)
+__out_len = 0
+__in_ptr = 0
+__in_len = 0
+__in_pos = 0
+
+fn __write_all(fd: int, p: int, n: int) {
+    while n > 0 {
+        w = __syscall(1, fd, p, n)
+        if w <= 0 {
+            return
+        }
+        p += w
+        n -= w
+    }
+}
+
+fn __flush() {
+    if __out_len > 0 {
+        __write_all(1, __out_ptr, __out_len)
+        __out_len = 0
+    }
+}
+
+fn __out_bytes(p: int, n: int) {
+    if __out_len + n > 65536 {
+        __flush()
+        if n > 65536 {
+            __write_all(1, p, n)
+            return
+        }
+    }
+    __memcpy(__out_ptr + __out_len, p, n)
+    __out_len += n
+}
+
+fn __out_byte(b: int) {
+    if __out_len >= 65536 {
+        __flush()
+    }
+    __store8(__out_ptr + __out_len, b)
+    __out_len += 1
+}
+
+fn __out_str(s: string) {
+    __out_bytes(__str_ptr(s), len(s))
+}
+
+fn __digits(n: int, buf: int) -> int {
+    i = 24
+    if n == 0 {
+        __store8(buf + 23, 48)
+        return 23
+    }
+    neg = n < 0
+    if not neg {
+        n = -n
+    }
+    while n != 0 {
+        i -= 1
+        __store8(buf + i, 48 - n % 10)
+        n = n / 10
+    }
+    if neg {
+        i -= 1
+        __store8(buf + i, 45)
+    }
+    return i
+}
+
+fn __out_int(n: int) {
+    buf = __scratch()
+    i = __digits(n, buf)
+    __out_bytes(buf + i, 24 - i)
+}
+
+fn __out_bool(b: bool) {
+    if b {
+        __out_str(\"true\")
+    } else {
+        __out_str(\"false\")
+    }
+}
+
+fn __out_ints(a: array[int]) {
+    __out_byte(91)
+    for i in 0..len(a) {
+        if i > 0 {
+            __out_str(\", \")
+        }
+        __out_int(a[i])
+    }
+    __out_byte(93)
+}
+
+fn __out_strs(a: array[string]) {
+    __out_byte(91)
+    for i in 0..len(a) {
+        if i > 0 {
+            __out_str(\", \")
+        }
+        __out_byte(34)
+        __out_str(a[i])
+        __out_byte(34)
+    }
+    __out_byte(93)
+}
+
+fn __int_to_string(n: int) -> string {
+    p = __alloc_bytes(24)
+    i = __digits(n, p)
+    return __str(p + i, 24 - i)
+}
+
+fn __concat(a: string, b: string) -> string {
+    la = len(a)
+    lb = len(b)
+    if lb == 0 {
+        return a
+    }
+    if la == 0 {
+        return b
+    }
+    pa = __str_ptr(a)
+    # a ends exactly where free memory starts: just grow it in place
+    if pa + la == __bump(__cur_bucket()) {
+        __memcpy(__alloc_bytes(lb), __str_ptr(b), lb)
+        return __str(pa, la + lb)
+    }
+    p = __alloc_bytes(la + lb)
+    __memcpy(p, pa, la)
+    __memcpy(p + la, __str_ptr(b), lb)
+    return __str(p, la + lb)
+}
+
+fn __streq(a: string, b: string) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    return __memeq(__str_ptr(a), __str_ptr(b), len(a))
+}
+
+fn __char_at(s: string, i: int) -> string {
+    if i < 0 or i >= len(s) {
+        return \"\"
+    }
+    return __str(__str_ptr(s) + i, 1)
+}
+
+fn __byte_at(s: string, i: int) -> int {
+    if i < 0 or i >= len(s) {
+        return -1
+    }
+    return __load8(__str_ptr(s) + i)
+}
+
+fn __slice(s: string, a: int, b: int) -> string {
+    n = len(s)
+    if a < 0 {
+        a = 0
+    }
+    if b > n {
+        b = n
+    }
+    if b <= a {
+        return \"\"
+    }
+    return __str(__str_ptr(s) + a, b - a)
+}
+
+fn __find(s: string, sub: string) -> int {
+    n = len(s)
+    m = len(sub)
+    p = __str_ptr(s)
+    q = __str_ptr(sub)
+    i = 0
+    while i + m <= n {
+        if __memeq(p + i, q, m) {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn __contains(s: string, sub: string) -> bool {
+    return __find(s, sub) >= 0
+}
+
+fn __starts_with(s: string, pre: string) -> bool {
+    if len(pre) > len(s) {
+        return false
+    }
+    return __memeq(__str_ptr(s), __str_ptr(pre), len(pre))
+}
+
+fn __ends_with(s: string, post: string) -> bool {
+    if len(post) > len(s) {
+        return false
+    }
+    return __memeq(__str_ptr(s) + len(s) - len(post), __str_ptr(post), len(post))
+}
+
+fn __is_space(c: int) -> bool {
+    return c == 32 or c == 9 or c == 10 or c == 13
+}
+
+fn __trim(s: string) -> string {
+    p = __str_ptr(s)
+    a = 0
+    b = len(s)
+    while a < b and __is_space(__load8(p + a)) {
+        a += 1
+    }
+    while b > a and __is_space(__load8(p + b - 1)) {
+        b -= 1
+    }
+    return __str(p + a, b - a)
+}
+
+fn __map_case(s: string, lo: int, hi: int, delta: int) -> string {
+    n = len(s)
+    p = __alloc_bytes(n)
+    q = __str_ptr(s)
+    for i in 0..n {
+        c = __load8(q + i)
+        if c >= lo and c <= hi {
+            c += delta
+        }
+        __store8(p + i, c)
+    }
+    return __str(p, n)
+}
+
+fn __upper(s: string) -> string {
+    return __map_case(s, 97, 122, -32)
+}
+
+fn __lower(s: string) -> string {
+    return __map_case(s, 65, 90, 32)
+}
+
+fn __split(s: string, sep: string) -> array[string] {
+    out: array[string] = []
+    n = len(s)
+    m = len(sep)
+    p = __str_ptr(s)
+    if m == 0 {
+        for i in 0..n {
+            push(out, __str(p + i, 1))
+        }
+        return out
+    }
+    q = __str_ptr(sep)
+    start = 0
+    i = 0
+    while i + m <= n {
+        if __memeq(p + i, q, m) {
+            push(out, __str(p + start, i - start))
+            i += m
+            start = i
+        } else {
+            i += 1
+        }
+    }
+    push(out, __str(p + start, n - start))
+    return out
+}
+
+fn __join(parts: array[string], sep: string) -> string {
+    k = len(parts)
+    if k == 0 {
+        return \"\"
+    }
+    total = len(sep) * (k - 1)
+    for s in parts {
+        total += len(s)
+    }
+    p = __alloc_bytes(total)
+    at = 0
+    for i in 0..k {
+        if i > 0 {
+            __memcpy(p + at, __str_ptr(sep), len(sep))
+            at += len(sep)
+        }
+        s = parts[i]
+        __memcpy(p + at, __str_ptr(s), len(s))
+        at += len(s)
+    }
+    return __str(p, total)
+}
+
+fn __replace(s: string, old: string, new: string) -> string {
+    if len(old) == 0 {
+        return s
+    }
+    return __join(__split(s, old), new)
+}
+
+fn __repeat(s: string, n: int) -> string {
+    if n <= 0 or len(s) == 0 {
+        return \"\"
+    }
+    p = __alloc_bytes(len(s) * n)
+    for i in 0..n {
+        __memcpy(p + i * len(s), __str_ptr(s), len(s))
+    }
+    return __str(p, len(s) * n)
+}
+
+fn __to_int(s: string) -> int {
+    p = __str_ptr(s)
+    n = len(s)
+    i = 0
+    while i < n and __is_space(__load8(p + i)) {
+        i += 1
+    }
+    neg = false
+    if i < n and __load8(p + i) == 45 {
+        neg = true
+        i += 1
+    }
+    v = 0
+    while i < n and __load8(p + i) >= 48 and __load8(p + i) <= 57 {
+        v = v * 10 + __load8(p + i) - 48
+        i += 1
+    }
+    if neg {
+        return -v
+    }
+    return v
+}
+
+fn __chr(n: int) -> string {
+    p = __alloc_bytes(1)
+    __store8(p, n)
+    return __str(p, 1)
+}
+
+fn __cstr(s: string) -> int {
+    n = len(s)
+    p = __alloc_bytes(n + 1)
+    __memcpy(p, __str_ptr(s), n)
+    __store8(p + n, 0)
+    return p
+}
+
+fn __strlen(p: int) -> int {
+    n = 0
+    while __load8(p + n) != 0 {
+        n += 1
     }
     return n
 }
 
-fn int_to_str(n: int) -> string {
-    return int_to_string(n)
+fn __eprint(s: string) {
+    __flush()
+    __write_all(2, __str_ptr(s), len(s))
+    __store8(__scratch(), 10)
+    __write_all(2, __scratch(), 1)
 }
 
-fn escape_string(s: string) -> string {
-    let result = ""
-    let i = 0
-    while i < length(s) {
-        let ch = char_at(s, i)
-        if ch == "\\" { result = result + "\\\\" }
-        if ch == "\"" { result = result + "\\\"" }
-        if ch == "\n" { result = result + "\\n" }
-        if ch == "\t" { result = result + "\\t" }
-        if ch != "\\" {
-            if ch != "\"" {
-                if ch != "\n" {
-                    if ch != "\t" {
-                        result = result + ch
-                    }
-                }
+fn __exit(code: int) {
+    __flush()
+    __syscall(60, code)
+}
+
+fn __bounds_fail(i: int, n: int) {
+    __eprint(\"Slop Secure Guard: Array index out of bounds! Length: \" + __int_to_string(n) + \", Requested Index: \" + __int_to_string(i) + \". Terminating process to prevent memory exploit.\")
+    __syscall(60, 139)
+}
+
+fn __read_file(path: string) -> string {
+    if __contains(path, \"..\") {
+        __eprint(\"Slop Secure Guard: Blocked directory traversal attack attempt on path: \" + path)
+        return \"\"
+    }
+    fd = __syscall(2, __cstr(path), 0, 0)
+    if fd < 0 {
+        return \"\"
+    }
+    size = __syscall(8, fd, 0, 2)
+    if size > 0 {
+        __syscall(8, fd, 0, 0)
+        p = __alloc_bytes(size)
+        got = 0
+        while got < size {
+            r = __syscall(0, fd, p + got, size - got)
+            if r <= 0 {
+                break
             }
+            got += r
         }
-        i = i + 1
+        __syscall(3, fd)
+        return __str(p, got)
     }
-    return result
+    # size unknown (like /proc files): read in chunks that sit next to each other
+    p = __alloc_bytes(0)
+    total = 0
+    while true {
+        __alloc_bytes(4096)
+        r = __syscall(0, fd, p + total, 4096)
+        if r <= 0 {
+            break
+        }
+        total += r
+    }
+    __syscall(3, fd)
+    return __str(p, total)
 }
 
-# ---------- Token helpers ----------
-# Each token is encoded as: "TYPE|VALUE|LINE|COL".
-# VALUE may itself contain '|', so token_value/token_line/token_col parse from
-# the right instead of blindly split(t, "|").
-fn token_first_sep(t: string) -> int {
-    let i = 0
-    while i < length(t) {
-        if char_at(t, i) == "|" {
-            return i
-        }
-        i = i + 1
+fn __write_file(path: string, data: string) {
+    if __contains(path, \"..\") {
+        __eprint(\"Slop Secure Guard: Blocked directory traversal write attempt on path: \" + path)
+        return
     }
-    return 0 - 1
+    fd = __syscall(2, __cstr(path), 577, 420)
+    if fd < 0 {
+        return
+    }
+    __write_all(fd, __str_ptr(data), len(data))
+    __syscall(3, fd)
 }
 
-fn token_last_sep(t: string) -> int {
-    let i = 0
-    let last = 0 - 1
-    while i < length(t) {
-        if char_at(t, i) == "|" {
-            last = i
-        }
-        i = i + 1
+fn __remove_file(path: string) {
+    if __contains(path, \"..\") {
+        __eprint(\"Slop Secure Guard: Blocked directory traversal attempt on path: \" + path)
+        return
     }
-    return last
+    __syscall(87, __cstr(path))
 }
 
-fn token_prev_sep(t: string, limit: int) -> int {
-    let i = 0
-    let prev = 0 - 1
-    while i < limit {
-        if char_at(t, i) == "|" {
-            prev = i
-        }
-        i = i + 1
-    }
-    return prev
+fn __make_executable(path: string) {
+    __syscall(90, __cstr(path), 493)
 }
 
-fn token_slice(t: string, start: int, end: int) -> string {
-    let out = ""
-    let i = start
-    while i < end {
-        out = out + char_at(t, i)
-        i = i + 1
+fn __args() -> array[string] {
+    sp = __sp0()
+    argc = __load64(sp)
+    out: array[string] = []
+    for i in 0..argc {
+        a = __load64(sp + 8 + i * 8)
+        push(out, __str(a, __strlen(a)))
     }
     return out
 }
 
-fn make_token(type_: string, value: string, line: int, col: int) -> string {
-    return type_ + "|" + value + "|" + int_to_string(line) + "|" + int_to_string(col)
-}
-
-fn token_type(t: string) -> string {
-    let first = token_first_sep(t)
-    return token_slice(t, 0, first)
-}
-
-fn token_value(t: string) -> string {
-    let first = token_first_sep(t)
-    let last = token_last_sep(t)
-    let prev = token_prev_sep(t, last)
-    return token_slice(t, first + 1, prev)
-}
-
-fn token_line(t: string) -> int {
-    let last = token_last_sep(t)
-    let prev = token_prev_sep(t, last)
-    return string_to_int(token_slice(t, prev + 1, last))
-}
-
-fn token_col(t: string) -> int {
-    let last = token_last_sep(t)
-    return string_to_int(token_slice(t, last + 1, length(t)))
-}
-
-# ---------- Array string helpers ----------
-# Arrays are encoded as strings with ';' separators.
-fn arr_append(s: string, item: string) -> string {
-    if length(s) == 0 {
-        return item
+fn __exec(path: string, args: array[string]) {
+    n = len(args)
+    argv = __alloc((n + 1) * 8)
+    for i in 0..n {
+        __store64(argv + i * 8, __cstr(args[i]))
     }
-    return s + ";" + item
+    __store64(argv + n * 8, 0)
+    sp = __sp0()
+    envp = sp + 16 + __load64(sp) * 8
+    __flush()
+    __syscall(59, __cstr(path), argv, envp)
+    __eprint(\"cannot run \" + path)
+    __syscall(60, 127)
 }
 
-fn arr_find(s: string, item: string) -> int {
-    let parts = split(s, ";")
-    let i = 0
-    while i < length(parts) {
-        if parts[i] == item {
+fn __clock_ns() -> int {
+    t = __scratch()
+    __syscall(228, 1, t)
+    return __load64(t) * 1000000000 + __load64(t + 8)
+}
+
+fn __input() -> string {
+    __flush()
+    if __in_ptr == 0 {
+        __in_ptr = __alloc_in(2, 65536)
+    }
+    out = \"\"
+    while true {
+        if __in_pos >= __in_len {
+            r = __syscall(0, 0, __in_ptr, 65536)
+            if r <= 0 {
+                return out
+            }
+            __in_len = r
+            __in_pos = 0
+        }
+        st = __in_pos
+        while __in_pos < __in_len and __load8(__in_ptr + __in_pos) != 10 {
+            __in_pos += 1
+        }
+        piece = __alloc_bytes(__in_pos - st)
+        __memcpy(piece, __in_ptr + st, __in_pos - st)
+        out = out + __str(piece, __in_pos - st)
+        if __in_pos < __in_len {
+            __in_pos += 1
+            return out
+        }
+    }
+    return out
+}
+
+fn __socket_listen(port: int) -> int {
+    fd = __syscall(41, 2, 1, 0)
+    if fd < 0 {
+        return -1
+    }
+    one = __scratch()
+    __store64(one, 1)
+    __syscall(54, fd, 1, 2, one, 4)
+    a = __scratch() + 16
+    __memzero(a, 16)
+    __store8(a, 2)
+    __store8(a + 2, port / 256)
+    __store8(a + 3, port % 256)
+    if __syscall(49, fd, a, 16) < 0 {
+        __syscall(3, fd)
+        return -1
+    }
+    if __syscall(50, fd, 128) < 0 {
+        __syscall(3, fd)
+        return -1
+    }
+    return fd
+}
+
+fn __socket_accept(fd: int) -> int {
+    __flush()
+    return __syscall(43, fd, 0, 0)
+}
+
+fn __socket_read(fd: int) -> string {
+    p = __alloc_bytes(8192)
+    r = __syscall(0, fd, p, 8192)
+    if r <= 0 {
+        return \"\"
+    }
+    return __str(p, r)
+}
+
+fn __socket_write(fd: int, s: string) {
+    __write_all(fd, __str_ptr(s), len(s))
+}
+
+fn __socket_close(fd: int) {
+    __syscall(3, fd)
+}
+
+fn __bytes_to_string(a: array[int]) -> string {
+    n = len(a)
+    p = __alloc_bytes(n)
+    for i in 0..n {
+        __store8(p + i, a[i])
+    }
+    return __str(p, n)
+}
+
+fn __push_slot(h: int, b: int, w: int) -> int {
+    data = __load64(h)
+    n = __load64(h + 8)
+    cap = __load64(h + 16)
+    if n >= cap {
+        if cap > 0 and data + cap * 8 == __bump(b) {
+            __alloc_in(b, cap * 8)
+            cap = cap * 2
+        } else {
+            nc = cap * 2
+            if nc < 8 {
+                nc = 8
+            }
+            nd = __alloc_in(b, nc * 8)
+            if n > 0 {
+                __memcpy(nd, data, n * 8)
+            }
+            data = nd
+            cap = nc
+            __store64(h, nd)
+        }
+        __store64(h + 16, cap)
+    }
+    slot = data + n * 8
+    __store64(h + 8, n + 1)
+    if w == 1 {
+        return slot
+    }
+    box = __alloc_in(b, w * 8)
+    __store64(slot, box)
+    return box
+}
+
+fn __pop_slot(h: int) -> int {
+    n = __load64(h + 8)
+    if n <= 0 {
+        __bounds_fail(-1, 0)
+    }
+    __store64(h + 8, n - 1)
+    return __load64(h) + (n - 1) * 8
+}
+
+fn __index_of(list: array[string], s: string) -> int {
+    for i in 0..len(list) {
+        if list[i] == s {
             return i
         }
-        i = i + 1
     }
-    return 0 - 1
+    return -1
 }
 
-fn arr_get(s: string, idx: int) -> string {
-    let parts = split(s, ";")
-    return parts[idx]
+fn __put16(p: int, v: int) {
+    __store8(p, v & 255)
+    __store8(p + 1, (v >> 8) & 255)
 }
 
-fn arr_length(s: string) -> int {
-    if length(s) == 0 {
-        return 0
-    }
-    let parts = split(s, ";")
-    return length(parts)
+fn __get16(p: int) -> int {
+    return __load8(p) | (__load8(p + 1) << 8)
 }
 
-fn substring(s: string, start: int, len: int) -> string {
-    let result = ""
-    let i = start
-    let end_ = start + len
-    if end_ > length(s) {
-        end_ = length(s)
-    }
-    while i < end_ {
-        result = result + char_at(s, i)
-        i = i + 1
-    }
-    return result
-}
-
-fn split_first(s: string, sep: string) -> array[string] {
-    let sep_len = length(sep)
-    let s_len = length(s)
-    let i = 0
-    while i <= s_len - sep_len {
-        if substring(s, i, sep_len) == sep {
-            let result: array[string] = []
-            push(result, substring(s, 0, i))
-            push(result, substring(s, i + sep_len, s_len - i - sep_len))
-            return result
+# Slop-Pack: repeated strings become one-byte dictionary codes
+fn __slop_pack(items: array[string]) -> string {
+    dict: array[string] = []
+    for s in items {
+        if len(dict) < 255 and __index_of(dict, s) < 0 {
+            push(dict, s)
         }
-        i = i + 1
     }
-    let result: array[string] = []
-    push(result, s)
-    push(result, "")
-    return result
-}
-
-# Map string: "key1|val1,key2|val2"
-fn map_get(m: string, key: string) -> string {
-    if length(m) == 0 {
-        return ""
+    size = 5
+    for d in dict {
+        size += 2 + len(d)
     }
-    let entries = split(m, ",")
-    let i = 0
-    while i < length(entries) {
-        let kv = entries[i]
-        let parts = split(kv, "|")
-        if parts[0] == key {
-            return parts[1]
-        }
-        i = i + 1
-    }
-    return ""
-}
-
-fn map_set(m: string, key: string, value: string) -> string {
-    if length(m) == 0 {
-        return key + "|" + value
-    }
-    let entries = split(m, ",")
-    let i = 0
-    let found = false
-    let result = ""
-    while i < length(entries) {
-        let kv = entries[i]
-        let parts = split(kv, "|")
-        if parts[0] == key {
-            kv = key + "|" + value
-            found = true
-        }
-        if i == 0 {
-            result = kv
+    for s in items {
+        if __index_of(dict, s) >= 0 {
+            size += 1
         } else {
-            result = result + "," + kv
+            size += 3 + len(s)
         }
-        i = i + 1
     }
-    if found == false {
-        result = result + "," + key + "|" + value
+    p = __alloc_bytes(size)
+    __store8(p, len(dict))
+    at = 1
+    for d in dict {
+        __put16(p + at, len(d))
+        __memcpy(p + at + 2, __str_ptr(d), len(d))
+        at += 2 + len(d)
     }
-    return result
-}
-
-# ---------- Lexer ----------
-fn tokenize(source: string) -> array[string] {
-    let tokens: array[string] = []
-    let pos = 0
-    let line = 1
-    let col = 1
-    let len = length(source)
-    while pos < len {
-        let ch = char_at(source, pos)
-
-        if is_space(ch) {
-            if ch == "\n" {
-                line = line + 1
-                col = 1
-            } else {
-                col = col + 1
-            }
-            pos = pos + 1
+    n = len(items)
+    __put16(p + at, n & 65535)
+    __put16(p + at + 2, (n >> 16) & 65535)
+    at += 4
+    for s in items {
+        id = __index_of(dict, s)
+        if id >= 0 {
+            __store8(p + at, id)
+            at += 1
         } else {
-            if ch == "#" {
-                let active = true
-                while active {
-                    if pos < len {
-                        if char_at(source, pos) == "\n" {
-                            pos = pos + 1
-                            line = line + 1
-                            col = 1
-                            active = false
-                        } else {
-                            pos = pos + 1
-                        }
-                    } else {
-                        active = false
-                    }
-                }
-            } else {
-                let next_ch = ""
-                if pos + 1 < len {
-                    next_ch = char_at(source, pos + 1)
-                }
-                let processed = false
-
-                if ch == "-" {
-                    if next_ch == ">" {
-                        push(tokens, make_token("ARROW", "->", line, col))
-                        pos = pos + 2
-                        col = col + 2
-                        processed = true
-                    }
-                }
-                if ch == "=" {
-                    if next_ch == ">" {
-                        push(tokens, make_token("FAT_ARROW", "=>", line, col))
-                        pos = pos + 2
-                        col = col + 2
-                        processed = true
-                    }
-                }
-                if ch == "|" {
-                    if next_ch == ">" {
-                        push(tokens, make_token("PIPE", "|>", line, col))
-                        pos = pos + 2
-                        col = col + 2
-                        processed = true
-                    }
-                }
-                if ch == "=" {
-                    if next_ch == "=" {
-                        push(tokens, make_token("EQ", "==", line, col))
-                        pos = pos + 2
-                        col = col + 2
-                        processed = true
-                    }
-                }
-                if ch == "!" {
-                    if next_ch == "=" {
-                        push(tokens, make_token("NEQ", "!=", line, col))
-                        pos = pos + 2
-                        col = col + 2
-                        processed = true
-                    }
-                }
-                if ch == "<" {
-                    if next_ch == "=" {
-                        push(tokens, make_token("LEQ", "<=", line, col))
-                        pos = pos + 2
-                        col = col + 2
-                        processed = true
-                    }
-                }
-                if ch == ">" {
-                    if next_ch == "=" {
-                        push(tokens, make_token("GEQ", ">=", line, col))
-                        pos = pos + 2
-                        col = col + 2
-                        processed = true
-                    }
-                }
-                if ch == "." {
-                    if next_ch == "." {
-                        push(tokens, make_token("RANGE", "..", line, col))
-                        pos = pos + 2
-                        col = col + 2
-                        processed = true
-                    }
-                }
-
-                if processed == false {
-                    let is_symbol = false
-                    if ch == "(" { is_symbol = true }
-                    if ch == ")" { is_symbol = true }
-                    if ch == "{" { is_symbol = true }
-                    if ch == "}" { is_symbol = true }
-                    if ch == "[" { is_symbol = true }
-                    if ch == "]" { is_symbol = true }
-                    if ch == ":" { is_symbol = true }
-                    if ch == "," { is_symbol = true }
-                    if ch == "+" { is_symbol = true }
-                    if ch == "-" { is_symbol = true }
-                    if ch == "*" { is_symbol = true }
-                    if ch == "/" { is_symbol = true }
-                    if ch == "%" { is_symbol = true }
-                    if ch == "=" { is_symbol = true }
-                    if ch == "<" { is_symbol = true }
-                    if ch == ">" { is_symbol = true }
-                    if ch == "." { is_symbol = true }
-
-                    if is_symbol {
-                        push(tokens, make_token("SYMBOL", ch, line, col))
-                        pos = pos + 1
-                        col = col + 1
-                        } else {
-                            if ch == "\"" {
-                                let str_val = ""
-                                let str_col = col
-                                pos = pos + 1
-                                col = col + 1
-                                let string_active = true
-                                while string_active {
-                                    if pos >= len {
-                                        string_active = false
-                                    } else {
-                                        let s_ch = char_at(source, pos)
-                                        if s_ch == "\\" {
-                                            pos = pos + 1
-                                            col = col + 1
-                                            if pos < len {
-                                                let esc = char_at(source, pos)
-                                                if esc == "n" { str_val = str_val + "\n" }
-                                                if esc == "t" { str_val = str_val + "\t" }
-                                                if esc == "\"" { str_val = str_val + "\"" }
-                                                if esc == "\\" { str_val = str_val + "\\" }
-                                                pos = pos + 1
-                                                col = col + 1
-                                            }
-                                        } else {
-                                            if s_ch == "\"" {
-                                                string_active = false
-                                                pos = pos + 1
-                                                col = col + 1
-                                            } else {
-                                                str_val = str_val + s_ch
-                                                pos = pos + 1
-                                                col = col + 1
-                                            }
-                                        }
-                                    }
-                                }
-                                push(tokens, make_token("STRING", str_val, line, str_col))
-                            } else {
-                            if is_digit(ch) {
-                                let num_val = ""
-                                let num_col = col
-                                let num_active = true
-                                while num_active {
-                                    if pos >= len {
-                                        num_active = false
-                                    } else {
-                                        let n_ch = char_at(source, pos)
-                                        if is_digit(n_ch) {
-                                            num_val = num_val + n_ch
-                                            pos = pos + 1
-                                            col = col + 1
-                                        } else {
-                                            num_active = false
-                                        }
-                                    }
-                                }
-                                push(tokens, make_token("NUMBER", num_val, line, num_col))
-                            } else {
-                                if is_alpha(ch) {
-                                    let id_val = ""
-                                    let id_col = col
-                                    let id_active = true
-                                    while id_active {
-                                        if pos >= len {
-                                            id_active = false
-                                        } else {
-                                            let i_ch = char_at(source, pos)
-                                            if is_id_char(i_ch) {
-                                                id_val = id_val + i_ch
-                                                pos = pos + 1
-                                                col = col + 1
-                                            } else {
-                                                id_active = false
-                                            }
-                                        }
-                                    }
-                                    if is_keyword(id_val) {
-                                        push(tokens, make_token("KEYWORD", id_val, line, id_col))
-                                    } else {
-                                        push(tokens, make_token("IDENTIFIER", id_val, line, id_col))
-                                    }
-                                } else {
-                                    print("Error: Unknown character")
-                                    print(ch)
-                                    pos = pos + 1
-                                    col = col + 1
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            __store8(p + at, 255)
+            __put16(p + at + 1, len(s))
+            __memcpy(p + at + 3, __str_ptr(s), len(s))
+            at += 3 + len(s)
         }
     }
-    push(tokens, make_token("EOF", "", line, col))
-    return tokens
+    return __str(p, size)
 }
 
-# ---------- Parser helpers ----------
-fn tok_type(tokens: array[string], pos: int) -> string {
-    let t = tokens[pos]
-    let r = token_type(t)
-    return r
-}
-
-fn tok_val(tokens: array[string], pos: int) -> string {
-    return token_value(tokens[pos])
-}
-
-fn safe_tok_val(tokens: array[string], pos: int) -> string {
-    if pos < length(tokens) {
-        return token_value(tokens[pos])
+fn __slop_unpack(packed: string) -> array[string] {
+    out: array[string] = []
+    if len(packed) < 5 {
+        return out
     }
-    return ""
-}
-
-fn is_kw(tokens: array[string], pos: int, val: string) -> bool {
-    if tok_type(tokens, pos) == "KEYWORD" {
-        return tok_val(tokens, pos) == val
+    p = __str_ptr(packed)
+    dict: array[string] = []
+    k = __load8(p)
+    at = 1
+    for i in 0..k {
+        n = __get16(p + at)
+        push(dict, __str(p + at + 2, n))
+        at += 2 + n
     }
-    return false
-}
-
-fn is_tok(tokens: array[string], pos: int, val: string) -> bool {
-    if pos < length(tokens) {
-        if token_type(tokens[pos]) == "SYMBOL" {
-            return token_value(tokens[pos]) == val
+    count = __get16(p + at) | (__get16(p + at + 2) << 16)
+    at += 4
+    for i in 0..count {
+        id = __load8(p + at)
+        if id < 255 {
+            push(out, dict[id])
+            at += 1
+        } else {
+            n = __get16(p + at + 1)
+            push(out, __str(p + at + 3, n))
+            at += 3 + n
         }
     }
-    return false
+    return out
 }
 
-fn expect(tokens: array[string], pos: int, type_: string, value: string) -> int {
-    if tok_type(tokens, pos) == type_ {
-        if tok_val(tokens, pos) == value {
-            return pos + 1
-        }
+__last_status = 0
+
+# runs a program and returns everything it printed (stdout and stderr)
+fn __run(path: string, args: array[string]) -> string {
+    __flush()
+    fds = __scratch()
+    if __syscall(22, fds) < 0 {
+        return \"\"
     }
-    print("Parse error: expected ")
-    print(type_)
-    print(value)
-    print("got")
-    print(tok_type(tokens, pos))
-    print(tok_val(tokens, pos))
-    return pos
-}
-
-# parse_type returns [type, new_pos] as array of strings
-fn parse_type(tokens: array[string], pos: int) -> array[string] {
-    let base = tok_val(tokens, pos)
-    if base == "array" {
-        if tok_val(tokens, pos + 1) == "[" {
-            let inner = parse_type(tokens, pos + 2)
-            let elem = inner[0]
-            let p = string_to_int(inner[1])
-            let p2 = expect(tokens, p, "SYMBOL", "]")
-            let result: array[string] = []
-            push(result, "array[" + elem + "]")
-            push(result, int_to_string(p2))
-            return result
-        }
+    rd = __load64(fds) & 4294967295
+    wr = (__load64(fds) >> 32) & 4294967295
+    n = len(args)
+    argv = __alloc((n + 1) * 8)
+    for i in 0..n {
+        __store64(argv + i * 8, __cstr(args[i]))
     }
-    let result: array[string] = []
-    push(result, base)
-    push(result, int_to_string(pos + 1))
-    return result
-}
-
-# ---------- Signature collection ----------
-# Returns [func_names, func_returns, func_params, struct_names, struct_fields]
-fn collect_signatures(tokens: array[string]) -> array[string] {
-    let func_names = ""
-    let func_returns = ""
-    let func_params = ""
-    let struct_names = ""
-    let struct_fields = ""
-    let pos = 0
-    while pos < length(tokens) {
-        if tok_type(tokens, pos) == "EOF" {
+    __store64(argv + n * 8, 0)
+    cpath = __cstr(path)
+    sp = __sp0()
+    envp = sp + 16 + __load64(sp) * 8
+    pid = __syscall(57)
+    if pid == 0 {
+        __syscall(33, wr, 1)
+        __syscall(33, wr, 2)
+        __syscall(3, rd)
+        __syscall(59, cpath, argv, envp)
+        __syscall(60, 127)
+    }
+    __syscall(3, wr)
+    p = __alloc_bytes(0)
+    total = 0
+    while true {
+        __alloc_bytes(4096)
+        r = __syscall(0, rd, p + total, 4096)
+        if r <= 0 {
             break
         }
-        let kind = tok_val(tokens, pos)
-        if kind == "struct" {
-            pos = pos + 1
-            let name = tok_val(tokens, pos)
-            pos = pos + 1
-            pos = expect(tokens, pos, "SYMBOL", "{")
-            let fields = ""
-            let fields_active = true
-            while fields_active {
-                if is_tok(tokens, pos, "}") {
-                    fields_active = false
-                }
-                if fields_active {
-                    let fname = tok_val(tokens, pos)
-                    pos = pos + 1
-                    pos = expect(tokens, pos, "SYMBOL", ":")
-                    let tres = parse_type(tokens, pos)
-                    let ftype = tres[0]
-                    pos = string_to_int(tres[1])
-                    if length(fields) == 0 {
-                        fields = fname + ":" + ftype
-                    } else {
-                        fields = fields + "," + fname + ":" + ftype
-                    }
-                    if tok_val(tokens, pos) == "," {
-                        pos = pos + 1
-                    }
-                }
-            }
-            pos = pos + 1
-            struct_names = arr_append(struct_names, name)
-            struct_fields = arr_append(struct_fields, fields)
-        } else {
-            if kind == "fn" {
-                pos = pos + 1
-                let name = tok_val(tokens, pos)
-                pos = pos + 1
-                pos = expect(tokens, pos, "SYMBOL", "(")
-                let params = ""
-                let params_active = true
-                while params_active {
-                    if is_tok(tokens, pos, ")") {
-                        params_active = false
-                    }
-                    if params_active {
-                        let pname = tok_val(tokens, pos)
-                        pos = pos + 1
-                        pos = expect(tokens, pos, "SYMBOL", ":")
-                        let tres = parse_type(tokens, pos)
-                        let ptype = tres[0]
-                        pos = string_to_int(tres[1])
-                        if length(params) == 0 {
-                            params = pname + ":" + ptype
-                        } else {
-                            params = params + "," + pname + ":" + ptype
-                        }
-                        if tok_val(tokens, pos) == "," {
-                            pos = pos + 1
-                        }
-                    }
-                }
-                pos = pos + 1
-                let rtype = "void"
-                if tok_val(tokens, pos) == "->" {
-                    pos = pos + 1
-                    let tres = parse_type(tokens, pos)
-                    rtype = tres[0]
-                    pos = string_to_int(tres[1])
-                }
-                pos = expect(tokens, pos, "SYMBOL", "{")
-                let depth = 1
-                while depth > 0 {
-                    if pos >= length(tokens) {
-                        depth = 0
-                    } else {
-                        if tok_type(tokens, pos) == "SYMBOL" {
-                            if tok_val(tokens, pos) == "{" {
-                                depth = depth + 1
-                            } else {
-                                if tok_val(tokens, pos) == "}" {
-                                    depth = depth - 1
-                                }
-                            }
-                        }
-                        pos = pos + 1
-                    }
-                }
-                func_names = arr_append(func_names, name)
-                func_returns = arr_append(func_returns, rtype)
-                if length(params) == 0 {
-                    func_params = arr_append(func_params, "<none>")
-                } else {
-                    func_params = arr_append(func_params, params)
-                }
-            } else {
-                # top-level statement: it becomes part of main
-                pos = pos + 1
-            }
-        }
+        total += r
     }
-
-    let result: array[string] = []
-    push(result, func_names)
-    push(result, func_returns)
-    push(result, func_params)
-    push(result, struct_names)
-    push(result, struct_fields)
-    return result
+    __syscall(3, rd)
+    st = __scratch() + 32
+    __store64(st, 0)
+    __syscall(61, pid, st, 0, 0)
+    __last_status = (__load64(st) >> 8) & 255
+    return __str(p, total)
 }
 
-# ---------- C type mapping ----------
-fn c_type(slop_type: string, struct_names: string) -> string {
-    if slop_type == "int" { return "int64_t" }
-    if slop_type == "float" { return "double" }
-    if slop_type == "bool" { return "bool" }
-    if slop_type == "string" { return "SlopString" }
-    if slop_type == "void" { return "void" }
-    let l = length(slop_type)
-    if l > 6 {
-        if char_at(slop_type, 0) == "a" {
-            if char_at(slop_type, 1) == "r" {
-                if char_at(slop_type, 2) == "r" {
-                    if char_at(slop_type, 3) == "a" {
-                        if char_at(slop_type, 4) == "y" {
-                            if char_at(slop_type, 5) == "[" {
-                                return "SlopArray"
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if arr_find(struct_names, slop_type) >= 0 {
-        return "struct " + slop_type
-    }
-    return slop_type
+fn __run_status() -> int {
+    return __last_status
 }
-
-fn elem_type(arr_type: string) -> string {
-    let len_minus_1 = length(arr_type) - 1
-    let i = 6
-    let result = ""
-    while i < len_minus_1 {
-        result = result + char_at(arr_type, i)
-        i = i + 1
-    }
-    return result
-}
-
-fn is_array_type(t: string) -> bool {
-    if length(t) < 6 { return false }
-    if char_at(t, 0) != "a" { return false }
-    if char_at(t, 1) != "r" { return false }
-    if char_at(t, 2) != "r" { return false }
-    if char_at(t, 3) != "a" { return false }
-    if char_at(t, 4) != "y" { return false }
-    if char_at(t, 5) != "[" { return false }
-    return true
-}
-
-# ---------- Expression generator ----------
-# Returns [code, type, new_pos] as array of strings
-fn gen_expr(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    let left_res = gen_or(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-    let left = left_res[0]
-    let ltype = left_res[1]
-    pos = string_to_int(left_res[2])
-    # x |> f(a, b)  is  f(x, a, b)
-    while tok_type(tokens, pos) == "PIPE" {
-        pos = pos + 1
-        let name = tok_val(tokens, pos)
-        pos = pos + 1
-        pos = expect(tokens, pos, "SYMBOL", "(")
-        let args = left
-        let arg_types = ltype
-        while tok_val(tokens, pos) != ")" {
-            let arg_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-            args = args + ", " + arg_res[0]
-            arg_types = arg_types + ";" + arg_res[1]
-            pos = string_to_int(arg_res[2])
-            if tok_val(tokens, pos) == "," {
-                pos = pos + 1
-            }
-        }
-        pos = pos + 1
-        let call_res = gen_call(name, args, arg_types, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        left = call_res[0]
-        ltype = call_res[1]
-        pos = string_to_int(call_res[2])
-    }
-    let result: array[string] = []
-    push(result, left)
-    push(result, ltype)
-    push(result, int_to_string(pos))
-    return result
-}
-
-fn gen_or(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    let left_res = gen_and(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-    let left = left_res[0]
-    let ltype = left_res[1]
-    pos = string_to_int(left_res[2])
-    while is_kw(tokens, pos, "or") {
-        let right_res = gen_and(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        left = "(" + left + " || " + right_res[0] + ")"
-        ltype = "bool"
-        pos = string_to_int(right_res[2])
-    }
-    let result: array[string] = []
-    push(result, left)
-    push(result, ltype)
-    push(result, int_to_string(pos))
-    return result
-}
-
-fn gen_and(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    let left_res = gen_equality(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-    let left = left_res[0]
-    let ltype = left_res[1]
-    pos = string_to_int(left_res[2])
-    while is_kw(tokens, pos, "and") {
-        let right_res = gen_equality(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        left = "(" + left + " && " + right_res[0] + ")"
-        ltype = "bool"
-        pos = string_to_int(right_res[2])
-    }
-    let result: array[string] = []
-    push(result, left)
-    push(result, ltype)
-    push(result, int_to_string(pos))
-    return result
-}
-
-fn gen_equality(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    let left_res = gen_relational(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-    let left = left_res[0]
-    let ltype = left_res[1]
-    pos = string_to_int(left_res[2])
-    let t = tok_type(tokens, pos)
-    let v = tok_val(tokens, pos)
-    let cont = false
-    if t == "EQ" { cont = true }
-    if t == "NEQ" { cont = true }
-    while cont {
-        let op = v
-        pos = pos + 1
-        let right_res = gen_relational(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        let right = right_res[0]
-        let rtype = right_res[1]
-        pos = string_to_int(right_res[2])
-        if ltype == "string" {
-            if rtype == "string" {
-                if op == "==" {
-                    left = "slop_string_equal(" + left + ", " + right + ")"
-                } else {
-                    left = "!slop_string_equal(" + left + ", " + right + ")"
-                }
-                ltype = "bool"
-            }
-        } else {
-            left = "(" + left + " " + op + " " + right + ")"
-        }
-        t = tok_type(tokens, pos)
-        v = tok_val(tokens, pos)
-        cont = false
-        if t == "EQ" { cont = true }
-        if t == "NEQ" { cont = true }
-    }
-    let result: array[string] = []
-    push(result, left)
-    push(result, ltype)
-    push(result, int_to_string(pos))
-    return result
-}
-
-fn gen_relational(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    let left_res = gen_additive(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-    let left = left_res[0]
-    let ltype = left_res[1]
-    pos = string_to_int(left_res[2])
-    let t = tok_type(tokens, pos)
-    let v = tok_val(tokens, pos)
-    let cont = false
-    if t == "LEQ" { cont = true }
-    if t == "GEQ" { cont = true }
-    if t == "SYMBOL" {
-        if v == "<" { cont = true }
-        if v == ">" { cont = true }
-    }
-    while cont {
-        let op = v
-        pos = pos + 1
-        let right_res = gen_additive(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        let right = right_res[0]
-        pos = string_to_int(right_res[2])
-        left = "(" + left + " " + op + " " + right + ")"
-        t = tok_type(tokens, pos)
-        v = tok_val(tokens, pos)
-        cont = false
-        if t == "LEQ" { cont = true }
-        if t == "GEQ" { cont = true }
-        if t == "SYMBOL" {
-            if v == "<" { cont = true }
-            if v == ">" { cont = true }
-        }
-    }
-    let result: array[string] = []
-    push(result, left)
-    push(result, ltype)
-    push(result, int_to_string(pos))
-    return result
-}
-
-fn gen_additive(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    let left_res = gen_multiplicative(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-    let left = left_res[0]
-    let ltype = left_res[1]
-    pos = string_to_int(left_res[2])
-    let t = tok_type(tokens, pos)
-    let v = tok_val(tokens, pos)
-    let cont = false
-    if t == "SYMBOL" {
-        if v == "+" { cont = true }
-        if v == "-" { cont = true }
-    }
-    while cont {
-        let op = v
-        pos = pos + 1
-        let right_res = gen_multiplicative(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        let right = right_res[0]
-        let rtype = right_res[1]
-        pos = string_to_int(right_res[2])
-        let is_string_add = false
-        if ltype == "string" {
-            if rtype == "string" {
-                if op == "+" {
-                    is_string_add = true
-                }
-            }
-        }
-        if is_string_add {
-            left = "slop_string_concat(local_arena, " + left + ", " + right + ")"
-        } else {
-            left = "(" + left + " " + op + " " + right + ")"
-        }
-        t = tok_type(tokens, pos)
-        v = tok_val(tokens, pos)
-        cont = false
-        if t == "SYMBOL" {
-            if v == "+" { cont = true }
-            if v == "-" { cont = true }
-        }
-    }
-    let result: array[string] = []
-    push(result, left)
-    push(result, ltype)
-    push(result, int_to_string(pos))
-    return result
-}
-
-fn gen_multiplicative(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    let left_res = gen_primary(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-    let left = left_res[0]
-    let ltype = left_res[1]
-    pos = string_to_int(left_res[2])
-    let t = tok_type(tokens, pos)
-    let v = tok_val(tokens, pos)
-    let cont = false
-    if t == "SYMBOL" {
-        if v == "*" { cont = true }
-        if v == "/" { cont = true }
-        if v == "%" { cont = true }
-    }
-    while cont {
-        let op = v
-        pos = pos + 1
-        let right_res = gen_primary(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        let right = right_res[0]
-        pos = string_to_int(right_res[2])
-        left = "(" + left + " " + op + " " + right + ")"
-        t = tok_type(tokens, pos)
-        v = tok_val(tokens, pos)
-        cont = false
-        if t == "SYMBOL" {
-            if v == "*" { cont = true }
-            if v == "/" { cont = true }
-            if v == "%" { cont = true }
-        }
-    }
-    let result: array[string] = []
-    push(result, left)
-    push(result, ltype)
-    push(result, int_to_string(pos))
-    return result
-}
-
-# Code for a call whose arguments are already generated. Returns [code, type, new_pos].
-fn gen_call(name: string, args: string, arg_types: string, pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    if name == "len" { name = "length" }
-    if name == "print" {
-        let at = arg_types
-        let result: array[string] = []
-        if at == "int" {
-            push(result, "slop_print_int(" + args + ")")
-        } else {
-            if at == "bool" {
-                push(result, "slop_print_bool(" + args + ")")
-            } else {
-                push(result, "slop_print_string(" + args + ")")
-            }
-        }
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "length" {
-        let result: array[string] = []
-        push(result, "(" + args + ".length)")
-        push(result, "int")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "push" {
-        # args is "arr, elem"; arg_types is "arr_type;elem_type"
-        let parts = split_first(args, ", ")
-        let arr = parts[0]
-        let elem = parts[1]
-        let type_parts = split(arg_types, ";")
-        let et = type_parts[1]
-        let c_et = c_type(et, struct_names)
-        let code = "SLOP_PUSH(local_arena, " + arr + ", " + c_et + ", " + elem + ")"
-        let result: array[string] = []
-        push(result, code)
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "read_file" {
-        let result: array[string] = []
-        push(result, "slop_read_file(local_arena, " + args + ")")
-        push(result, "string")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "write_file" {
-        let result: array[string] = []
-        push(result, "slop_write_file(" + args + ")")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "int_to_string" {
-        let result: array[string] = []
-        push(result, "slop_int_to_string(local_arena, " + args + ")")
-        push(result, "string")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "string_equal" {
-        let result: array[string] = []
-        push(result, "slop_string_equal(" + args + ")")
-        push(result, "bool")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "char_at" {
-        let result: array[string] = []
-        push(result, "slop_char_at(local_arena, " + args + ")")
-        push(result, "string")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "split" {
-        let result: array[string] = []
-        push(result, "slop_split(local_arena, " + args + ")")
-        push(result, "array[string]")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "join" {
-        let result: array[string] = []
-        push(result, "slop_join(local_arena, " + args + ")")
-        push(result, "string")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "addr_of" {
-        let result: array[string] = []
-        push(result, "((int64_t)&(" + args + "))")
-        push(result, "int")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "unsafe_load8" {
-        let result: array[string] = []
-        push(result, "((int64_t)slop_unsafe_load8((uintptr_t)(" + args + ")))")
-        push(result, "int")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "unsafe_load16" {
-        let result: array[string] = []
-        push(result, "((int64_t)slop_unsafe_load16((uintptr_t)(" + args + ")))")
-        push(result, "int")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "unsafe_load32" {
-        let result: array[string] = []
-        push(result, "((int64_t)slop_unsafe_load32((uintptr_t)(" + args + ")))")
-        push(result, "int")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "unsafe_load64" {
-        let result: array[string] = []
-        push(result, "((int64_t)slop_unsafe_load64((uintptr_t)(" + args + ")))")
-        push(result, "int")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "mmio_read32" {
-        let result: array[string] = []
-        push(result, "((int64_t)slop_mmio_read32((uintptr_t)(" + args + ")))")
-        push(result, "int")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "component_base" {
-        let result: array[string] = []
-        push(result, "((int64_t)slop_component_base((uintptr_t)(" + args + ")))")
-        push(result, "int")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "unsafe_store8" {
-        let parts = split_first(args, ", ")
-        let result: array[string] = []
-        push(result, "slop_unsafe_store8((uintptr_t)(" + parts[0] + "), (uint8_t)(" + parts[1] + "))")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "unsafe_store16" {
-        let parts = split_first(args, ", ")
-        let result: array[string] = []
-        push(result, "slop_unsafe_store16((uintptr_t)(" + parts[0] + "), (uint16_t)(" + parts[1] + "))")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "unsafe_store32" {
-        let parts = split_first(args, ", ")
-        let result: array[string] = []
-        push(result, "slop_unsafe_store32((uintptr_t)(" + parts[0] + "), (uint32_t)(" + parts[1] + "))")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "unsafe_store64" {
-        let parts = split_first(args, ", ")
-        let result: array[string] = []
-        push(result, "slop_unsafe_store64((uintptr_t)(" + parts[0] + "), (uint64_t)(" + parts[1] + "))")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "mmio_write32" {
-        let parts = split_first(args, ", ")
-        let result: array[string] = []
-        push(result, "slop_mmio_write32((uintptr_t)(" + parts[0] + "), (uint32_t)(" + parts[1] + "))")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "cpu_cycles" {
-        let result: array[string] = []
-        push(result, "((int64_t)slop_cpu_cycles())")
-        push(result, "int")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "cpu_fence" {
-        let result: array[string] = []
-        push(result, "slop_cpu_fence()")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "cpu_relax" {
-        let result: array[string] = []
-        push(result, "slop_cpu_relax()")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "cpu_prefetch" {
-        let result: array[string] = []
-        push(result, "slop_cpu_prefetch((uintptr_t)(" + args + "))")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "device_fence" {
-        let result: array[string] = []
-        push(result, "slop_device_fence()")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "gpu_fence" {
-        let result: array[string] = []
-        push(result, "slop_gpu_fence()")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "ram_copy" {
-        let p1 = split_first(args, ", ")
-        let p2 = split_first(p1[1], ", ")
-        let result: array[string] = []
-        push(result, "slop_ram_copy((uintptr_t)(" + p1[0] + "), (uintptr_t)(" + p2[0] + "), (uint64_t)(" + p2[1] + "))")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    if name == "ram_zero" {
-        let parts = split_first(args, ", ")
-        let result: array[string] = []
-        push(result, "slop_ram_zero((uintptr_t)(" + parts[0] + "), (uint64_t)(" + parts[1] + "))")
-        push(result, "void")
-        push(result, int_to_string(pos))
-        return result
-    }
-    # struct constructor
-    if arr_find(struct_names, name) >= 0 {
-        let fields = arr_get(struct_fields, arr_find(struct_names, name))
-        let f_parts = split(fields, ",")
-        let a_parts = split(args, ", ")
-        let code = "struct " + name + " _tmp_struct;\n"
-        let i = 0
-        while i < length(f_parts) {
-            let fp = split(f_parts[i], ":")
-            code = code + "    _tmp_struct." + fp[0] + " = " + a_parts[i] + ";\n"
-            i = i + 1
-        }
-        let result: array[string] = []
-        push(result, code + "    _tmp_struct")
-        push(result, name)
-        push(result, int_to_string(pos))
-        return result
-    }
-    # user function
-    let idx = arr_find(func_names, name)
-    if idx >= 0 {
-        let rtype = arr_get(func_returns, idx)
-        let result: array[string] = []
-        push(result, "fn_" + name + "(" + args + ")")
-        push(result, rtype)
-        push(result, int_to_string(pos))
-        return result
-    }
-    print("Error: unknown function")
-    print(name)
-    let result: array[string] = []
-    push(result, "")
-    push(result, "int")
-    push(result, int_to_string(pos))
-    return result
-}
-
-fn gen_primary(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    let t = tok_type(tokens, pos)
-    let v = tok_val(tokens, pos)
-    if t == "NUMBER" {
-        let result: array[string] = []
-        push(result, v)
-        push(result, "int")
-        push(result, int_to_string(pos + 1))
-        return result
-    }
-    let is_not = false
-    if t == "KEYWORD" {
-        if v == "not" { is_not = true }
-    }
-    if t == "SYMBOL" {
-        if v == "!" { is_not = true }
-    }
-    if is_not {
-        let n_res = gen_primary(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        let result: array[string] = []
-        push(result, "(!" + n_res[0] + ")")
-        push(result, "bool")
-        push(result, n_res[2])
-        return result
-    }
-    if t == "SYMBOL" {
-        if v == "-" {
-            let m_res = gen_primary(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-            let result: array[string] = []
-            push(result, "(-" + m_res[0] + ")")
-            push(result, m_res[1])
-            push(result, m_res[2])
-            return result
-        }
-    }
-    if t == "STRING" {
-        let esc = escape_string(v)
-        let result: array[string] = []
-        push(result, "SLOP_STR(\"" + esc + "\")")
-        push(result, "string")
-        push(result, int_to_string(pos + 1))
-        return result
-    }
-    let is_bool_kw = false
-    if t == "KEYWORD" {
-        if v == "true" { is_bool_kw = true }
-        if v == "false" { is_bool_kw = true }
-    }
-    if is_bool_kw {
-        let result: array[string] = []
-        push(result, v)
-        push(result, "bool")
-        push(result, int_to_string(pos + 1))
-        return result
-    }
-    if t == "IDENTIFIER" {
-        let name = v
-        pos = pos + 1
-        if tok_val(tokens, pos) == "(" {
-            pos = pos + 1
-            let args = ""
-            let arg_types = ""
-            let args_active = true
-            while args_active {
-                if is_tok(tokens, pos, ")") {
-                    args_active = false
-                }
-                if args_active {
-                    let arg_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-                    let arg = arg_res[0]
-                    let at = arg_res[1]
-                    pos = string_to_int(arg_res[2])
-                    if length(args) == 0 {
-                        args = arg
-                        arg_types = at
-                    } else {
-                        args = args + ", " + arg
-                        arg_types = arg_types + ";" + at
-                    }
-                    if tok_val(tokens, pos) == "," {
-                        pos = pos + 1
-                    }
-                }
-            }
-            pos = pos + 1
-            return gen_call(name, args, arg_types, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        }
-        # identifier or index or field
-        let expr = name
-        let etype = map_get(var_types, name)
-        if etype == "" {
-            if arr_find(struct_names, name) >= 0 {
-                etype = name
-            } else {
-                etype = "int"
-            }
-        }
-        let cont = true
-        while cont {
-            if tok_val(tokens, pos) == "[" {
-                pos = pos + 1
-                let idx_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-                let idx = idx_res[0]
-                pos = string_to_int(idx_res[2])
-                pos = expect(tokens, pos, "SYMBOL", "]")
-                let et = elem_type(etype)
-                let c_et = c_type(et, struct_names)
-                expr = "SLOP_AT(" + c_et + ", " + expr + ", " + idx + ")"
-                etype = et
-                cont = true
-            } else {
-                if tok_val(tokens, pos) == "." {
-                    pos = pos + 1
-                    let field = tok_val(tokens, pos)
-                    pos = pos + 1
-                    expr = "(" + expr + "." + field + ")"
-                    if arr_find(struct_names, etype) >= 0 {
-                        let fields = arr_get(struct_fields, arr_find(struct_names, etype))
-                        let f_parts = split(fields, ",")
-                        let j = 0
-                        while j < length(f_parts) {
-                            let fp = split(f_parts[j], ":")
-                            if fp[0] == field {
-                                etype = fp[1]
-                            }
-                            j = j + 1
-                        }
-                    }
-                    cont = true
-                } else {
-                    cont = false
-                }
-            }
-        }
-        let result: array[string] = []
-        push(result, expr)
-        push(result, etype)
-        push(result, int_to_string(pos))
-        return result
-    }
-    if t == "SYMBOL" {
-        if v == "[" {
-            pos = pos + 1
-            let elements = ""
-            let etype = "int"
-            if tok_val(tokens, pos) != "]" {
-                let e_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-                let e = e_res[0]
-                etype = e_res[1]
-                pos = string_to_int(e_res[2])
-                elements = e
-                while tok_val(tokens, pos) == "," {
-                    pos = pos + 1
-                    let e_res2 = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-                    let e2 = e_res2[0]
-                    pos = string_to_int(e_res2[2])
-                    elements = elements + ";" + e2
-                }
-            }
-            pos = expect(tokens, pos, "SYMBOL", "]")
-            let c_et = c_type(etype, struct_names)
-            let arr_var = "_tmp_arr_" + int_to_string(pos)
-            let code = "SlopArray " + arr_var + " = slop_array_create(local_arena);\n"
-            let e_parts = split(elements, ";")
-            let i = 0
-            while i < length(e_parts) {
-                if e_parts[i] != "" {
-                    let el = e_parts[i]
-                    code = code + "    SLOP_PUSH(local_arena, " + arr_var + ", " + c_et + ", " + el + ");\n"
-                }
-                i = i + 1
-            }
-            let result: array[string] = []
-            push(result, code + "    " + arr_var)
-            push(result, "array[" + etype + "]")
-            push(result, int_to_string(pos))
-            return result
-        }
-    }
-    if t == "SYMBOL" {
-        if v == "(" {
-            pos = pos + 1
-            let e_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-            let e = e_res[0]
-            let et = e_res[1]
-            pos = string_to_int(e_res[2])
-            pos = expect(tokens, pos, "SYMBOL", ")")
-            let result: array[string] = []
-            push(result, e)
-            push(result, et)
-            push(result, int_to_string(pos))
-            return result
-        }
-    }
-    print("Unexpected expression token")
-    print(t)
-    print(v)
-    let result: array[string] = []
-    push(result, "")
-    push(result, "int")
-    push(result, int_to_string(pos + 1))
-    return result
-}
-
-# ---------- Statement generator ----------
-# Returns [new_pos, output, var_types] as array of strings
-fn gen_stmt(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string, output: string, return_type: string) -> array[string] {
-    let t = tok_type(tokens, pos)
-    let v = tok_val(tokens, pos)
-
-    let implicit_let = false
-    if t == "IDENTIFIER" {
-        # `x = 1` with a new name declares it: `let` is optional
-        if tok_val(tokens, pos + 1) == "=" {
-            if map_get(var_types, v) == "" {
-                implicit_let = true
-                t = "KEYWORD"
-                v = "let"
-            }
-        }
-    }
-
-    if t == "IDENTIFIER" {
-        # x += 1, x -= 1, x *= 2, x /= 2  (+= also appends strings)
-        let op = tok_val(tokens, pos + 1)
-        let is_compound = false
-        if tok_val(tokens, pos + 2) == "=" {
-            if op == "+" { is_compound = true }
-            if op == "-" { is_compound = true }
-            if op == "*" { is_compound = true }
-            if op == "/" { is_compound = true }
-        }
-        if is_compound {
-            let rhs_res = gen_expr(tokens, pos + 3, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-            pos = string_to_int(rhs_res[2])
-            let line = "    " + v + " = (" + v + " " + op + " " + rhs_res[0] + ");\n"
-            if map_get(var_types, v) == "string" {
-                line = "    " + v + " = slop_string_concat(local_arena, " + v + ", " + rhs_res[0] + ");\n"
-            }
-            let result: array[string] = []
-            push(result, int_to_string(pos))
-            push(result, output + line)
-            push(result, var_types)
-            return result
-        }
-    }
-
-    if is_kw(tokens, pos, "for") {
-        # for i in 0..n { }   or   for x in items { }
-        pos = pos + 1
-        let name = tok_val(tokens, pos)
-        pos = pos + 1
-        pos = expect(tokens, pos, "KEYWORD", "in")
-        let s_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        pos = string_to_int(s_res[2])
-        let head = ""
-        let body_vars = ""
-        if tok_type(tokens, pos) == "RANGE" {
-            let e_res = gen_expr(tokens, pos + 1, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-            pos = string_to_int(e_res[2])
-            head = "    for (int64_t " + name + " = " + s_res[0] + ", _end_" + name + " = " + e_res[0] + "; " + name + " < _end_" + name + "; " + name + "++) {\n"
-            body_vars = map_set(var_types, name, "int")
-        } else {
-            let et = elem_type(s_res[1])
-            let c_et = c_type(et, struct_names)
-            let it = "_it_" + int_to_string(pos)
-            let idx = "_i_" + int_to_string(pos)
-            head = "    SlopArray " + it + " = " + s_res[0] + ";\n    for (int64_t " + idx + " = 0; " + idx + " < (int64_t)" + it + ".length; " + idx + "++) {\n    " + c_et + " " + name + " = SLOP_AT(" + c_et + ", " + it + ", " + idx + ");\n"
-            body_vars = map_set(var_types, name, et)
-        }
-        pos = expect(tokens, pos, "SYMBOL", "{")
-        let block_res = gen_block(tokens, pos, body_vars, func_names, func_returns, func_params, struct_names, struct_fields, "", return_type)
-        pos = string_to_int(block_res[0])
-        let result: array[string] = []
-        push(result, int_to_string(pos))
-        push(result, output + head + block_res[1] + "    }\n")
-        push(result, var_types)
-        return result
-    }
-
-    if t == "KEYWORD" {
-        if v == "let" {
-            if implicit_let == false {
-                pos = pos + 1
-            }
-            let name = tok_val(tokens, pos)
-            pos = pos + 1
-            let vtype = ""
-            if tok_val(tokens, pos) == ":" {
-                pos = pos + 1
-                let tres = parse_type(tokens, pos)
-                vtype = tres[0]
-                pos = string_to_int(tres[1])
-            }
-            pos = expect(tokens, pos, "SYMBOL", "=")
-            let e_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-            let code = e_res[0]
-            let etype = e_res[1]
-            pos = string_to_int(e_res[2])
-            if length(vtype) == 0 {
-                vtype = etype
-            }
-            let new_var_types = map_set(var_types, name, vtype)
-            let c_t = c_type(vtype, struct_names)
-            let line = ""
-            let code_lines = split(code, "\n")
-            if length(code_lines) > 1 {
-                let last = code_lines[length(code_lines) - 1]
-                let prefix = ""
-                let i = 0
-                while i < length(code_lines) - 1 {
-                    if length(prefix) == 0 {
-                        prefix = code_lines[i]
-                    } else {
-                        prefix = prefix + "\n" + code_lines[i]
-                    }
-                    i = i + 1
-                }
-                line = "    " + prefix + "\n    " + c_t + " " + name + " = " + last + ";\n"
-            } else {
-                line = "    " + c_t + " " + name + " = " + code + ";\n"
-            }
-            let result: array[string] = []
-            push(result, int_to_string(pos))
-            push(result, output + line)
-            push(result, new_var_types)
-            return result
-        }
-        if v == "raw" {
-            pos = pos + 1
-            pos = expect(tokens, pos, "SYMBOL", "{")
-            let code = tok_val(tokens, pos)
-            pos = pos + 1
-            pos = expect(tokens, pos, "SYMBOL", "}")
-            let result: array[string] = []
-            push(result, int_to_string(pos))
-            push(result, output + "    " + code + "\n")
-            push(result, var_types)
-            return result
-        }
-    }
-
-    if t == "KEYWORD" {
-        if v == "return" {
-            pos = pos + 1
-            let ret_empty = false
-            if tok_val(tokens, pos) == "}" { ret_empty = true }
-            if tok_type(tokens, pos) == "EOF" { ret_empty = true }
-            if ret_empty {
-                let line = "    SLOP_LEAVE();\n    return;\n"
-                let result: array[string] = []
-                push(result, int_to_string(pos))
-                push(result, output + line)
-                push(result, var_types)
-                return result
-            }
-            let e_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-            let code = e_res[0]
-            let et = e_res[1]
-            pos = string_to_int(e_res[2])
-            let line = ""
-            if et == "string" {
-                line = "    SlopString _ret = slop_string_clone(slop_get_arena(slop_arena_depth - 1), " + code + ");\n    SLOP_LEAVE();\n    return _ret;\n"
-                let lit_parts = split(code, "SLOP_STR(")
-                if length(lit_parts) > 1 {
-                    if lit_parts[0] == "" {
-                        # a literal lives in static memory: nothing to copy
-                        line = "    SLOP_LEAVE();\n    return " + code + ";\n"
-                    }
-                }
-            } else {
-                if et == "void" {
-                    line = "    " + code + ";\n    SLOP_LEAVE();\n    return;\n"
-                } else {
-                    if is_array_type(et) {
-                        if elem_type(et) == "string" {
-                            line = "    SlopArray _ret = slop_array_clone_strings(slop_get_arena(slop_arena_depth - 1), " + code + ");\n    SLOP_LEAVE();\n    return _ret;\n"
-                        } else {
-                            line = "    SlopArray _ret = slop_array_clone_ints(slop_get_arena(slop_arena_depth - 1), " + code + ");\n    SLOP_LEAVE();\n    return _ret;\n"
-                        }
-                    } else {
-                        line = "    SLOP_LEAVE();\n    return " + code + ";\n"
-                    }
-                }
-            }
-            let result: array[string] = []
-            push(result, int_to_string(pos))
-            push(result, output + line)
-            push(result, var_types)
-            return result
-        }
-    }
-
-    if t == "KEYWORD" {
-        if v == "if" {
-            pos = pos + 1
-            let c_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-            let cond = c_res[0]
-            pos = string_to_int(c_res[2])
-            pos = expect(tokens, pos, "SYMBOL", "{")
-            let block_res = gen_block(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields, "", return_type)
-            pos = string_to_int(block_res[0])
-            let then_code = block_res[1]
-            let vt2 = block_res[2]
-            let full = output + "    if (" + cond + ") {\n" + then_code + "    }"
-            if tok_val(tokens, pos) == "else" {
-                pos = pos + 1
-                let else_res: array[string] = []
-                if tok_val(tokens, pos) == "if" {
-                    let elif_res = gen_stmt(tokens, pos, vt2, func_names, func_returns, func_params, struct_names, struct_fields, "", return_type)
-                    push(else_res, elif_res[0])
-                    push(else_res, elif_res[1])
-                    push(else_res, elif_res[2])
-                } else {
-                    pos = expect(tokens, pos, "SYMBOL", "{")
-                    else_res = gen_block(tokens, pos, vt2, func_names, func_returns, func_params, struct_names, struct_fields, "", return_type)
-                }
-                pos = string_to_int(else_res[0])
-                let else_code = else_res[1]
-                let vt3 = else_res[2]
-                full = full + " else {\n" + else_code + "    }\n"
-                let result: array[string] = []
-                push(result, int_to_string(pos))
-                push(result, full)
-                push(result, vt3)
-                return result
-            }
-            let result: array[string] = []
-            push(result, int_to_string(pos))
-            push(result, full + "\n")
-            push(result, vt2)
-            return result
-        }
-    }
-
-    if t == "KEYWORD" {
-        if v == "while" {
-            pos = pos + 1
-            let c_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-            let cond = c_res[0]
-            pos = string_to_int(c_res[2])
-            pos = expect(tokens, pos, "SYMBOL", "{")
-            let block_res = gen_block(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields, "", return_type)
-            pos = string_to_int(block_res[0])
-            let body = block_res[1]
-            let full = output + "    while (" + cond + ") {\n" + body + "    }\n"
-            let result: array[string] = []
-            push(result, int_to_string(pos))
-            push(result, full)
-            push(result, var_types)
-            return result
-        }
-    }
-
-    # assignment or expression statement
-    let e_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-    let code = e_res[0]
-    let et = e_res[1]
-    pos = string_to_int(e_res[2])
-    if tok_val(tokens, pos) == "=" {
-        pos = pos + 1
-        let rhs_res = gen_expr(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields)
-        let rhs = rhs_res[0]
-        pos = string_to_int(rhs_res[2])
-        let rhs_lines = split(rhs, "\n")
-        let line = ""
-        if length(rhs_lines) > 1 {
-            let last = rhs_lines[length(rhs_lines) - 1]
-            let prefix = ""
-            let i = 0
-            while i < length(rhs_lines) - 1 {
-                if length(prefix) == 0 {
-                    prefix = rhs_lines[i]
-                } else {
-                    prefix = prefix + "\n" + rhs_lines[i]
-                }
-                i = i + 1
-            }
-            line = "    " + prefix + "\n    " + code + " = " + last + ";\n"
-        } else {
-            line = "    " + code + " = " + rhs + ";\n"
-        }
-        let result: array[string] = []
-        push(result, int_to_string(pos))
-        push(result, output + line)
-        push(result, var_types)
-        return result
-    }
-    let line = "    " + code + ";\n"
-    let result: array[string] = []
-    push(result, int_to_string(pos))
-    push(result, output + line)
-    push(result, var_types)
-    return result
-}
-
-# gen_block returns [new_pos, output, var_types]
-fn gen_block(tokens: array[string], pos: int, var_types: string, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string, output: string, return_type: string) -> array[string] {
-    let current_output = output
-    let current_vars = var_types
-    let block_active = true
-    while block_active {
-        if is_tok(tokens, pos, "}") {
-            block_active = false
-        }
-        if block_active {
-            let stmt_res = gen_stmt(tokens, pos, current_vars, func_names, func_returns, func_params, struct_names, struct_fields, current_output, return_type)
-            pos = string_to_int(stmt_res[0])
-            current_output = stmt_res[1]
-            current_vars = stmt_res[2]
-        }
-    }
-    pos = pos + 1
-    let result: array[string] = []
-    push(result, int_to_string(pos))
-    push(result, current_output)
-    push(result, current_vars)
-    return result
-}
-
-# ---------- Function generator ----------
-fn contains(s: string, needle: string) -> bool {
-    return length(split(s, needle)) > 1
-}
-
-# Wraps a function body in its memory frame. A function that never touches the
-# arena and calls nothing (a "leaf") gets no frame at all: zero overhead.
-fn frame_body(body: string, falls_off_end: bool) -> string {
-    let needs_frame = false
-    if contains(body, "local_arena") { needs_frame = true }
-    if contains(body, "slop_get_arena") { needs_frame = true }
-    if contains(body, "slop_arena") { needs_frame = true }
-    if contains(body, "fn_") { needs_frame = true }
-    if needs_frame {
-        if falls_off_end {
-            return "    SLOP_ENTER();\n" + body + "    SLOP_LEAVE();\n"
-        }
-        return "    SLOP_ENTER();\n" + body
-    }
-    return join(split(body, "    SLOP_LEAVE();\n"), "")
-}
-
-fn gen_func(tokens: array[string], pos: int, func_names: string, func_returns: string, func_params: string, struct_names: string, struct_fields: string) -> array[string] {
-    pos = expect(tokens, pos, "KEYWORD", "fn")
-    let name = tok_val(tokens, pos)
-    pos = pos + 1
-    pos = expect(tokens, pos, "SYMBOL", "(")
-    let params = ""
-    let var_types = ""
-    let gf_params_active = true
-    while gf_params_active {
-        if is_tok(tokens, pos, ")") {
-            gf_params_active = false
-        }
-        if gf_params_active {
-            let pname = tok_val(tokens, pos)
-            pos = pos + 1
-            pos = expect(tokens, pos, "SYMBOL", ":")
-            let tres = parse_type(tokens, pos)
-            let ptype = tres[0]
-            pos = string_to_int(tres[1])
-                if length(params) == 0 {
-                params = c_type(ptype, struct_names) + " " + pname
-            } else {
-                params = params + ", " + c_type(ptype, struct_names) + " " + pname
-            }
-            var_types = map_set(var_types, pname, ptype)
-            if tok_val(tokens, pos) == "," {
-                pos = pos + 1
-            }
-        }
-    }
-    pos = pos + 1
-    let rtype = "void"
-    if tok_val(tokens, pos) == "->" {
-        pos = pos + 1
-        let tres = parse_type(tokens, pos)
-        rtype = tres[0]
-        pos = string_to_int(tres[1])
-    }
-    let c_rtype = c_type(rtype, struct_names)
-    let forward = c_rtype + " fn_" + name + "(" + params + ");\n"
-    pos = expect(tokens, pos, "SYMBOL", "{")
-    let block_res = gen_block(tokens, pos, var_types, func_names, func_returns, func_params, struct_names, struct_fields, "", rtype)
-    pos = string_to_int(block_res[0])
-    let body = block_res[1]
-    if length(params) == 0 {
-        params = "void"
-    }
-    let full = c_rtype + " fn_" + name + "(" + params + ") {\n" + frame_body(body, rtype == "void") + "}\n\n"
-    let result: array[string] = []
-    push(result, forward)
-    push(result, full)
-    push(result, int_to_string(pos))
-    return result
-}
-
-# ---------- Main compiler ----------
-fn main(args: array[string]) {
-    if length(args) < 2 {
-        print("Usage: slop-compiler <file.slop> [output.c]")
-        return
-    }
-    let filename = args[1]
-    let source = read_file(filename)
-    if length(source) == 0 {
-        print("File empty or not found: " + filename)
-        return
-    }
-    let tokens = tokenize(source)
-    let sigs = collect_signatures(tokens)
-    let func_names = sigs[0]
-    let func_returns = sigs[1]
-    let func_params = sigs[2]
-    let struct_names = sigs[3]
-    let struct_fields = sigs[4]
-
-    let output = "#include \"slop_rt.h\"\n"
-    output = output + "THREAD_LOCAL int slop_arena_depth = 0;\n\n"
-
-    # forward declarations of structs
-    let i = 0
-    while i < arr_length(struct_names) {
-        let name = arr_get(struct_names, i)
-        output = output + "struct " + name + ";\n"
-        i = i + 1
-    }
-
-
-    # struct definitions
-    i = 0
-    while i < arr_length(struct_names) {
-        let name = arr_get(struct_names, i)
-        let fields = arr_get(struct_fields, i)
-        output = output + "struct " + name + " {\n"
-        let f_parts = split(fields, ",")
-        let j = 0
-        while j < length(f_parts) {
-            let fp = split(f_parts[j], ":")
-            output = output + "    " + c_type(fp[1], struct_names) + " " + fp[0] + ";\n"
-            j = j + 1
-        }
-        output = output + "};\n\n"
-        i = i + 1
-    }
-
-
-    # forward declarations of functions
-    i = 0
-    while i < arr_length(func_names) {
-        let name = arr_get(func_names, i)
-        let rtype = arr_get(func_returns, i)
-        let params = arr_get(func_params, i)
-        let p_str = ""
-        if params != "<none>" {
-            let p_parts = split(params, ",")
-            let j = 0
-            while j < length(p_parts) {
-                let pp = split(p_parts[j], ":")
-                if length(p_str) == 0 {
-                    p_str = c_type(pp[1], struct_names) + " " + pp[0]
-                } else {
-                    p_str = p_str + ", " + c_type(pp[1], struct_names) + " " + pp[0]
-                }
-                j = j + 1
-            }
-        }
-        output = output + c_type(rtype, struct_names) + " fn_" + name + "(" + p_str + ");\n"
-        i = i + 1
-    }
-    output = output + "\n"
-
-    # function bodies; top-level statements become main
-    let has_main = arr_find(func_names, "main") >= 0
-    let top_body = ""
-    let top_vars = map_set("", "args", "array[string]")
-    let pos = 0
-    while pos < length(tokens) {
-        if tok_type(tokens, pos) == "EOF" {
-            break
-        }
-        if tok_val(tokens, pos) == "struct" {
-            pos = pos + 1
-            pos = expect(tokens, pos, "IDENTIFIER", arr_get(struct_names, arr_find(struct_names, tok_val(tokens, pos - 1))))
-            pos = expect(tokens, pos, "SYMBOL", "{")
-            let depth = 1
-            while depth > 0 {
-                if tok_type(tokens, pos) == "SYMBOL" {
-                    if tok_val(tokens, pos) == "{" {
-                        depth = depth + 1
-                    } else {
-                        if tok_val(tokens, pos) == "}" {
-                            depth = depth - 1
-                        }
-                    }
-                }
-                pos = pos + 1
-            }
-        } else {
-            if tok_val(tokens, pos) == "fn" {
-                let f_res = gen_func(tokens, pos, func_names, func_returns, func_params, struct_names, struct_fields)
-                output = output + f_res[1]
-                pos = string_to_int(f_res[2])
-            } else {
-                let s_res = gen_stmt(tokens, pos, top_vars, func_names, func_returns, func_params, struct_names, struct_fields, top_body, "void")
-                pos = string_to_int(s_res[0])
-                top_body = s_res[1]
-                top_vars = s_res[2]
-            }
-        }
-    }
-    let main_call = "fn_main(args)"
-    if has_main {
-        if length(top_body) > 0 {
-            print("Error: code outside functions is not allowed when fn main exists")
-        }
-        if arr_get(func_params, arr_find(func_names, "main")) == "<none>" {
-            main_call = "fn_main()"
-        }
-    } else {
-        output = output + "void fn_main(SlopArray args) {\n" + frame_body(top_body, true) + "}\n\n"
-    }
-
-    output = output + "\nint main(int argc, char** argv) {\n"
-    output = output + "    slop_arena_depth = 1;\n"
-    output = output + "    SlopArena* local_arena = slop_get_arena(slop_arena_depth);\n"
-    output = output + "    SlopArray args = slop_array_create(local_arena);\n"
-    output = output + "    for (int i = 0; i < argc; i++) {\n"
-    output = output + "        SlopString* s = (SlopString*)slop_arena_alloc(local_arena, sizeof(SlopString));\n"
-    output = output + "        *s = slop_string_create(local_arena, argv[i]);\n"
-    output = output + "        slop_array_push(local_arena, &args, s);\n"
-    output = output + "    }\n"
-    output = output + "    " + main_call + ";\n"
-    output = output + "    return 0;\n"
-    output = output + "}\n"
-
-    let outname = ""
-    if length(args) > 2 {
-        outname = args[2]
-    } else {
-        outname = filename + ".c"
-    }
-    write_file(outname, output)
-    print("Wrote " + outname)
+"
 }

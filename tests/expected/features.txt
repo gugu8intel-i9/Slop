@@ -1,0 +1,31 @@
+point 3 4 7
+moved 19
+Dr. Ada 36 t-Ada
+core 2 Dr. Bob t-Ada
+["Dr. Ada", "Dr. Bob"]
+42
+["#0 first", "#1 second"] 2
+01234 5
+3 2 1 go
+S
+l
+o
+p
+Sp lo SLOP slop
+6 true true true
+hi| a+b+c ababab
+["a", "b", "", "c"] x/y/z
+124 -7 99!
+[50, 5, 8, 1] 4 1 [50, 5, 8]
+[500, 80]
+[0, 1, 4, 9, 16]
+3
+["first-word", "a"]
+odd sum 25
+zero small big
+bonjour hi
+3 -3 1 1024 128 15 7 5 -5
+9223372036854775807 -9223372036854775808
+true false true true
+5
+2
