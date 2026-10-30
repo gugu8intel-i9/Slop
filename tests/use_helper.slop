@@ -1,0 +1,11 @@
+# used by tests/use.slop
+struct Pair {
+    a: int,
+    b: int
+}
+
+fn pair_sum(p: Pair) -> int {
+    return p.a + p.b
+}
+
+helper_ready = "helper loaded"

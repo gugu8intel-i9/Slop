@@ -1,0 +1,6 @@
+# The Slop package list: name | where to get it | what it does
+# Anyone can add a package here with a pull request. A source is a link to
+# one .slop file, or github:user/repo for a whole repository.
+stats | https://raw.githubusercontent.com/gugu8intel-i9/Slop/main/packages/stats/stats.slop | mean, median, standard deviation, min, max of lists of floats
+text | https://raw.githubusercontent.com/gugu8intel-i9/Slop/main/packages/text/text.slop | pad, center, title case, word count and other text helpers
+colors | https://raw.githubusercontent.com/gugu8intel-i9/Slop/main/packages/colors/colors.slop | colored and bold text in the terminal

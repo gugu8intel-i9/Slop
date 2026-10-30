@@ -5,3 +5,5 @@
 !/examples/*.slop
 slop-test-*
 *.out
+/slop_packages/
+/slop.pkg

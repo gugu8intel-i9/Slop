@@ -57,6 +57,9 @@ bin/slop install
 | `slop new hello` | starts a new program in `hello.slop` |
 | `slop repl` | type Slop code line by line and see results right away |
 | `slop install` | copies `slop` into a folder for programs on your computer |
+| `slop add NAME` / `slop remove NAME` | adds or removes a package (see below) |
+| `slop list` / `slop search [word]` | shows your packages / finds packages |
+| `slop sync` / `slop update` | gets missing packages / gets the newest versions |
 | `slop version` / `slop help` | shows the version / all commands |
 | `--target SYSTEM` | builds for another system from any system: `linux`, `linux-arm64`, `macos`, `macos-arm64`, `windows`, `windows-arm64` |
 
@@ -194,6 +197,7 @@ Run `bin/slop run examples/benchmark.slop` to time a few more workloads on your 
 | `compiler.slop` | the compiler, in Slop |
 | `runtime/` | the runtime built into every program: `core.slop` plus one file per system |
 | `bin/` | the compiler for each system (`slop`, `slop-linux-arm64`, `slop-macos`, `slop-macos-arm64`, `slop.exe`, `slop-windows-arm64.exe`) |
+| `packages/` | the package list and the packages that come with Slop (`stats`, `text`, `colors`) |
 | `examples/` | example programs |
 | `tests/` | the test suite (`bin/slop run tests/run.slop`) |
 | [LEARN_SLOP_IN_10_MINUTES.md](LEARN_SLOP_IN_10_MINUTES.md) | a short tutorial |
@@ -231,6 +235,29 @@ bin/slop run tests/run.slop
 ```
 
 The tests check that the compiler reproduces itself byte for byte and that all six compilers in `bin/` match the source. GitHub Actions runs them on Linux, macOS and Windows, on both Intel/AMD and ARM64, for every push.
+
+## Packages
+
+Put `use` lines at the top of a program to use code from other files:
+
+```slop
+use "stats"          # a package
+use "helpers.slop"   # a file next to this one
+
+print(median([3.0, 1.0, 2.0]))
+```
+
+```bash
+slop search          # see the package list
+slop add stats       # download a package into slop_packages/
+slop run app.slop
+```
+
+- `slop add` takes a name from the package list, `github:user/repo` (or `github:user/repo@v1.0`) for any repository, or a link to a `.slop` file. A package needs `NAME.slop` or `lib.slop` at its top.
+- `slop add` writes the packages your program uses into `slop.pkg`. Commit that file; anyone can then run `slop sync` to get the same packages.
+- Packages a package uses are added for it.
+- To share a package, put it on GitHub. To list it in `slop search`, add a line to [packages/index.txt](packages/index.txt).
+- Downloads use `curl` and `tar`, which come with Linux, macOS and Windows 10 and later.
 
 ## Threads in short
 

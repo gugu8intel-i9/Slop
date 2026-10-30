@@ -1,0 +1,84 @@
+# stats: simple statistics on lists of floats
+#   use "stats"
+#   print(mean([1.0, 2.0, 4.0]))
+
+fn sum_of(xs: array[float]) -> float {
+    total = 0.0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+fn mean(xs: array[float]) -> float {
+    if len(xs) == 0 {
+        return 0.0
+    }
+    return sum_of(xs) / len(xs)
+}
+
+fn min_of(xs: array[float]) -> float {
+    best = xs[0]
+    for x in xs {
+        if x < best {
+            best = x
+        }
+    }
+    return best
+}
+
+fn max_of(xs: array[float]) -> float {
+    best = xs[0]
+    for x in xs {
+        if x > best {
+            best = x
+        }
+    }
+    return best
+}
+
+# a sorted copy (insertion sort: fine for the small lists stats are used on)
+fn sorted(xs: array[float]) -> array[float] {
+    out: array[float] = []
+    for x in xs {
+        push(out, x)
+    }
+    for i in 1..len(out) {
+        v = out[i]
+        j = i - 1
+        while j >= 0 and out[j] > v {
+            out[j + 1] = out[j]
+            j -= 1
+        }
+        out[j + 1] = v
+    }
+    return out
+}
+
+fn median(xs: array[float]) -> float {
+    n = len(xs)
+    if n == 0 {
+        return 0.0
+    }
+    s = sorted(xs)
+    if n % 2 == 1 {
+        return s[n / 2]
+    }
+    return (s[n / 2 - 1] + s[n / 2]) / 2
+}
+
+fn variance(xs: array[float]) -> float {
+    if len(xs) == 0 {
+        return 0.0
+    }
+    m = mean(xs)
+    total = 0.0
+    for x in xs {
+        total += (x - m) * (x - m)
+    }
+    return total / len(xs)
+}
+
+fn stddev(xs: array[float]) -> float {
+    return sqrt(variance(xs))
+}

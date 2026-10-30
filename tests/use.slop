@@ -1,0 +1,6 @@
+# use "file.slop" brings in another file's functions, structs and globals
+use "use_helper.slop"
+use "use_helper.slop"
+
+print(helper_ready)
+print(pair_sum(Pair(2, 3)))
