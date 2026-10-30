@@ -56,7 +56,9 @@ n = 42
 s = "hello"
 ```
 
-Numbers: `1_000_000`, `0xff`. Floats are not supported yet.
+Numbers: `1_000_000`, `0xff`, `2.5`, `6.02e23`. Mixing a whole number with a float gives a float. Math: `sqrt floor ceil round abs pow exp log sin cos tan atan`, `float(x)`, `int(x)`.
+
+Threads: `t = spawn f(x)` runs `f(x)` on another core, `join(t)` waits and gives its result, `lock()` / `unlock()` guard shared values, `cpu_count()`.
 
 ## Functions
 

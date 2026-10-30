@@ -1,0 +1,81 @@
+# threads: spawn runs a function on another CPU core, join waits for its result
+
+fn count_primes(lo: int, hi: int) -> int {
+    count = 0
+    for n in lo..hi {
+        if n < 2 {
+            continue
+        }
+        prime = true
+        d = 2
+        while d * d <= n {
+            if n % d == 0 {
+                prime = false
+                break
+            }
+            d += 1
+        }
+        if prime {
+            count += 1
+        }
+    }
+    return count
+}
+
+workers: array[thread[int]] = []
+for i in 0..4 {
+    push(workers, spawn count_primes(i * 25000, (i + 1) * 25000))
+}
+total = 0
+for w in workers {
+    total += join(w)
+}
+print("primes below 100000:", total)
+
+fn average(xs: array[float]) -> float {
+    sum = 0.0
+    for x in xs {
+        sum += x
+    }
+    return sum / len(xs)
+}
+t = spawn average([1.5, 2.5, 4.0])
+print("average:", join(t))
+
+# a shared counter guarded by lock()/unlock()
+counter = 0
+fn add_many(n: int) {
+    for i in 0..n {
+        lock()
+        counter += 1
+        unlock()
+    }
+}
+adders: array[thread[void]] = []
+for i in 0..8 {
+    push(adders, spawn add_many(10000))
+}
+for a in adders {
+    join(a)
+}
+print("counter:", counter)
+
+# threads can build text and print; each print is one whole line
+names: array[string] = []
+fn greet(id: int) -> int {
+    msg = "hello from thread " + str(id)
+    lock()
+    push(names, msg)
+    unlock()
+    return len(msg)
+}
+gs: array[thread[int]] = []
+for i in 0..3 {
+    push(gs, spawn greet(i))
+}
+lengths = 0
+for g in gs {
+    lengths += join(g)
+}
+print(len(names), lengths)
+print(cpu_count() > 0)

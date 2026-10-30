@@ -24,20 +24,52 @@ fn __std_handle(fd: int) -> int {
 
 # reserve address space for the 3 memory buckets; memory is committed as it is used
 fn __rt_init() {
-    for b in 0..3 {
-        size = 17179869184
-        p = 0
-        while p == 0 and size >= 16777216 {
-            # MEM_RESERVE, PAGE_READWRITE
-            p = __ccall("VirtualAlloc", 0, size, 8192, 4)
-            if p == 0 {
-                size = size / 4
-            }
-        }
-        __store64(__data() + 16 + b * 8, p)
-        __store64(__data() + 40 + b * 8, p)
-        __store64(__data() + 64 + b * 8, p + size)
+    __init_buckets(17179869184, 17179869184)
+}
+
+# address space only; __grow makes it usable as the bucket fills
+fn __os_reserve(size: int) -> int {
+    # MEM_RESERVE, PAGE_READWRITE
+    return __ccall("VirtualAlloc", 0, size, 8192, 4)
+}
+
+fn __os_alloc(size: int) -> int {
+    # MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE
+    return __ccall("VirtualAlloc", 0, size, 12288, 4)
+}
+
+fn __os_release(p: int, size: int) {
+    # MEM_RELEASE
+    __ccall("VirtualFree", p, 0, 32768)
+}
+
+fn __os_commit_on_grow() -> bool {
+    return true
+}
+
+# ---------- threads ----------
+fn __os_thread_start(block: int, entry: int) -> bool {
+    # 8 MB stack, like the main thread
+    h = __ccall("CreateThread", 0, 8388608, entry, block, 0, 0)
+    __store64(block + 7184, h)
+    return h != 0
+}
+
+fn __os_thread_join(block: int) {
+    h = __load64(block + 7184)
+    __ccall32("WaitForSingleObject", h, -1)
+    __ccall("CloseHandle", h)
+}
+
+fn __cpu_count() -> int {
+    # SYSTEM_INFO.dwNumberOfProcessors
+    info = __scratch()
+    __ccall("GetSystemInfo", info)
+    n = __load32(info + 32)
+    if n < 1 {
+        return 1
     }
+    return n
 }
 
 fn __grow(b: int, need: int) {

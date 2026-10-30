@@ -1,0 +1,5 @@
+primes below 100000: 9592
+average: 2.6666666666666665
+counter: 80000
+3 57
+true

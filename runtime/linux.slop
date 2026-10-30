@@ -1,23 +1,46 @@
 # Slop runtime for Linux: talks to the kernel through system calls.
+# x86-64 and ARM64 number their system calls differently; __arch() is 1 or 2.
+
+fn __arm() -> bool {
+    return __arch() == 2
+}
 
 fn __os_name() -> string {
     return "linux"
 }
 
-# reserve address space for the 3 memory buckets (pages appear when touched)
 fn __rt_init() {
-    for b in 0..3 {
-        size = 17179869184
-        p = -1
-        while p < 0 and size >= 16777216 {
-            p = __syscall(9, 0, size, 3, 16418, -1, 0)
-            if p < 0 {
-                size = size / 4
-            }
-        }
-        __store64(__data() + 16 + b * 8, p)
-        __store64(__data() + 40 + b * 8, p + size)
+    __init_buckets(17179869184, 17179869184)
+}
+
+# address space that gets memory when touched; 0 if there is none
+fn __os_reserve(size: int) -> int {
+    p = 0
+    if __arm() {
+        p = __syscall(222, 0, size, 3, 16418, -1, 0)
+    } else {
+        p = __syscall(9, 0, size, 3, 16418, -1, 0)
     }
+    if p < 0 {
+        return 0
+    }
+    return p
+}
+
+fn __os_alloc(size: int) -> int {
+    return __os_reserve(size)
+}
+
+fn __os_release(p: int, size: int) {
+    if __arm() {
+        __syscall(215, p, size)
+    } else {
+        __syscall(11, p, size)
+    }
+}
+
+fn __os_commit_on_grow() -> bool {
+    return false
 }
 
 fn __grow(b: int, need: int) {
@@ -26,45 +49,151 @@ fn __grow(b: int, need: int) {
 }
 
 fn __os_write(fd: int, p: int, n: int) -> int {
+    if __arm() {
+        return __syscall(64, fd, p, n)
+    }
     return __syscall(1, fd, p, n)
 }
 
 fn __os_read(fd: int, p: int, n: int) -> int {
+    if __arm() {
+        return __syscall(63, fd, p, n)
+    }
     return __syscall(0, fd, p, n)
 }
 
+fn __open(path: int, flags: int, mode: int) -> int {
+    if __arm() {
+        # openat(AT_FDCWD, ...)
+        return __syscall(56, -100, path, flags, mode)
+    }
+    return __syscall(2, path, flags, mode)
+}
+
 fn __os_open_read(path: int) -> int {
-    return __syscall(2, path, 0, 0)
+    return __open(path, 0, 0)
 }
 
 fn __os_open_write(path: int) -> int {
-    return __syscall(2, path, 577, 420)
+    return __open(path, 577, 420)
 }
 
 fn __os_close(fd: int) {
-    __syscall(3, fd)
+    if __arm() {
+        __syscall(57, fd)
+    } else {
+        __syscall(3, fd)
+    }
+}
+
+fn __lseek(fd: int, off: int, whence: int) -> int {
+    if __arm() {
+        return __syscall(62, fd, off, whence)
+    }
+    return __syscall(8, fd, off, whence)
 }
 
 # file size, or -1 when unknown (like files in /proc)
 fn __os_size(fd: int) -> int {
-    size = __syscall(8, fd, 0, 2)
-    __syscall(8, fd, 0, 0)
+    size = __lseek(fd, 0, 2)
+    __lseek(fd, 0, 0)
     if size <= 0 {
         return -1
     }
     return size
 }
 
+# ends the whole program (every thread)
 fn __os_exit(code: int) {
-    __syscall(60, code)
+    if __arm() {
+        __syscall(94, code)
+    }
+    __syscall(231, code)
+}
+
+# ---------- threads ----------
+# CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|PARENT_SETTID|CHILD_CLEARTID: the
+# kernel clears the id word when the thread ends, which join waits for
+fn __os_thread_start(block: int, entry: int) -> bool {
+    size = 67108864
+    stack = __os_reserve(size)
+    if stack == 0 {
+        return false
+    }
+    __store64(block + 7208, stack)
+    __store64(block + 7216, size)
+    return __clone(3477248, stack + size, block + 7176, block) > 0
+}
+
+fn __os_thread_join(block: int) {
+    p = block + 7176
+    while true {
+        id = __load32(p)
+        if id == 0 {
+            break
+        }
+        # futex wait until the word changes
+        if __arm() {
+            __syscall(98, p, 0, id, 0)
+        } else {
+            __syscall(202, p, 0, id, 0)
+        }
+    }
+    __os_release(__load64(block + 7208), __load64(block + 7216))
+}
+
+# ends only the current thread
+fn __thread_exit() {
+    if __arm() {
+        __syscall(93, 0)
+    }
+    __syscall(60, 0)
+}
+
+fn __cpu_count() -> int {
+    buf = __scratch()
+    n = 0
+    if __arm() {
+        n = __syscall(123, 0, 64, buf)
+    } else {
+        n = __syscall(204, 0, 64, buf)
+    }
+    if n <= 0 {
+        return 1
+    }
+    count = 0
+    for i in 0..n {
+        b = __load8(buf + i)
+        while b > 0 {
+            count += b & 1
+            b = b >> 1
+        }
+    }
+    return count
 }
 
 fn __os_remove(path: int) {
-    __syscall(87, path)
+    if __arm() {
+        __syscall(35, -100, path, 0)
+    } else {
+        __syscall(87, path)
+    }
 }
 
 fn __make_executable(path: string) {
-    __syscall(90, __cstr(path), 493)
+    if __arm() {
+        __syscall(53, -100, __cstr(path), 493, 0)
+    } else {
+        __syscall(90, __cstr(path), 493)
+    }
+}
+
+fn __execve(path: int, argv: int, envp: int) {
+    if __arm() {
+        __syscall(221, path, argv, envp)
+    } else {
+        __syscall(59, path, argv, envp)
+    }
 }
 
 fn __args() -> array[string] {
@@ -96,7 +225,7 @@ fn __envp() -> int {
 fn __exec(path: string, args: array[string]) {
     argv = __argv_block(args)
     __flush()
-    __syscall(59, __cstr(path), argv, __envp())
+    __execve(__cstr(path), argv, __envp())
     __eprint("cannot run " + path)
     __os_exit(127)
 }
@@ -105,61 +234,96 @@ fn __exec(path: string, args: array[string]) {
 fn __run(path: string, args: array[string]) -> string {
     __flush()
     fds = __scratch()
-    if __syscall(22, fds) < 0 {
+    ok = 0
+    if __arm() {
+        ok = __syscall(59, fds, 0)
+    } else {
+        ok = __syscall(22, fds)
+    }
+    if ok < 0 {
         return ""
     }
     rd = __load64(fds) & 4294967295
     wr = (__load64(fds) >> 32) & 4294967295
     argv = __argv_block(args)
     cpath = __cstr(path)
-    pid = __syscall(57)
-    if pid == 0 {
-        __syscall(33, wr, 1)
-        __syscall(33, wr, 2)
-        __syscall(3, rd)
-        __syscall(59, cpath, argv, __envp())
-        __syscall(60, 127)
+    pid = 0
+    if __arm() {
+        # clone(SIGCHLD) is fork
+        pid = __syscall(220, 17, 0, 0, 0, 0)
+    } else {
+        pid = __syscall(57)
     }
-    __syscall(3, wr)
+    if pid == 0 {
+        if __arm() {
+            __syscall(24, wr, 1, 0)
+            __syscall(24, wr, 2, 0)
+        } else {
+            __syscall(33, wr, 1)
+            __syscall(33, wr, 2)
+        }
+        __os_close(rd)
+        __execve(cpath, argv, __envp())
+        __os_exit(127)
+    }
+    __os_close(wr)
     p = __alloc_bytes(0)
     total = 0
     while true {
         __alloc_bytes(4096)
-        r = __syscall(0, rd, p + total, 4096)
+        r = __os_read(rd, p + total, 4096)
         if r <= 0 {
             break
         }
         total += r
     }
-    __syscall(3, rd)
+    __os_close(rd)
     st = __scratch() + 32
     __store64(st, 0)
-    __syscall(61, pid, st, 0, 0)
+    if __arm() {
+        __syscall(260, pid, st, 0, 0)
+    } else {
+        __syscall(61, pid, st, 0, 0)
+    }
     __last_status = (__load64(st) >> 8) & 255
     return __str(p, total)
 }
 
 fn __clock_ns() -> int {
     t = __scratch()
-    __syscall(228, 1, t)
+    if __arm() {
+        __syscall(113, 1, t)
+    } else {
+        __syscall(228, 1, t)
+    }
     return __load64(t) * 1000000000 + __load64(t + 8)
 }
 
+# x86-64 and ARM64 numbers for socket, setsockopt, bind, listen, accept
+fn __sock_nr(i: int) -> int {
+    if __arm() {
+        nums = [198, 208, 200, 201, 202]
+        return nums[i]
+    }
+    nums = [41, 54, 49, 50, 43]
+    return nums[i]
+}
+
 fn __socket_listen(port: int) -> int {
-    fd = __syscall(41, 2, 1, 0)
+    fd = __syscall(__sock_nr(0), 2, 1, 0)
     if fd < 0 {
         return -1
     }
     one = __scratch()
     __store64(one, 1)
-    __syscall(54, fd, 1, 2, one, 4)
+    __syscall(__sock_nr(1), fd, 1, 2, one, 4)
     a = __scratch() + 16
     __memzero(a, 16)
     __store8(a, 2)
     __store8(a + 2, port / 256)
     __store8(a + 3, port % 256)
-    if __syscall(49, fd, a, 16) < 0 or __syscall(50, fd, 128) < 0 {
-        __syscall(3, fd)
+    if __syscall(__sock_nr(2), fd, a, 16) < 0 or __syscall(__sock_nr(3), fd, 128) < 0 {
+        __os_close(fd)
         return -1
     }
     return fd
@@ -167,12 +331,12 @@ fn __socket_listen(port: int) -> int {
 
 fn __socket_accept(fd: int) -> int {
     __flush()
-    return __syscall(43, fd, 0, 0)
+    return __syscall(__sock_nr(4), fd, 0, 0)
 }
 
 fn __socket_read(fd: int) -> string {
     p = __alloc_bytes(8192)
-    r = __syscall(0, fd, p, 8192)
+    r = __os_read(fd, p, 8192)
     if r <= 0 {
         return ""
     }
@@ -184,5 +348,5 @@ fn __socket_write(fd: int, s: string) {
 }
 
 fn __socket_close(fd: int) {
-    __syscall(3, fd)
+    __os_close(fd)
 }
