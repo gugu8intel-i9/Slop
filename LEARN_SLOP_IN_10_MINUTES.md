@@ -15,7 +15,7 @@ print("Hello, Slop!")
 Run:
 
 ```bash
-bin/slop run hello.slop
+bin/slop run hello.slop          # Linux (macOS: bin/slop-macos, Windows: bin\slop.exe)
 ```
 
 Code outside functions just runs, top to bottom. No `main` needed.

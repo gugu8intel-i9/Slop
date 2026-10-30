@@ -1,0 +1,623 @@
+# Slop runtime: the part shared by every operating system. It is compiled
+# into every program. The OS-specific part (linux.slop, macos.slop,
+# windows.slop) provides the __os_* functions used here.
+#
+# Functions whose names start with __ have no memory frame of their own:
+# whatever they allocate lands in their caller's memory.
+
+__out_ptr = __alloc_in(2, 65536)
+__out_len = 0
+__in_ptr = 0
+__in_len = 0
+__in_pos = 0
+
+fn __write_all(fd: int, p: int, n: int) {
+    while n > 0 {
+        w = __os_write(fd, p, n)
+        if w <= 0 {
+            return
+        }
+        p += w
+        n -= w
+    }
+}
+
+fn __flush() {
+    if __out_len > 0 {
+        __write_all(1, __out_ptr, __out_len)
+        __out_len = 0
+    }
+}
+
+fn __out_bytes(p: int, n: int) {
+    if __out_len + n > 65536 {
+        __flush()
+        if n > 65536 {
+            __write_all(1, p, n)
+            return
+        }
+    }
+    __memcpy(__out_ptr + __out_len, p, n)
+    __out_len += n
+}
+
+fn __out_byte(b: int) {
+    if __out_len >= 65536 {
+        __flush()
+    }
+    __store8(__out_ptr + __out_len, b)
+    __out_len += 1
+}
+
+fn __out_str(s: string) {
+    __out_bytes(__str_ptr(s), len(s))
+}
+
+fn __digits(n: int, buf: int) -> int {
+    i = 24
+    if n == 0 {
+        __store8(buf + 23, 48)
+        return 23
+    }
+    neg = n < 0
+    if not neg {
+        n = -n
+    }
+    while n != 0 {
+        i -= 1
+        __store8(buf + i, 48 - n % 10)
+        n = n / 10
+    }
+    if neg {
+        i -= 1
+        __store8(buf + i, 45)
+    }
+    return i
+}
+
+fn __out_int(n: int) {
+    buf = __scratch()
+    i = __digits(n, buf)
+    __out_bytes(buf + i, 24 - i)
+}
+
+fn __out_bool(b: bool) {
+    if b {
+        __out_str("true")
+    } else {
+        __out_str("false")
+    }
+}
+
+fn __out_ints(a: array[int]) {
+    __out_byte(91)
+    for i in 0..len(a) {
+        if i > 0 {
+            __out_str(", ")
+        }
+        __out_int(a[i])
+    }
+    __out_byte(93)
+}
+
+fn __out_strs(a: array[string]) {
+    __out_byte(91)
+    for i in 0..len(a) {
+        if i > 0 {
+            __out_str(", ")
+        }
+        __out_byte(34)
+        __out_str(a[i])
+        __out_byte(34)
+    }
+    __out_byte(93)
+}
+
+fn __int_to_string(n: int) -> string {
+    p = __alloc_bytes(24)
+    i = __digits(n, p)
+    return __str(p + i, 24 - i)
+}
+
+fn __concat(a: string, b: string) -> string {
+    la = len(a)
+    lb = len(b)
+    if lb == 0 {
+        return a
+    }
+    if la == 0 {
+        return b
+    }
+    pa = __str_ptr(a)
+    # a ends exactly where free memory starts: just grow it in place
+    if pa + la == __bump(__cur_bucket()) {
+        __memcpy(__alloc_bytes(lb), __str_ptr(b), lb)
+        return __str(pa, la + lb)
+    }
+    p = __alloc_bytes(la + lb)
+    __memcpy(p, pa, la)
+    __memcpy(p + la, __str_ptr(b), lb)
+    return __str(p, la + lb)
+}
+
+fn __streq(a: string, b: string) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    return __memeq(__str_ptr(a), __str_ptr(b), len(a))
+}
+
+fn __char_at(s: string, i: int) -> string {
+    if i < 0 or i >= len(s) {
+        return ""
+    }
+    return __str(__str_ptr(s) + i, 1)
+}
+
+fn __byte_at(s: string, i: int) -> int {
+    if i < 0 or i >= len(s) {
+        return -1
+    }
+    return __load8(__str_ptr(s) + i)
+}
+
+fn __slice(s: string, a: int, b: int) -> string {
+    n = len(s)
+    if a < 0 {
+        a = 0
+    }
+    if b > n {
+        b = n
+    }
+    if b <= a {
+        return ""
+    }
+    return __str(__str_ptr(s) + a, b - a)
+}
+
+fn __find(s: string, sub: string) -> int {
+    n = len(s)
+    m = len(sub)
+    p = __str_ptr(s)
+    q = __str_ptr(sub)
+    i = 0
+    while i + m <= n {
+        if __memeq(p + i, q, m) {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn __contains(s: string, sub: string) -> bool {
+    return __find(s, sub) >= 0
+}
+
+fn __starts_with(s: string, pre: string) -> bool {
+    if len(pre) > len(s) {
+        return false
+    }
+    return __memeq(__str_ptr(s), __str_ptr(pre), len(pre))
+}
+
+fn __ends_with(s: string, post: string) -> bool {
+    if len(post) > len(s) {
+        return false
+    }
+    return __memeq(__str_ptr(s) + len(s) - len(post), __str_ptr(post), len(post))
+}
+
+fn __is_space(c: int) -> bool {
+    return c == 32 or c == 9 or c == 10 or c == 13
+}
+
+fn __trim(s: string) -> string {
+    p = __str_ptr(s)
+    a = 0
+    b = len(s)
+    while a < b and __is_space(__load8(p + a)) {
+        a += 1
+    }
+    while b > a and __is_space(__load8(p + b - 1)) {
+        b -= 1
+    }
+    return __str(p + a, b - a)
+}
+
+fn __map_case(s: string, lo: int, hi: int, delta: int) -> string {
+    n = len(s)
+    p = __alloc_bytes(n)
+    q = __str_ptr(s)
+    for i in 0..n {
+        c = __load8(q + i)
+        if c >= lo and c <= hi {
+            c += delta
+        }
+        __store8(p + i, c)
+    }
+    return __str(p, n)
+}
+
+fn __upper(s: string) -> string {
+    return __map_case(s, 97, 122, -32)
+}
+
+fn __lower(s: string) -> string {
+    return __map_case(s, 65, 90, 32)
+}
+
+fn __split(s: string, sep: string) -> array[string] {
+    out: array[string] = []
+    n = len(s)
+    m = len(sep)
+    p = __str_ptr(s)
+    if m == 0 {
+        for i in 0..n {
+            push(out, __str(p + i, 1))
+        }
+        return out
+    }
+    q = __str_ptr(sep)
+    start = 0
+    i = 0
+    while i + m <= n {
+        if __memeq(p + i, q, m) {
+            push(out, __str(p + start, i - start))
+            i += m
+            start = i
+        } else {
+            i += 1
+        }
+    }
+    push(out, __str(p + start, n - start))
+    return out
+}
+
+fn __join(parts: array[string], sep: string) -> string {
+    k = len(parts)
+    if k == 0 {
+        return ""
+    }
+    total = len(sep) * (k - 1)
+    for s in parts {
+        total += len(s)
+    }
+    p = __alloc_bytes(total)
+    at = 0
+    for i in 0..k {
+        if i > 0 {
+            __memcpy(p + at, __str_ptr(sep), len(sep))
+            at += len(sep)
+        }
+        s = parts[i]
+        __memcpy(p + at, __str_ptr(s), len(s))
+        at += len(s)
+    }
+    return __str(p, total)
+}
+
+fn __replace(s: string, old: string, new: string) -> string {
+    if len(old) == 0 {
+        return s
+    }
+    return __join(__split(s, old), new)
+}
+
+fn __repeat(s: string, n: int) -> string {
+    if n <= 0 or len(s) == 0 {
+        return ""
+    }
+    p = __alloc_bytes(len(s) * n)
+    for i in 0..n {
+        __memcpy(p + i * len(s), __str_ptr(s), len(s))
+    }
+    return __str(p, len(s) * n)
+}
+
+fn __to_int(s: string) -> int {
+    p = __str_ptr(s)
+    n = len(s)
+    i = 0
+    while i < n and __is_space(__load8(p + i)) {
+        i += 1
+    }
+    neg = false
+    if i < n and __load8(p + i) == 45 {
+        neg = true
+        i += 1
+    }
+    v = 0
+    while i < n and __load8(p + i) >= 48 and __load8(p + i) <= 57 {
+        v = v * 10 + __load8(p + i) - 48
+        i += 1
+    }
+    if neg {
+        return -v
+    }
+    return v
+}
+
+fn __chr(n: int) -> string {
+    p = __alloc_bytes(1)
+    __store8(p, n)
+    return __str(p, 1)
+}
+
+fn __cstr(s: string) -> int {
+    n = len(s)
+    p = __alloc_bytes(n + 1)
+    __memcpy(p, __str_ptr(s), n)
+    __store8(p + n, 0)
+    return p
+}
+
+fn __strlen(p: int) -> int {
+    n = 0
+    while __load8(p + n) != 0 {
+        n += 1
+    }
+    return n
+}
+
+fn __eprint(s: string) {
+    __flush()
+    __write_all(2, __str_ptr(s), len(s))
+    __store8(__scratch(), 10)
+    __write_all(2, __scratch(), 1)
+}
+
+fn __exit(code: int) {
+    __flush()
+    __os_exit(code)
+}
+
+fn __bounds_fail(i: int, n: int) {
+    __eprint("Slop Secure Guard: Array index out of bounds! Length: " + __int_to_string(n) + ", Requested Index: " + __int_to_string(i) + ". Terminating process to prevent memory exploit.")
+    __os_exit(139)
+}
+
+fn __read_file(path: string) -> string {
+    if __contains(path, "..") {
+        __eprint("Slop Secure Guard: Blocked directory traversal attack attempt on path: " + path)
+        return ""
+    }
+    fd = __os_open_read(__cstr(path))
+    if fd < 0 {
+        return ""
+    }
+    size = __os_size(fd)
+    if size > 0 {
+        p = __alloc_bytes(size)
+        got = 0
+        while got < size {
+            r = __os_read(fd, p + got, size - got)
+            if r <= 0 {
+                break
+            }
+            got += r
+        }
+        __os_close(fd)
+        return __str(p, got)
+    }
+    # size unknown (like /proc files): read in chunks that sit next to each other
+    p = __alloc_bytes(0)
+    total = 0
+    while true {
+        __alloc_bytes(4096)
+        r = __os_read(fd, p + total, 4096)
+        if r <= 0 {
+            break
+        }
+        total += r
+    }
+    __os_close(fd)
+    return __str(p, total)
+}
+
+fn __write_file(path: string, data: string) {
+    if __contains(path, "..") {
+        __eprint("Slop Secure Guard: Blocked directory traversal write attempt on path: " + path)
+        return
+    }
+    fd = __os_open_write(__cstr(path))
+    if fd < 0 {
+        return
+    }
+    __write_all(fd, __str_ptr(data), len(data))
+    __os_close(fd)
+}
+
+fn __remove_file(path: string) {
+    if __contains(path, "..") {
+        __eprint("Slop Secure Guard: Blocked directory traversal attempt on path: " + path)
+        return
+    }
+    __os_remove(__cstr(path))
+}
+
+
+
+fn __input() -> string {
+    __flush()
+    if __in_ptr == 0 {
+        __in_ptr = __alloc_in(2, 65536)
+    }
+    out = ""
+    while true {
+        if __in_pos >= __in_len {
+            r = __os_read(0, __in_ptr, 65536)
+            if r <= 0 {
+                return out
+            }
+            __in_len = r
+            __in_pos = 0
+        }
+        st = __in_pos
+        while __in_pos < __in_len and __load8(__in_ptr + __in_pos) != 10 {
+            __in_pos += 1
+        }
+        piece = __alloc_bytes(__in_pos - st)
+        __memcpy(piece, __in_ptr + st, __in_pos - st)
+        out = out + __str(piece, __in_pos - st)
+        if __in_pos < __in_len {
+            __in_pos += 1
+            return out
+        }
+    }
+    return out
+}
+
+
+
+
+fn __bytes_to_string(a: array[int]) -> string {
+    n = len(a)
+    p = __alloc_bytes(n)
+    for i in 0..n {
+        __store8(p + i, a[i])
+    }
+    return __str(p, n)
+}
+
+fn __push_slot(h: int, b: int, w: int) -> int {
+    data = __load64(h)
+    n = __load64(h + 8)
+    cap = __load64(h + 16)
+    if n >= cap {
+        if cap > 0 and data + cap * 8 == __bump(b) {
+            __alloc_in(b, cap * 8)
+            cap = cap * 2
+        } else {
+            nc = cap * 2
+            if nc < 8 {
+                nc = 8
+            }
+            nd = __alloc_in(b, nc * 8)
+            if n > 0 {
+                __memcpy(nd, data, n * 8)
+            }
+            data = nd
+            cap = nc
+            __store64(h, nd)
+        }
+        __store64(h + 16, cap)
+    }
+    slot = data + n * 8
+    __store64(h + 8, n + 1)
+    if w == 1 {
+        return slot
+    }
+    box = __alloc_in(b, w * 8)
+    __store64(slot, box)
+    return box
+}
+
+fn __pop_slot(h: int) -> int {
+    n = __load64(h + 8)
+    if n <= 0 {
+        __bounds_fail(-1, 0)
+    }
+    __store64(h + 8, n - 1)
+    return __load64(h) + (n - 1) * 8
+}
+
+fn __index_of(list: array[string], s: string) -> int {
+    for i in 0..len(list) {
+        if list[i] == s {
+            return i
+        }
+    }
+    return -1
+}
+
+fn __put16(p: int, v: int) {
+    __store8(p, v & 255)
+    __store8(p + 1, (v >> 8) & 255)
+}
+
+fn __get16(p: int) -> int {
+    return __load8(p) | (__load8(p + 1) << 8)
+}
+
+# Slop-Pack: repeated strings become one-byte dictionary codes
+fn __slop_pack(items: array[string]) -> string {
+    dict: array[string] = []
+    for s in items {
+        if len(dict) < 255 and __index_of(dict, s) < 0 {
+            push(dict, s)
+        }
+    }
+    size = 5
+    for d in dict {
+        size += 2 + len(d)
+    }
+    for s in items {
+        if __index_of(dict, s) >= 0 {
+            size += 1
+        } else {
+            size += 3 + len(s)
+        }
+    }
+    p = __alloc_bytes(size)
+    __store8(p, len(dict))
+    at = 1
+    for d in dict {
+        __put16(p + at, len(d))
+        __memcpy(p + at + 2, __str_ptr(d), len(d))
+        at += 2 + len(d)
+    }
+    n = len(items)
+    __put16(p + at, n & 65535)
+    __put16(p + at + 2, (n >> 16) & 65535)
+    at += 4
+    for s in items {
+        id = __index_of(dict, s)
+        if id >= 0 {
+            __store8(p + at, id)
+            at += 1
+        } else {
+            __store8(p + at, 255)
+            __put16(p + at + 1, len(s))
+            __memcpy(p + at + 3, __str_ptr(s), len(s))
+            at += 3 + len(s)
+        }
+    }
+    return __str(p, size)
+}
+
+fn __slop_unpack(packed: string) -> array[string] {
+    out: array[string] = []
+    if len(packed) < 5 {
+        return out
+    }
+    p = __str_ptr(packed)
+    dict: array[string] = []
+    k = __load8(p)
+    at = 1
+    for i in 0..k {
+        n = __get16(p + at)
+        push(dict, __str(p + at + 2, n))
+        at += 2 + n
+    }
+    count = __get16(p + at) | (__get16(p + at + 2) << 16)
+    at += 4
+    for i in 0..count {
+        id = __load8(p + at)
+        if id < 255 {
+            push(out, dict[id])
+            at += 1
+        } else {
+            n = __get16(p + at + 1)
+            push(out, __str(p + at + 3, n))
+            at += 3 + n
+        }
+    }
+    return out
+}
+
+__last_status = 0
+
+fn __run_status() -> int {
+    return __last_status
+}

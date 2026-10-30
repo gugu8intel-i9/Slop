@@ -1,5 +1,7 @@
 # programs built from .slop files
 /tests/run
+/tests/run.exe
 /examples/*
 !/examples/*.slop
+slop-test-*
 *.out

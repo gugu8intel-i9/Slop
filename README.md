@@ -5,9 +5,9 @@ Slop is a small, fast programming language with syntax that is easier than Pytho
 It stands on its own. There is no C compiler, assembler, linker, Python or libc anywhere in the chain:
 
 - The compiler (`compiler.slop`) is written in Slop.
-- It writes x86-64 machine code and the Linux executable file directly.
-- The runtime (memory, strings, printing, files, networking) is also Slop code, built into the compiler. It talks to the Linux kernel through system calls.
-- `bin/slop` is the compiler, built by itself from `compiler.slop`.
+- It writes x86-64 machine code and the executable file directly: ELF for Linux, Mach-O for macOS, PE (`.exe`) for Windows.
+- The runtime (`runtime/`: memory, strings, printing, files, processes, networking) is also Slop code, built into every program. It talks to the operating system directly: Linux system calls, macOS's libSystem, Windows's kernel32.
+- `bin/` holds the compiler for each system, built by itself from `compiler.slop`.
 
 ```slop
 names = ["Gugu", "Slop", "World"]
@@ -22,7 +22,7 @@ bin/slop run hello.slop
 
 ## Get started
 
-Slop runs on Linux x86-64. Nothing else needs to be installed.
+Slop runs on Linux, macOS and Windows (64-bit Intel/AMD; Apple Silicon Macs run it through Rosetta 2). Nothing else needs to be installed.
 
 ```bash
 git clone https://github.com/gugu8intel-i9/Slop
@@ -32,11 +32,13 @@ git clone https://github.com/gugu8intel-i9/Slop
 cd Slop
 ```
 
-```bash
-bin/slop run examples/hello.slop
-```
+| System | Compiler | Try it |
+|---|---|---|
+| Linux | `bin/slop` | `bin/slop run examples/hello.slop` |
+| macOS | `bin/slop-macos` | `bin/slop-macos run examples/hello.slop` |
+| Windows | `bin\slop.exe` | `bin\slop.exe run examples/hello.slop` |
 
-To use `slop` from anywhere, copy it onto your PATH:
+To use `slop` from anywhere, copy it onto your PATH (on macOS, rename `slop-macos` to `slop`):
 
 ```bash
 cp bin/slop ~/.local/bin/
@@ -44,9 +46,10 @@ cp bin/slop ~/.local/bin/
 
 | Command | What it does |
 |---|---|
-| `slop app.slop` | builds `./app` |
+| `slop app.slop` | builds `./app` (`app.exe` on Windows) |
 | `slop app.slop out` | builds `./out` |
 | `slop run app.slop [args]` | builds and runs |
+| `slop --target windows app.slop` | builds for another system (`linux`, `macos`, `windows`) from any system |
 
 ## The language in one page
 
@@ -139,7 +142,7 @@ Types: `int`, `bool`, `string`, `array[T]` and your structs. Numbers can be writ
 - **Variables in registers.** Whole-number variables and loop counters live in CPU registers.
 - **Strings that don't copy.** String literals point into the program file, and `slice`, `split`, `char_at` and `for ch in s` return views of the original text. `s = s + x` grows `s` in place when it can, so building text in a loop is not quadratic.
 - **Lists hold numbers directly**, 8 bytes per item, and grow in place when they're the newest thing in memory.
-- **No libc.** Programs talk to the kernel directly, output is buffered, and a hello-world is about 3 KB.
+- **No C library.** Programs talk to the operating system directly, output is buffered, and a hello-world is about 3 KB on Linux.
 
 Measured on this repo's test machine (Intel Xeon 2.1 GHz):
 
@@ -160,29 +163,38 @@ Run `bin/slop run examples/benchmark.slop` to time a few more workloads on your 
 
 | Path | What it is |
 |---|---|
-| `compiler.slop` | the compiler and runtime, in Slop |
-| `bin/slop` | the compiler, built from `compiler.slop` by itself |
+| `compiler.slop` | the compiler, in Slop |
+| `runtime/` | the runtime built into every program: `core.slop` plus one file per system |
+| `bin/` | the compiler for Linux (`slop`), macOS (`slop-macos`) and Windows (`slop.exe`) |
 | `examples/` | example programs |
 | `tests/` | the test suite (`bin/slop run tests/run.slop`) |
 | [LEARN_SLOP_IN_10_MINUTES.md](LEARN_SLOP_IN_10_MINUTES.md) | a short tutorial |
 | [SLOP_CHEATSHEET.md](SLOP_CHEATSHEET.md) | one-page reference |
 | [LOW_LEVEL.md](LOW_LEVEL.md) | raw memory and CPU access |
 
-After changing `compiler.slop`, rebuild the compiler with itself and run the tests:
+After changing `compiler.slop` or `runtime/`, rebuild the compilers (from any system) and run the tests:
 
 ```bash
 bin/slop compiler.slop bin/slop
 ```
 
 ```bash
+bin/slop --target macos compiler.slop bin/slop-macos
+```
+
+```bash
+bin/slop --target windows compiler.slop bin/slop.exe
+```
+
+```bash
 bin/slop run tests/run.slop
 ```
 
-The tests check that the compiler reproduces itself byte for byte and that `bin/slop` matches `compiler.slop`.
+The tests check that the compiler reproduces itself byte for byte and that all three compilers in `bin/` match the source. GitHub Actions runs them on Linux, macOS and Windows for every push.
 
 ## Not supported yet
 
-Floating-point numbers, threads, and platforms other than Linux x86-64.
+Floating-point numbers, threads, and native ARM code (Apple Silicon works through Rosetta 2; ARM Linux and ARM Windows don't yet).
 
 ## License
 

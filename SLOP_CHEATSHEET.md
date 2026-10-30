@@ -121,7 +121,7 @@ match n {
 
 ## Mental model
 
-Write code like a simple scripting language. The Slop compiler (written in Slop) turns it straight into a small Linux program: no C compiler, no linker, no libc.
+Write code like a simple scripting language. The Slop compiler (written in Slop) turns it straight into a small program for Linux, macOS or Windows: no C compiler, no linker, no C library.
 
 ```text
 app.slop -> bin/slop -> ./app

@@ -1,7 +1,18 @@
 # The Slop test suite, written in Slop. Run it from the repository root:
-#   bin/slop run tests/run.slop
+#   bin/slop run tests/run.slop          (Linux)
+#   bin/slop-macos run tests/run.slop    (macOS)
+#   bin/slop.exe run tests/run.slop      (Windows)
 
+os = os_name()
+exe_suffix = ""
 compiler = "bin/slop"
+if os == "macos" {
+    compiler = "bin/slop-macos"
+}
+if os == "windows" {
+    compiler = "bin/slop.exe"
+    exe_suffix = ".exe"
+}
 stage = compiler
 failures = 0
 passed = 0
@@ -29,33 +40,62 @@ fn run_program(exe: string) -> string {
     return run(exe, [exe])
 }
 
-# 1. the compiler builds itself, and bin/slop matches compiler.slop
-log = run(compiler, [compiler, "compiler.slop", "/tmp/slop_stage1"])
+# a scratch file name in the current directory
+fn tmp(name: string) -> string {
+    return "slop-test-" + name + exe_suffix
+}
+
+print("testing on " + os)
+
+# 1. the compiler builds itself, and the shipped compilers match compiler.slop
+stage1 = tmp("stage1")
+stage2 = tmp("stage2")
+log = run(compiler, [compiler, "compiler.slop", stage1])
 if run_status() != 0 {
     fail("bin/slop could not compile compiler.slop:\n" + log)
     exit(1)
 }
-log = run("/tmp/slop_stage1", ["/tmp/slop_stage1", "compiler.slop", "/tmp/slop_stage2"])
+log = run(stage1, [stage1, "compiler.slop", stage2])
 if run_status() != 0 {
     fail("stage 1 could not compile compiler.slop:\n" + log)
     exit(1)
 }
-if read_file("/tmp/slop_stage1") != read_file("/tmp/slop_stage2") {
+if read_file(stage1) != read_file(stage2) {
     fail("the compiler does not reproduce itself (stage 1 != stage 2)")
 } else {
     ok("compiler builds itself (stage 1 == stage 2)")
 }
-if read_file(compiler) != read_file("/tmp/slop_stage1") {
-    fail("bin/slop is out of date. Rebuild it: bin/slop compiler.slop bin/slop")
+if read_file(compiler) != read_file(stage1) {
+    fail(compiler + " is out of date. Rebuild it: " + compiler + " compiler.slop " + compiler)
 } else {
-    ok("bin/slop matches compiler.slop")
+    ok(compiler + " matches compiler.slop")
 }
-stage = "/tmp/slop_stage2"
+stage = stage2
+
+# every shipped compiler must match what the source builds for its system
+struct Shipped {
+    target: string,
+    path: string
+}
+
+for s in [Shipped("linux", "bin/slop"), Shipped("macos", "bin/slop-macos"), Shipped("windows", "bin/slop.exe")] {
+    out = tmp("cross-" + s.target)
+    log = run(stage, [stage, "--target", s.target, "compiler.slop", out])
+    if run_status() != 0 {
+        fail("could not build the " + s.target + " compiler:\n" + log)
+    } else {
+        if read_file(out) != read_file(s.path) {
+            fail(s.path + " is out of date. Rebuild it: " + compiler + " --target " + s.target + " compiler.slop " + s.path)
+        } else {
+            ok(s.path + " matches compiler.slop")
+        }
+    }
+}
 
 # 2. test programs: output must match tests/expected/<name>.txt exactly
 tests = ["array", "array_struct_string", "core", "features", "fib", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop"]
 for name in tests {
-    exe = "/tmp/slop_test_" + name
+    exe = tmp(name)
     if build("tests/" + name + ".slop", exe) {
         got = run_program(exe)
         want = read_file("tests/expected/" + name + ".txt")
@@ -87,7 +127,7 @@ checks = [
     Check("benchmark", "")
 ]
 for c in checks {
-    exe = "/tmp/slop_example_" + c.name
+    exe = tmp(c.name)
     if build("examples/" + c.name + ".slop", exe) {
         if c.expect == "" {
             ok("examples/" + c.name + ".slop builds")
@@ -116,8 +156,8 @@ bad = [
     BadCase("if 1 < 2 {\n    print(1)", "missing '}'")
 ]
 for b in bad {
-    write_file("/tmp/slop_bad.slop", b.code)
-    log = run(stage, [stage, "/tmp/slop_bad.slop", "/tmp/slop_bad"])
+    write_file("slop-test-bad.slop", b.code)
+    log = run(stage, [stage, "slop-test-bad.slop", tmp("bad")])
     if run_status() != 0 and contains(log, b.expect) {
         ok("error: " + b.expect)
     } else {

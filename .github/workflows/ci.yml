@@ -1,9 +1,25 @@
 name: Slop CI
 on: [push, pull_request]
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            slop: bin/slop
+          - os: macos-latest
+            slop: bin/slop-macos
+          - os: windows-latest
+            slop: bin/slop.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
+      - name: Rosetta 2 (Slop programs are x86-64; Apple Silicon Macs run them through Rosetta)
+        if: runner.os == 'macOS' && runner.arch == 'ARM64'
+        run: /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
       - name: Test suite
-        run: bin/slop run tests/run.slop
+        run: ${{ matrix.slop }} run tests/run.slop
