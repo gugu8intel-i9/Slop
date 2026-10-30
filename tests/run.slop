@@ -108,7 +108,7 @@ for s in shipped {
 }
 
 # 2. test programs: output must match tests/expected/<name>.txt exactly
-tests = ["array", "array_struct_string", "core", "features", "fib", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop"]
+tests = ["array", "array_struct_string", "core", "features", "fib", "float", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop", "thread"]
 for name in tests {
     exe = tmp(name)
     if build("tests/" + name + ".slop", exe) {
@@ -168,7 +168,9 @@ bad = [
     BadCase("x = 1\nx = \"text\"", "line 2: cannot assign string to x (int)"),
     BadCase("fn f(a: int) -> int {\n    return a\n}\nprint(f(1, 2))", "line 4: f takes 1 arguments"),
     BadCase("print(1 + \"a\")", "'+' needs numbers"),
-    BadCase("if 1 < 2 {\n    print(1)", "missing '}'")
+    BadCase("if 1 < 2 {\n    print(1)", "missing '}'"),
+    BadCase("print(7.5 % 2)", "'%' needs whole numbers"),
+    BadCase("n = 1\nn = 2.5", "cannot assign float")
 ]
 for b in bad {
     write_file("slop-test-bad.slop", b.code)

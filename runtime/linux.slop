@@ -9,24 +9,38 @@ fn __os_name() -> string {
     return "linux"
 }
 
-# reserve address space for the 3 memory buckets (pages appear when touched)
 fn __rt_init() {
-    for b in 0..3 {
-        size = 17179869184
-        p = -1
-        while p < 0 and size >= 16777216 {
-            if __arm() {
-                p = __syscall(222, 0, size, 3, 16418, -1, 0)
-            } else {
-                p = __syscall(9, 0, size, 3, 16418, -1, 0)
-            }
-            if p < 0 {
-                size = size / 4
-            }
-        }
-        __store64(__data() + 16 + b * 8, p)
-        __store64(__data() + 40 + b * 8, p + size)
+    __init_buckets(17179869184, 17179869184)
+}
+
+# address space that gets memory when touched; 0 if there is none
+fn __os_reserve(size: int) -> int {
+    p = 0
+    if __arm() {
+        p = __syscall(222, 0, size, 3, 16418, -1, 0)
+    } else {
+        p = __syscall(9, 0, size, 3, 16418, -1, 0)
     }
+    if p < 0 {
+        return 0
+    }
+    return p
+}
+
+fn __os_alloc(size: int) -> int {
+    return __os_reserve(size)
+}
+
+fn __os_release(p: int, size: int) {
+    if __arm() {
+        __syscall(215, p, size)
+    } else {
+        __syscall(11, p, size)
+    }
+}
+
+fn __os_commit_on_grow() -> bool {
+    return false
 }
 
 fn __grow(b: int, need: int) {
@@ -89,11 +103,73 @@ fn __os_size(fd: int) -> int {
     return size
 }
 
+# ends the whole program (every thread)
 fn __os_exit(code: int) {
     if __arm() {
-        __syscall(93, code)
+        __syscall(94, code)
     }
-    __syscall(60, code)
+    __syscall(231, code)
+}
+
+# ---------- threads ----------
+# CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|PARENT_SETTID|CHILD_CLEARTID: the
+# kernel clears the id word when the thread ends, which join waits for
+fn __os_thread_start(block: int, entry: int) -> bool {
+    size = 67108864
+    stack = __os_reserve(size)
+    if stack == 0 {
+        return false
+    }
+    __store64(block + 7208, stack)
+    __store64(block + 7216, size)
+    return __clone(3477248, stack + size, block + 7176, block) > 0
+}
+
+fn __os_thread_join(block: int) {
+    p = block + 7176
+    while true {
+        id = __load32(p)
+        if id == 0 {
+            break
+        }
+        # futex wait until the word changes
+        if __arm() {
+            __syscall(98, p, 0, id, 0)
+        } else {
+            __syscall(202, p, 0, id, 0)
+        }
+    }
+    __os_release(__load64(block + 7208), __load64(block + 7216))
+}
+
+# ends only the current thread
+fn __thread_exit() {
+    if __arm() {
+        __syscall(93, 0)
+    }
+    __syscall(60, 0)
+}
+
+fn __cpu_count() -> int {
+    buf = __scratch()
+    n = 0
+    if __arm() {
+        n = __syscall(123, 0, 64, buf)
+    } else {
+        n = __syscall(204, 0, 64, buf)
+    }
+    if n <= 0 {
+        return 1
+    }
+    count = 0
+    for i in 0..n {
+        b = __load8(buf + i)
+        while b > 0 {
+            count += b & 1
+            b = b >> 1
+        }
+    }
+    return count
 }
 
 fn __os_remove(path: int) {

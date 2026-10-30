@@ -1,0 +1,66 @@
+# floating-point numbers
+a = 1.5
+b = 2
+print(a + b, a - b, a * b, a / b)
+print(7 / 2, 7.0 / 2, 1 / 3.0)
+print(0.1 + 0.2, 1e21, 1.5e-7, 123456789.125)
+print(-a, -2.5, 3.0 * -1)
+print(a < b, a > b, a == 1.5, a != 1.5, 2.0 <= 2, 2 >= 2.5)
+
+x: float = 3
+x += 1
+x *= 2.5
+x /= 4
+x -= 0.5
+print(x)
+
+fn area(r: float) -> float {
+    return 3.141592653589793 * r * r
+}
+print(area(2), area(0.5))
+
+fn half(n: float) -> float {
+    return n / 2
+}
+print(10 |> half())
+
+print(int(3.99), int(-3.99), float(7), float("2.5"), int("42"))
+print(str(0.25) + "!", str(12))
+print(sqrt(2.0), sqrt(16), floor(-1.5), ceil(1.2), abs(-2.5), abs(-7))
+print(round(2.5), round(-2.5), round(2.4))
+print(pow(2, 10), pow(2.0, 0.5), pow(10, -2))
+print(exp(0.0), exp(1.0), log(1.0), log(exp(2.0)))
+print(sin(0.0), cos(0.0), sin(3.141592653589793 / 2))
+print(atan(1.0) * 4)
+
+big = 1e308
+print(big * 10, -big * 10, (big * 10) - (big * 10))
+
+total = 0.0
+for i in 1..1001 {
+    total += 1.0 / i
+}
+print(total)
+
+vals = [0.5, 1.25, -3.0]
+push(vals, 4.0)
+sum = 0.0
+for v in vals {
+    sum += v
+}
+print(vals, sum, len(vals))
+
+struct Vec {
+    x: float,
+    y: float
+
+    fn length() -> float {
+        return sqrt(this.x * this.x + this.y * this.y)
+    }
+}
+v = Vec(3, 4.0)
+print(v.length(), v.x)
+
+if 0.1 + 0.2 > 0.3 {
+    print("float math is exact about rounding")
+}

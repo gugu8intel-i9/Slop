@@ -1,0 +1,540 @@
+# Slop runtime: exact conversion between decimal text and 64-bit floats.
+# Uses only whole-number arithmetic: big numbers are arrays of 32-bit limbs,
+# lowest limb first, with no leading zero limbs (zero is the empty array).
+
+fn __bn_from(v: int) -> array[int] {
+    out: array[int] = []
+    while v > 0 {
+        push(out, v & 4294967295)
+        v = v >> 32
+    }
+    return out
+}
+
+fn __bn_trim(a: array[int]) -> array[int] {
+    while len(a) > 0 and a[len(a) - 1] == 0 {
+        pop(a)
+    }
+    return a
+}
+
+# a * m + add, for m and add below 2^31
+fn __bn_mul_add(a: array[int], m: int, add: int) -> array[int] {
+    out: array[int] = []
+    carry = add
+    for limb in a {
+        v = limb * m + carry
+        push(out, v & 4294967295)
+        carry = v >> 32
+    }
+    while carry > 0 {
+        push(out, carry & 4294967295)
+        carry = carry >> 32
+    }
+    return __bn_trim(out)
+}
+
+fn __bn_bitlen(a: array[int]) -> int {
+    n = len(a)
+    if n == 0 {
+        return 0
+    }
+    top = a[n - 1]
+    bits = 0
+    while top > 0 {
+        bits += 1
+        top = top >> 1
+    }
+    return (n - 1) * 32 + bits
+}
+
+fn __bn_bit(a: array[int], i: int) -> int {
+    k = i >> 5
+    if i < 0 or k >= len(a) {
+        return 0
+    }
+    return (a[k] >> (i & 31)) & 1
+}
+
+# true if any of the lowest n bits is set
+fn __bn_low_nonzero(a: array[int], n: int) -> bool {
+    for i in 0..len(a) {
+        if (i + 1) * 32 <= n {
+            if a[i] != 0 {
+                return true
+            }
+        } else {
+            if i * 32 < n {
+                return (a[i] & ((1 << (n - i * 32)) - 1)) != 0
+            }
+            return false
+        }
+    }
+    return false
+}
+
+fn __bn_shl(a: array[int], n: int) -> array[int] {
+    out: array[int] = []
+    for i in 0..(n >> 5) {
+        push(out, 0)
+    }
+    s = n & 31
+    carry = 0
+    for limb in a {
+        v = (limb << s) | carry
+        push(out, v & 4294967295)
+        carry = v >> 32
+    }
+    if carry > 0 {
+        push(out, carry)
+    }
+    return __bn_trim(out)
+}
+
+fn __bn_shr(a: array[int], n: int) -> array[int] {
+    out: array[int] = []
+    k = n >> 5
+    s = n & 31
+    i = k
+    while i < len(a) {
+        v = a[i] >> s
+        if s > 0 and i + 1 < len(a) {
+            v = v | ((a[i + 1] << (32 - s)) & 4294967295)
+        }
+        push(out, v)
+        i += 1
+    }
+    return __bn_trim(out)
+}
+
+fn __bn_cmp(a: array[int], b: array[int]) -> int {
+    if len(a) != len(b) {
+        if len(a) < len(b) {
+            return -1
+        }
+        return 1
+    }
+    i = len(a) - 1
+    while i >= 0 {
+        if a[i] != b[i] {
+            if a[i] < b[i] {
+                return -1
+            }
+            return 1
+        }
+        i -= 1
+    }
+    return 0
+}
+
+# a - b, for a >= b
+fn __bn_sub(a: array[int], b: array[int]) -> array[int] {
+    out: array[int] = []
+    borrow = 0
+    for i in 0..len(a) {
+        v = a[i] - borrow
+        if i < len(b) {
+            v -= b[i]
+        }
+        borrow = 0
+        if v < 0 {
+            v += 4294967296
+            borrow = 1
+        }
+        push(out, v)
+    }
+    return __bn_trim(out)
+}
+
+fn __bn_to_int(a: array[int]) -> int {
+    v = 0
+    i = len(a) - 1
+    while i >= 0 {
+        v = (v << 32) | a[i]
+        i -= 1
+    }
+    return v
+}
+
+# quotient of a / b, followed by one extra item: 1 if there is a remainder, else 0
+fn __bn_low_nonzero_all(r: array[int]) -> int {
+    if len(__bn_trim(r)) > 0 {
+        return 1
+    }
+    return 0
+}
+
+fn __bn_divmod(a: array[int], b: array[int]) -> array[int] {
+    q: array[int] = []
+    r: array[int] = []
+    i = __bn_bitlen(a) - 1
+    qbits = i + 1
+    for k in 0..(qbits + 31) / 32 {
+        push(q, 0)
+    }
+    while i >= 0 {
+        r = __bn_mul_add(r, 2, __bn_bit(a, i))
+        if __bn_cmp(r, b) >= 0 {
+            r = __bn_sub(r, b)
+            q[i >> 5] = q[i >> 5] | (1 << (i & 31))
+        }
+        i -= 1
+    }
+    q = __bn_trim(q)
+    push(q, __bn_low_nonzero_all(r))
+    return q
+}
+
+fn __bn_pow10(n: int) -> array[int] {
+    out = __bn_from(1)
+    while n >= 9 {
+        out = __bn_mul_add(out, 1000000000, 0)
+        n -= 9
+    }
+    while n > 0 {
+        out = __bn_mul_add(out, 10, 0)
+        n -= 1
+    }
+    return out
+}
+
+# a / d for d below 2^31, followed by one extra item: the remainder
+
+fn __bn_divsmall(a: array[int], d: int) -> array[int] {
+    out: array[int] = []
+    for k in 0..len(a) {
+        push(out, 0)
+    }
+    rem = 0
+    i = len(a) - 1
+    while i >= 0 {
+        cur = (rem << 32) | a[i]
+        out[i] = cur / d
+        rem = cur % d
+        i -= 1
+    }
+    out = __bn_trim(out)
+    push(out, rem)
+    return out
+}
+
+# decimal digits of a big number
+fn __bn_decimal(a: array[int]) -> string {
+    if len(a) == 0 {
+        return "0"
+    }
+    chunks: array[int] = []
+    while len(a) > 0 {
+        a = __bn_divsmall(a, 1000000000)
+        push(chunks, pop(a))
+    }
+    out = __int_to_string(chunks[len(chunks) - 1])
+    i = len(chunks) - 2
+    while i >= 0 {
+        piece = __int_to_string(chunks[i])
+        out = out + __repeat("0", 9 - len(piece)) + piece
+        i -= 1
+    }
+    return out
+}
+
+# q * 2^e (plus a little more if sticky) rounded to the nearest 64-bit float, as bits
+fn __round_to_double(q: array[int], e: int, sticky: bool, neg: bool) -> int {
+    sign = 0
+    if neg {
+        sign = 1 << 63
+    }
+    if len(q) == 0 {
+        return sign
+    }
+    l = __bn_bitlen(q)
+    lsb = l + e - 53
+    if lsb < -1074 {
+        lsb = -1074
+    }
+    sh = lsb - e
+    m = 0
+    if sh > 0 {
+        m = __bn_to_int(__bn_shr(q, sh))
+        half = __bn_bit(q, sh - 1)
+        rest = sticky or __bn_low_nonzero(q, sh - 1)
+        if half == 1 and (rest or (m & 1) == 1) {
+            m += 1
+        }
+    } else {
+        m = __bn_to_int(q) << (-sh)
+    }
+    if m == 1 << 53 {
+        m = 1 << 52
+        lsb += 1
+    }
+    if m >= 1 << 52 {
+        biased = lsb + 52 + 1023
+        if biased >= 2047 {
+            return sign | (2047 << 52)
+        }
+        return sign | (biased << 52) | (m - (1 << 52))
+    }
+    return sign | m
+}
+
+# digits * 10^exp10 -> float bits
+fn __decimal_to_bits(digits: array[int], exp10: int, neg: bool) -> int {
+    if len(digits) == 0 {
+        return __round_to_double(digits, 0, false, neg)
+    }
+    # about 0.30103 decimal digits per bit
+    size = __bn_bitlen(digits) * 30103 / 100000 + 1
+    if size + exp10 > 330 {
+        return __round_to_double(__bn_from(1), 2000, false, neg)
+    }
+    if size + exp10 < -345 {
+        empty: array[int] = []
+        return __round_to_double(empty, 0, false, neg)
+    }
+    if exp10 >= 0 {
+        return __round_to_double(__bn_mul_big(digits, __bn_pow10(exp10)), 0, false, neg)
+    }
+    den = __bn_pow10(-exp10)
+    s = 64 + __bn_bitlen(den) - __bn_bitlen(digits)
+    if s < 0 {
+        s = 0
+    }
+    q = __bn_divmod(__bn_shl(digits, s), den)
+    sticky = pop(q) == 1
+    return __round_to_double(q, -s, sticky, neg)
+}
+
+fn __bn_mul_big(a: array[int], b: array[int]) -> array[int] {
+    out: array[int] = []
+    for i in 0..len(a) + len(b) {
+        push(out, 0)
+    }
+    for i in 0..len(a) {
+        carry = 0
+        for j in 0..len(b) {
+            # split the 32x32-bit product so nothing overflows
+            lo = (a[i] & 65535) * b[j]
+            hi = (a[i] >> 16) * b[j]
+            v = out[i + j] + carry + (lo & 4294967295) + ((hi & 65535) << 16)
+            carry = (v >> 32) + (lo >> 32) + (hi >> 16)
+            out[i + j] = v & 4294967295
+        }
+        k = i + len(b)
+        while carry > 0 {
+            v = out[k] + carry
+            out[k] = v & 4294967295
+            carry = v >> 32
+            k += 1
+        }
+    }
+    return __bn_trim(out)
+}
+
+# The two conversions below run with a memory frame of their own (their names
+# don't start with __), so the big-number scratch work is freed right away.
+fn __parse_float_bits(text: string) -> int {
+    return _slop_parse_float_bits(text)
+}
+
+fn __float_to_string(bits: int) -> string {
+    return _slop_float_to_string(bits)
+}
+
+fn __out_float(bits: int) {
+    _slop_out_float(bits)
+}
+
+fn _slop_out_float(bits: int) {
+    __out_str(_slop_float_to_string(bits))
+}
+
+# decimal text -> float bits ("1.5", "-2e10", ".5", "inf", "nan")
+fn _slop_parse_float_bits(text: string) -> int {
+    s = __lower(__trim(text))
+    neg = false
+    if __starts_with(s, "-") {
+        neg = true
+        s = __slice(s, 1, len(s))
+    } else {
+        if __starts_with(s, "+") {
+            s = __slice(s, 1, len(s))
+        }
+    }
+    if s == "inf" or s == "infinity" {
+        return __round_to_double(__bn_from(1), 2000, false, neg)
+    }
+    if s == "nan" {
+        return 9221120237041090560
+    }
+    digits: array[int] = []
+    exp10 = 0
+    seen_dot = false
+    i = 0
+    n = len(s)
+    while i < n {
+        c = __byte_at(s, i)
+        if c >= 48 and c <= 57 {
+            digits = __bn_mul_add(digits, 10, c - 48)
+            if seen_dot {
+                exp10 -= 1
+            }
+        } else {
+            if c == 46 and not seen_dot {
+                seen_dot = true
+            } else {
+                if c != 95 {
+                    break
+                }
+            }
+        }
+        i += 1
+    }
+    if i < n and (__byte_at(s, i) == 101) {
+        es = __slice(s, i + 1, n)
+        if __starts_with(es, "+") {
+            es = __slice(es, 1, len(es))
+        }
+        exp10 += __to_int(es)
+    }
+    return __decimal_to_bits(digits, exp10, neg)
+}
+
+# float bits -> shortest text that reads back as the same number
+fn _slop_float_to_string(bits: int) -> string {
+    neg = bits < 0
+    ex = (bits >> 52) & 2047
+    frac = bits & ((1 << 52) - 1)
+    sign = ""
+    if neg {
+        sign = "-"
+    }
+    if ex == 2047 {
+        if frac != 0 {
+            return "nan"
+        }
+        return sign + "inf"
+    }
+    if ex == 0 and frac == 0 {
+        return sign + "0.0"
+    }
+    m = frac
+    e2 = -1074
+    if ex != 0 {
+        m = frac + (1 << 52)
+        e2 = ex - 1075
+    }
+    # exact value: digits * 10^dexp
+    exact = ""
+    dexp = 0
+    if e2 >= 0 {
+        exact = __bn_decimal(__bn_shl(__bn_from(m), e2))
+    } else {
+        f = __bn_from(m)
+        for k in 0..-e2 {
+            f = __bn_mul_add(f, 5, 0)
+        }
+        exact = __bn_decimal(f)
+        dexp = e2
+    }
+    best = exact
+    bexp = dexp
+    # 15 digits always identify a normal float; tiny (subnormal) ones may need fewer
+    first = 15
+    if ex == 0 {
+        first = 1
+    }
+    for p in first..18 {
+        if p < len(exact) {
+            cand = __round_digits(exact, p)
+            cexp = dexp + len(exact) - p
+            if len(cand) > p {
+                cexp += 1
+                cand = __slice(cand, 0, p)
+            }
+            if p == 17 or __decimal_to_bits(__bn_digits(cand), cexp, neg) == bits {
+                best = cand
+                bexp = cexp
+                break
+            }
+        }
+    }
+    # drop trailing zeros
+    while len(best) > 1 and __byte_at(best, len(best) - 1) == 48 {
+        best = __slice(best, 0, len(best) - 1)
+        bexp += 1
+    }
+    return sign + __format_decimal(best, bexp)
+}
+
+fn __bn_digits(s: string) -> array[int] {
+    out: array[int] = []
+    for i in 0..len(s) {
+        out = __bn_mul_add(out, 10, __byte_at(s, i) - 48)
+    }
+    return out
+}
+
+# first p digits of a digit string, rounded half to even
+fn __round_digits(d: string, p: int) -> string {
+    head = __slice(d, 0, p)
+    next = __byte_at(d, p) - 48
+    rest_nonzero = false
+    for i in p + 1..len(d) {
+        if __byte_at(d, i) != 48 {
+            rest_nonzero = true
+        }
+    }
+    last = __byte_at(head, p - 1) - 48
+    up = next > 5 or (next == 5 and (rest_nonzero or last % 2 == 1))
+    if not up {
+        return head
+    }
+    # add one to the last digit, carrying left
+    out = ""
+    carry = 1
+    i = p - 1
+    while i >= 0 {
+        v = __byte_at(head, i) - 48 + carry
+        carry = 0
+        if v == 10 {
+            v = 0
+            carry = 1
+        }
+        out = __chr(48 + v) + out
+        i -= 1
+    }
+    if carry == 1 {
+        out = "1" + out
+    }
+    return out
+}
+
+# digits * 10^exp the way Python prints floats
+fn __format_decimal(d: string, exp: int) -> string {
+    point = len(d) + exp
+    sci = point - 1
+    if sci < -4 or sci >= 16 {
+        mant = __slice(d, 0, 1)
+        if len(d) > 1 {
+            mant = mant + "." + __slice(d, 1, len(d))
+        }
+        es = "+"
+        if sci < 0 {
+            es = "-"
+            sci = -sci
+        }
+        num = __int_to_string(sci)
+        if len(num) < 2 {
+            num = "0" + num
+        }
+        return mant + "e" + es + num
+    }
+    if point <= 0 {
+        return "0." + __repeat("0", -point) + d
+    }
+    if point >= len(d) {
+        return d + __repeat("0", point - len(d)) + ".0"
+    }
+    return __slice(d, 0, point) + "." + __slice(d, point, len(d))
+}

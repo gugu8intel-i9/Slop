@@ -7,6 +7,11 @@
 
 __out_ptr = __alloc_in(2, 65536)
 __out_len = 0
+__threads_on = false
+__out_word = 0
+__out_owner = 0
+__out_depth = 0
+__user_word = 0
 __in_ptr = 0
 __in_len = 0
 __in_pos = 0
@@ -23,10 +28,12 @@ fn __write_all(fd: int, p: int, n: int) {
 }
 
 fn __flush() {
+    __out_lock()
     if __out_len > 0 {
         __write_all(1, __out_ptr, __out_len)
         __out_len = 0
     }
+    __out_unlock()
 }
 
 fn __out_bytes(p: int, n: int) {
@@ -361,10 +368,12 @@ fn __strlen(p: int) -> int {
 }
 
 fn __eprint(s: string) {
+    __out_lock()
     __flush()
     __write_all(2, __str_ptr(s), len(s))
     __store8(__scratch(), 10)
     __write_all(2, __scratch(), 1)
+    __out_unlock()
 }
 
 fn __arch_name() -> string {
@@ -627,4 +636,114 @@ __last_status = 0
 
 fn __run_status() -> int {
     return __last_status
+}
+
+# ---------- memory buckets ----------
+# reserve address space for the 3 memory buckets of the current thread
+fn __init_buckets(size: int, perm_size: int) {
+    for b in 0..3 {
+        want = size
+        if b == 2 {
+            want = perm_size
+        }
+        p = 0
+        while p == 0 and want >= 16777216 {
+            p = __os_reserve(want)
+            if p == 0 {
+                want = want / 4
+            }
+        }
+        __store64(__data() + 16 + b * 8, p)
+        if __os_commit_on_grow() {
+            __store64(__data() + 40 + b * 8, p)
+        } else {
+            __store64(__data() + 40 + b * 8, p + want)
+        }
+        __store64(__data() + 64 + b * 8, p + want)
+    }
+}
+
+# ---------- threads and locks ----------
+fn __spin_lock(p: int) {
+    while __xchg(p, 1) != 0 {
+        while __load64(p) != 0 {
+            cpu_relax()
+        }
+    }
+}
+
+fn __spin_unlock(p: int) {
+    __xchg(p, 0)
+}
+
+fn __lock() {
+    __spin_lock(addr_of(__user_word))
+}
+
+fn __unlock() {
+    __spin_unlock(addr_of(__user_word))
+}
+
+# print holds this lock so lines from different threads don't mix
+fn __out_lock() {
+    if __threads_on {
+        me = __data()
+        if __out_owner == me {
+            __out_depth += 1
+            return
+        }
+        __spin_lock(addr_of(__out_word))
+        __out_owner = me
+    }
+}
+
+fn __out_unlock() {
+    if __threads_on {
+        if __out_depth > 0 {
+            __out_depth -= 1
+            return
+        }
+        __out_owner = 0
+        __spin_unlock(addr_of(__out_word))
+    }
+}
+
+# starts a thread at entry; its arguments are copied from args
+fn __thread_spawn(entry: int, args: int, argbytes: int) -> int {
+    __threads_on = true
+    block = __os_alloc(8192)
+    if block == 0 {
+        __eprint("Slop: cannot start a thread (out of memory)")
+        __os_exit(1)
+    }
+    __memcpy(block, __data(), 128)
+    __store64(block + 8, 0)
+    __memcpy(block + 4096, args, argbytes)
+    __store64(block + 7168, entry)
+    if not __os_thread_start(block, entry) {
+        __eprint("Slop: cannot start a thread")
+        __os_exit(1)
+    }
+    return block
+}
+
+# runs first on a new thread: its own memory buckets
+fn __thread_init() {
+    __init_buckets(4294967296, 1073741824)
+    for b in 0..3 {
+        __store64(__data() + 7224 + b * 8, __load64(__data() + 16 + b * 8))
+    }
+}
+
+# waits for a thread, gives back its memory and returns its result. What it
+# stored in global variables (its bucket 2) is kept.
+fn __thread_join(block: int) -> int {
+    __os_thread_join(block)
+    r = __load64(block + 7192)
+    for b in 0..2 {
+        start = __load64(block + 7224 + b * 8)
+        __os_release(start, __load64(block + 64 + b * 8) - start)
+    }
+    __os_release(block, 8192)
+    return r
 }

@@ -250,6 +250,33 @@ fn tokenize(src: string, with_eof: bool) {
                     }
                     i += 1
                 }
+                # a float: 1.5, 2e10, 6.02e-23
+                let is_float = false
+                if i + 1 < n and byte_at(src, i) == 46 and is_digit_b(byte_at(src, i + 1)) {
+                    is_float = true
+                    i += 1
+                    while i < n and (is_digit_b(byte_at(src, i)) or byte_at(src, i) == 95) {
+                        i += 1
+                    }
+                }
+                if i < n and (byte_at(src, i) == 101 or byte_at(src, i) == 69) {
+                    let j = i + 1
+                    if j < n and (byte_at(src, j) == 43 or byte_at(src, j) == 45) {
+                        j += 1
+                    }
+                    if j < n and is_digit_b(byte_at(src, j)) {
+                        is_float = true
+                        i = j
+                        while i < n and is_digit_b(byte_at(src, i)) {
+                            i += 1
+                        }
+                    }
+                }
+                if is_float {
+                    let text = slice(src, st, i)
+                    add_tok(7, text, line, _slop_parse_float_bits(replace(text, "_", "")))
+                    continue
+                }
             }
             add_tok(3, slice(src, st, i), line, v)
             continue
@@ -411,7 +438,7 @@ fn struct_index(name: string) -> int {
 }
 
 fn words(t: string) -> int {
-    if t == "int" or t == "bool" {
+    if t == "int" or t == "bool" or t == "float" or starts_with_s(t, "thread[") {
         return 1
     }
     if t == "string" {
@@ -501,7 +528,13 @@ fn parse_type() -> string {
         expect("]")
         return "array[" + inner + "]"
     }
-    if name == "int" or name == "bool" or name == "string" or name == "void" {
+    if name == "thread" {
+        expect("[")
+        let inner = parse_type()
+        expect("]")
+        return "thread[" + inner + "]"
+    }
+    if name == "int" or name == "bool" or name == "string" or name == "void" or name == "float" {
         return name
     }
     if name == "str" {
@@ -509,9 +542,6 @@ fn parse_type() -> string {
     }
     if struct_index(name) >= 0 {
         return name
-    }
-    if name == "float" {
-        err("float is not supported yet")
     }
     err("unknown type '" + name + "'")
     return ""
@@ -1339,6 +1369,302 @@ fn e_sext32_rax() {
 
 # ---------- arrays ----------
 # rcx = array header address, rax = index -> rax = element address (bounds checked)
+# ---------- floating point (64-bit floats travel as bits in integer registers) ----------
+# r (rax or rcx) = int r converted to a float
+fn e_f_from_int(r: int) {
+    if arm() {
+        a32(2657222656 + r * 32)
+        a32(2657484800 + r)
+        return
+    }
+    emit4(242, 72, 15, 42)
+    emit(192 + r)
+    emit4(102, 72, 15, 126)
+    emit(192 + r)
+}
+
+# xmm0/d0 = rax, xmm1/d1 = rcx
+fn e_f_load2() {
+    if arm() {
+        a32(2657550336)
+        a32(2657550369)
+        return
+    }
+    emit4(102, 72, 15, 110)
+    emit(192)
+    emit4(102, 72, 15, 110)
+    emit(201)
+}
+
+fn e_f_result() {
+    if arm() {
+        a32(2657484800)
+        return
+    }
+    emit4(102, 72, 15, 126)
+    emit(192)
+}
+
+# rax = rax OP rcx; op: 0 add, 1 sub, 6 mul, 7 div
+fn e_f_op(op: int) {
+    e_f_load2()
+    if arm() {
+        let base = 509683712
+        if op == 1 {
+            base = 509687808
+        }
+        if op == 6 {
+            base = 509675520
+        }
+        if op == 7 {
+            base = 509679616
+        }
+        a32(base)
+    } else {
+        let code = 88
+        if op == 1 {
+            code = 92
+        }
+        if op == 6 {
+            code = 89
+        }
+        if op == 7 {
+            code = 94
+        }
+        emit4(242, 15, code, 193)
+    }
+    e_f_result()
+}
+
+# rax = (rax OP rcx) as 0/1; op is "<", "<=", ">", ">=", "==" or "!="
+fn e_f_cmp(op: string) {
+    e_f_load2()
+    if arm() {
+        a32(509681664)
+        let cond = 0
+        if op == "!=" {
+            cond = 1
+        }
+        if op == "<" {
+            cond = 4
+        }
+        if op == "<=" {
+            cond = 9
+        }
+        if op == ">" {
+            cond = 12
+        }
+        if op == ">=" {
+            cond = 10
+        }
+        # cset x0, cond
+        a32(2594113504 + (cond ^ 1) * 4096)
+        return
+    }
+    if op == "<" or op == "<=" {
+        # compare the other way round so NaN gives false
+        emit4(102, 15, 46, 200)
+        if op == "<" {
+            emit3(15, 151, 192)
+        } else {
+            emit3(15, 147, 192)
+        }
+    } else {
+        emit4(102, 15, 46, 193)
+        if op == ">" {
+            emit3(15, 151, 192)
+        }
+        if op == ">=" {
+            emit3(15, 147, 192)
+        }
+        if op == "==" {
+            emit3(15, 148, 192)
+            emit3(15, 155, 193)
+            emit2(32, 200)
+        }
+        if op == "!=" {
+            emit3(15, 149, 192)
+            emit3(15, 154, 193)
+            emit2(8, 200)
+        }
+    }
+    emit3(15, 182, 192)
+}
+
+# one-operand float operations on rax: 0 negate, 1 abs, 2 sqrt, 3 floor, 4 ceil, 5 trunc
+fn e_f_unary(op: int) {
+    if op == 0 {
+        if arm() {
+            a32(3527475200)
+        } else {
+            emit4(72, 15, 186, 248)
+            emit(63)
+        }
+        return
+    }
+    if op == 1 {
+        if arm() {
+            a32(2453731328)
+        } else {
+            emit4(72, 15, 186, 240)
+            emit(63)
+        }
+        return
+    }
+    e_f_load2()
+    if arm() {
+        let ops = [0, 0, 509722624, 509952000, 509919232, 509984768]
+        a32(ops[op])
+    } else {
+        if op == 2 {
+            emit4(242, 15, 81, 192)
+        } else {
+            emit4(102, 15, 58, 11)
+            emit(192)
+            emit(op + 6)
+        }
+    }
+    e_f_result()
+}
+
+# rax = float rax converted to an int (rounds toward zero)
+fn e_f_to_int() {
+    e_f_load2()
+    if arm() {
+        a32(2658664448)
+        return
+    }
+    emit4(242, 72, 15, 44)
+    emit(192)
+}
+
+# ---------- threads ----------
+# Each thread has its own 8 KB block (r15/x23 points at it): the usual thread
+# state at +0, then the spawn arguments at +4096 and these words:
+#   +7168 entry  +7176 OS thread id  +7184 OS handle  +7192 result
+#   +7200 saved stack pointer  +7208 stack  +7216 stack size
+#   +7224 start of each memory bucket  +7256 pthread attributes (macOS)
+
+# r = address of label l
+fn e_lea_label(r: int, l: int) {
+    if arm() {
+        fixup(15, l)
+        a32(268435456 + ar(r))
+        return
+    }
+    emit2(rex(r, 0), 141)
+    emit(5 + r % 8 * 8)
+    fixup(0, l)
+    emit32(0)
+}
+
+# first code a new thread runs: point r15/x23 at the thread's block
+fn e_thread_enter() {
+    if g_target == 1 {
+        if arm() {
+            # mov x28, sp
+            a32(2432697340)
+        }
+        return
+    }
+    if arm() {
+        # save x19-x30 for the system library, then run on its stack
+        a32(3506553855)
+        for k in 0..6 {
+            a32(2835370995 + k * 67586)
+        }
+        a_mov(23, 0)
+        a32(2432697328)
+        a_ldst(false, 16, 23, 7200)
+        a_mov(28, 16)
+        return
+    }
+    for r in thread_saved_regs() {
+        e_push(r)
+    }
+    if g_target == 3 {
+        e_mov_rr(15, 1)
+    } else {
+        e_mov_rr(15, 7)
+    }
+}
+
+fn thread_saved_regs() -> array[int] {
+    if g_target == 3 {
+        return [3, 5, 7, 6, 12, 13, 14, 15]
+    }
+    return [3, 5, 12, 13, 14, 15]
+}
+
+fn e_thread_leave() {
+    if g_target == 1 {
+        call_named("__thread_exit")
+        return
+    }
+    if arm() {
+        a_ldst(true, 16, 23, 7200)
+        a32(2432696863)
+        for k in 0..6 {
+            a32(2839565299 + k * 67586)
+        }
+        a32(2432812031)
+        a32(3596551104)
+        return
+    }
+    let regs = thread_saved_regs()
+    let i = len(regs) - 1
+    while i >= 0 {
+        e_pop(regs[i])
+        i -= 1
+    }
+    emit(195)
+}
+
+# Linux: __clone(flags, stack, tid address, block) starts a thread at the
+# block's entry; returns the thread id (or an error below 0)
+fn e_clone_thread() {
+    e_pop(9)
+    e_pop(2)
+    e_pop(6)
+    e_pop(7)
+    if arm() {
+        a_mov(0, 7)
+        a_mov(1, 6)
+        a_mov_imm(3, 0)
+        a_mov(4, 2)
+        a_mov(5, 9)
+        a_mov_imm(8, 220)
+        a32(3556769793)
+        # the new thread: x0 is 0
+        a32(3036676224)
+        a_mov(23, 5)
+        a_ldst(true, 16, 23, 7168)
+        a32(3592356352)
+        return
+    }
+    emit3(73, 137, 210)
+    emit3(69, 49, 192)
+    e_mov_imm(0, 56)
+    emit2(15, 5)
+    emit3(72, 133, 192)
+    emit2(117, 10)
+    emit3(77, 137, 207)
+    emit3(65, 255, 167)
+    emit32(7168)
+}
+
+# rax = old value at address rcx, which is set to rax (atomically)
+fn e_xchg() {
+    if arm() {
+        a32(3361733680)
+        a32(3356621856)
+        a32(905969617)
+        a_mov(0, 16)
+        return
+    }
+    emit3(72, 135, 1)
+}
+
 fn e_index(t: string) {
     if arm() {
         a_ldst(true, 16, 1, 8)
@@ -1890,7 +2216,7 @@ fn store_to_addr(t: string) {
 # locals and globals
 # ============================================================================
 fn add_local(name: string, t: string) -> int {
-    if (t == "int" or t == "bool") and name != "" {
+    if (t == "int" or t == "bool" or t == "float") and name != "" {
         let regs = local_regs()
         let promote = true
         for nr in g_noreg {
@@ -2001,7 +2327,7 @@ fn call_named(name: string) {
     request_fn(f)
     e_call(g_fn_label[f])
     # a memory frame is only needed to give back memory this call may use
-    if starts_with_s(name, "__") and not (starts_with_s(name, "__out") or name == "__streq" or name == "__flush") {
+    if starts_with_s(name, "__") and not (starts_with_s(name, "__out") or name == "__streq" or name == "__flush" or name == "__lock" or name == "__unlock") {
         g_cur_framed = true
     }
     if has_heap(g_fn_ret[f]) {
@@ -2295,8 +2621,57 @@ fn gen_and() -> string {
 
 fn need_int(t: string, op: string) {
     if t != "int" and t != "bool" {
+        if t == "float" {
+            err("'" + op + "' needs whole numbers, not float (use int())")
+        }
         err("'" + op + "' needs numbers, not " + t)
     }
+}
+
+fn need_num(t: string, op: string) {
+    if t != "float" {
+        need_int(t, op)
+    }
+}
+
+# an int in rax becomes a float when a float is wanted
+fn coerce(have: string, want: string) -> string {
+    if want == "float" and (have == "int" or have == "bool") {
+        e_f_from_int(0)
+        return "float"
+    }
+    return have
+}
+
+# rax = rax OP right side, for whole numbers or floats; returns the result type.
+# opcode: 0 add, 1 sub, 2 compare, 6 multiply. A float compare leaves 0/1 in rax.
+fn gen_num_rhs(op: string, level: int, opcode: int, t: string) -> string {
+    need_num(t, op)
+    if t != "float" and simple_operand(level) {
+        e_op_simple(opcode)
+        return "int"
+    }
+    e_push(0)
+    let rt = gen_level(level + 1)
+    need_num(rt, op)
+    e_mov_rr(1, 0)
+    e_pop(0)
+    if t == "float" or rt == "float" {
+        if t != "float" {
+            e_f_from_int(0)
+        }
+        if rt != "float" {
+            e_f_from_int(1)
+        }
+        if opcode == 2 {
+            e_f_cmp(op)
+        } else {
+            e_f_op(opcode)
+        }
+        return "float"
+    }
+    e_op_rcx(opcode)
+    return "int"
 }
 
 # generic left-assoc integer level: ops listed with their op codes
@@ -2380,25 +2755,15 @@ fn gen_equality() -> string {
                 e_not_bool_rax()
             }
         } else {
-            if t != "int" and t != "bool" {
+            if t != "int" and t != "bool" and t != "float" {
                 err("cannot compare values of type " + t + " with " + op)
             }
-            if simple_operand(6) {
-                e_op_simple(2)
-            } else {
-                e_push(0)
-                let rt = gen_compare()
-                if rt != "int" and rt != "bool" {
-                    err("cannot compare " + t + " with " + rt)
+            if gen_num_rhs(op, 6, 2, t) == "int" {
+                if op == "==" {
+                    e_setcc_rax(4)
+                } else {
+                    e_setcc_rax(5)
                 }
-                e_mov_rr(1, 0)
-                e_pop(0)
-                e_op_rcx(2)
-            }
-            if op == "==" {
-                e_setcc_rax(4)
-            } else {
-                e_setcc_rax(5)
             }
         }
         t = "bool"
@@ -2423,10 +2788,10 @@ fn gen_compare() -> string {
     let t = gen_shift()
     while is_sym("<") or is_sym(">") or is_sym("<=") or is_sym(">=") {
         let op = tk()
-        need_int(t, op)
         g_pos += 1
-        gen_int_rhs(op, 7, 2)
-        e_setcc_rax(compare_cc(op))
+        if gen_num_rhs(op, 7, 2, t) == "int" {
+            e_setcc_rax(compare_cc(op))
+        }
         t = "bool"
     }
     return t
@@ -2469,13 +2834,11 @@ fn gen_additive() -> string {
             e_add_rsp(32)
             take_result("string")
         } else {
-            need_int(t, op)
             let opcode = 0
             if op == "-" {
                 opcode = 1
             }
-            gen_int_rhs(op, 9, opcode)
-            t = "int"
+            t = gen_num_rhs(op, 9, opcode, t)
         }
     }
     return t
@@ -2485,11 +2848,13 @@ fn gen_multiplicative() -> string {
     let t = gen_unary()
     while is_sym("*") or is_sym("/") or is_sym("%") {
         let op = tk()
-        need_int(t, op)
+        need_num(t, op)
         g_pos += 1
         if op == "*" {
-            gen_int_rhs(op, 10, 6)
-        } else {
+            t = gen_num_rhs(op, 10, 6, t)
+            continue
+        }
+        if t != "float" {
             if kind() == 3 and g_tk_num[g_pos] == 10 and binop_prec(tk_at(g_pos + 1)) <= 10 and not is_sym_at(g_pos + 1, "(") {
                 # x / 10 by multiplying with a magic constant (much faster than idiv)
                 g_pos += 1
@@ -2499,15 +2864,32 @@ fn gen_multiplicative() -> string {
             }
             if simple_operand(10) {
                 e_simple_to_rcx()
-            } else {
-                e_push(0)
-                need_int(gen_unary(), op)
-                e_mov_rr(1, 0)
-                e_pop(0)
+                e_divmod_rcx(op == "%")
+                t = "int"
+                continue
             }
-            e_divmod_rcx(op == "%")
         }
-        t = "int"
+        e_push(0)
+        let rt = gen_unary()
+        need_num(rt, op)
+        e_mov_rr(1, 0)
+        e_pop(0)
+        if t == "float" or rt == "float" {
+            if op == "%" {
+                err("'%' needs whole numbers, not float")
+            }
+            if t != "float" {
+                e_f_from_int(0)
+            }
+            if rt != "float" {
+                e_f_from_int(1)
+            }
+            e_f_op(7)
+            t = "float"
+        } else {
+            e_divmod_rcx(op == "%")
+            t = "int"
+        }
     }
     return t
 }
@@ -2520,7 +2902,16 @@ fn gen_unary() -> string {
             g_pos += 1
             return "int"
         }
+        if kind() == 7 and not is_sym_at(g_pos + 1, "(") and not is_sym_at(g_pos + 1, "[") {
+            e_mov_imm(0, g_tk_num[g_pos] ^ (1 << 63))
+            g_pos += 1
+            return "float"
+        }
         let t = gen_unary()
+        if t == "float" {
+            e_f_unary(0)
+            return "float"
+        }
         need_int(t, "-")
         e_neg_rax()
         return "int"
@@ -2594,6 +2985,9 @@ fn e_var_value(name: string) -> string {
 fn gen_postfix() -> string {
     let t = ""
     let addr = false
+    if kind() == 1 and tk() == "spawn" and kind_at(g_pos + 1) == 1 and find_local("spawn") < 0 and find_global("spawn") < 0 {
+        return gen_spawn()
+    }
     if kind() == 1 {
         let name = tk()
         if is_sym_at(g_pos + 1, "(") {
@@ -2834,6 +3228,11 @@ fn gen_primary() -> string {
         e_mov_imm(0, g_tk_num[g_pos])
         g_pos += 1
         return "int"
+    }
+    if k == 7 {
+        e_mov_imm(0, g_tk_num[g_pos])
+        g_pos += 1
+        return "float"
     }
     if k == 4 {
         e_string_literal(tk())
@@ -3081,8 +3480,11 @@ fn builtin_alias(name: string) -> string {
     if name == "slop_pack" or name == "slop_unpack" or name == "run" or name == "run_status" or name == "os_name" or name == "arch_name" {
         return "__" + name
     }
-    if name == "replace" or name == "repeat" {
+    if name == "replace" or name == "repeat" or name == "lock" or name == "unlock" or name == "cpu_count" {
         return "__" + name
+    }
+    if name == "round" or name == "pow" or name == "exp" or name == "log" or name == "sin" or name == "cos" or name == "tan" or name == "atan" {
+        return "__f" + name
     }
     return ""
 }
@@ -3104,6 +3506,9 @@ fn gen_args(expected: array[string]) -> array[string] {
         }
         let t = gen_expr()
         g_want = saved_want
+        if i < len(expected) {
+            t = coerce(t, expected[i])
+        }
         to_stack(t)
         push(types, t)
         i += 1
@@ -3121,6 +3526,7 @@ fn gen_args(expected: array[string]) -> array[string] {
 
 fn gen_print(pre: string) {
     let first = true
+    call_named("__out_lock")
     if pre != "" {
         print_value(pre)
         first = false
@@ -3145,6 +3551,7 @@ fn gen_print(pre: string) {
     e_push_imm(10)
     call_named("__out_byte")
     e_add_rsp(8)
+    call_named("__out_unlock")
 }
 
 # value of type t on the stack -> written to the output
@@ -3162,6 +3569,16 @@ fn print_value(t: string) {
     if t == "bool" {
         call_named("__out_bool")
         e_add_rsp(8)
+        return
+    }
+    if t == "float" {
+        call_named("_slop_out_float")
+        e_add_rsp(8)
+        return
+    }
+    if t == "array[float]" {
+        call_named("__out_floats")
+        e_add_rsp(24)
         return
     }
     if t == "array[int]" {
@@ -3353,6 +3770,16 @@ fn gen_intrinsic(name: string, n: int) -> string {
         e_mov_imm(0, g_arch)
         return "int"
     }
+    if name == "__clone" {
+        e_clone_thread()
+        return "int"
+    }
+    if name == "__xchg" {
+        e_pop(0)
+        e_pop(1)
+        e_xchg()
+        return "int"
+    }
     if name == "__cur_bucket" {
         e_cur_bucket_rcx()
         e_mov_rr(0, 1)
@@ -3445,6 +3872,12 @@ fn intrinsic_arity(name: string) -> int {
     if name == "__store8" or name == "__store16" or name == "__store32" or name == "__store64" or name == "__alloc_in" or name == "__alloc_bytes_in" or name == "__str" {
         return 2
     }
+    if name == "__xchg" {
+        return 2
+    }
+    if name == "__clone" {
+        return 4
+    }
     if name == "unsafe_store8" or name == "unsafe_store16" or name == "unsafe_store32" or name == "unsafe_store64" {
         return 2
     }
@@ -3461,6 +3894,189 @@ fn intrinsic_arity(name: string) -> int {
         return 50
     }
     return -1
+}
+
+fn is_num_builtin(name: string) -> bool {
+    if name == "float" or name == "to_float" or name == "int" or name == "str" or name == "int_to_string" {
+        return true
+    }
+    if name == "float_bits" or name == "float_from_bits" {
+        return true
+    }
+    return name == "sqrt" or name == "floor" or name == "ceil" or name == "abs"
+}
+
+# float(x), int(x), str(x), sqrt, floor, ceil and abs work on any number
+fn gen_num_builtin(name: string, pre: string) -> string {
+    let t = pre
+    expect("(")
+    if pre == "" {
+        t = gen_expr()
+    } else {
+        from_stack(pre)
+    }
+    expect(")")
+    if name == "float_bits" {
+        if t != "float" {
+            err("float_bits needs a float, not " + t)
+        }
+        return "int"
+    }
+    if name == "float_from_bits" {
+        need_int(t, name)
+        return "float"
+    }
+    if name == "str" or name == "int_to_string" {
+        if t == "string" {
+            return t
+        }
+        need_num(t, name)
+        e_push(0)
+        if t == "float" {
+            call_named("_slop_float_to_string")
+        } else {
+            call_named("__int_to_string")
+        }
+        e_add_rsp(8)
+        take_result("string")
+        return "string"
+    }
+    if t == "string" and name != "int" and name != "float" and name != "to_float" {
+        err(name + " needs a number, not string")
+    }
+    if name == "int" {
+        if t == "string" {
+            call_named("__to_int")
+            e_add_rsp(16)
+        } else {
+            need_num(t, name)
+            if t == "float" {
+                e_f_to_int()
+            }
+        }
+        return "int"
+    }
+    if t == "string" {
+        call_named("_slop_parse_float_bits")
+        e_add_rsp(16)
+        return "float"
+    }
+    need_num(t, name)
+    if name == "abs" and t != "float" {
+        e_push(0)
+        call_named("__iabs")
+        e_add_rsp(8)
+        return "int"
+    }
+    coerce(t, "float")
+    if name == "abs" {
+        e_f_unary(1)
+    }
+    if name == "sqrt" {
+        e_f_unary(2)
+    }
+    if name == "floor" {
+        e_f_unary(3)
+    }
+    if name == "ceil" {
+        e_f_unary(4)
+    }
+    return "float"
+}
+
+# spawn f(args): runs f on a new thread; the value is the thread
+fn gen_spawn() -> string {
+    g_pos += 1
+    let name = expect_name()
+    let f = find_fn(name)
+    if f < 0 or not is_sym("(") {
+        err("spawn needs a call to one of your functions, like spawn work(1)")
+    }
+    let ptypes: array[string] = []
+    if g_fn_ptypes[f] != "" {
+        ptypes = split(g_fn_ptypes[f], ",")
+    }
+    let types = gen_args(ptypes)
+    if len(types) != len(ptypes) {
+        err(name + " takes " + int_to_string(len(ptypes)) + " arguments (" + join(ptypes, ", ") + "), got " + int_to_string(len(types)))
+    }
+    let argbytes = 0
+    for i in 0..len(types) {
+        if types[i] != ptypes[i] {
+            err(name + ": argument " + int_to_string(i + 1) + " should be " + ptypes[i] + ", got " + types[i])
+        }
+        argbytes += words(types[i]) * 8
+    }
+    if argbytes > 3072 {
+        err("spawn: too many arguments for " + name)
+    }
+    let rt = g_fn_ret[f]
+    if rt != "void" and rt != "int" and rt != "bool" and rt != "float" {
+        err("spawn: " + name + " must return int, float, bool or nothing")
+    }
+    # the code the new thread runs (skipped here)
+    let l_thread = new_label()
+    let l_over = new_label()
+    e_jmp(l_over)
+    place(l_thread)
+    e_thread_enter()
+    call_named("__thread_init")
+    let i = argbytes / 8 - 1
+    while i >= 0 {
+        e_push_mem(15, 4096 + i * 8)
+        i -= 1
+    }
+    call_named(name)
+    e_add_rsp(argbytes)
+    if rt == "void" {
+        e_mov_imm(0, 0)
+    }
+    e_store(15, 7192, 0)
+    e_thread_leave()
+    place(l_over)
+    # __thread_spawn(entry, arguments, size)
+    e_mov_rr(1, 4)
+    e_lea_label(0, l_thread)
+    e_push(0)
+    e_push(1)
+    e_push_imm(argbytes)
+    call_named("__thread_spawn")
+    e_add_rsp(24 + argbytes)
+    return "thread[" + rt + "]"
+}
+
+# join(thread) waits for it and gives its result; join(list, sep) joins text
+fn gen_join(pre: string) -> string {
+    let t = pre
+    expect("(")
+    if pre == "" {
+        t = gen_expr()
+    } else {
+        from_stack(pre)
+    }
+    if starts_with_s(t, "thread[") {
+        expect(")")
+        e_push(0)
+        call_named("__thread_join")
+        e_add_rsp(8)
+        return slice(t, 7, len(t) - 1)
+    }
+    if t != "array[string]" {
+        err("join needs a thread, or a list of strings and a separator")
+    }
+    to_stack(t)
+    if is_sym(",") {
+        g_pos += 1
+    }
+    let st = gen_expr()
+    if st != "string" {
+        err("join: the separator should be a string, not " + st)
+    }
+    expect(")")
+    call_named("__join")
+    e_add_rsp(40)
+    take_result("string")
+    return "string"
 }
 
 # pos is at '('. pre is the type of an argument already pushed (pipes and methods), or ""
@@ -3482,6 +4098,12 @@ fn gen_call(name: string, pre: string) -> string {
     if name == "print" {
         gen_print(pre)
         return "void"
+    }
+    if is_num_builtin(name) and find_fn(name) < 0 {
+        return gen_num_builtin(name, pre)
+    }
+    if name == "join" and find_fn(name) < 0 {
+        return gen_join(pre)
     }
     if (name == "__ccall" or name == "__ccall32") and pre == "" {
         expect("(")
@@ -3611,6 +4233,12 @@ fn gen_call(name: string, pre: string) -> string {
         push(rest, ptypes[k])
         k += 1
     }
+    if pre != "" and len(ptypes) > 0 and ptypes[0] == "float" and (pre == "int" or pre == "bool") {
+        e_pop(0)
+        e_f_from_int(0)
+        e_push(0)
+        pre = "float"
+    }
     let types = gen_args(rest)
     let all: array[string] = []
     if pre != "" {
@@ -3674,6 +4302,7 @@ fn store_var(name: string, t: string, declare: bool) {
         li = find_local(name)
     }
     if li >= 0 {
+        t = coerce(t, g_lc_type[li])
         if g_lc_type[li] != t {
             err("'" + name + "' holds " + g_lc_type[li] + ", cannot assign " + t)
         }
@@ -3682,6 +4311,7 @@ fn store_var(name: string, t: string, declare: bool) {
     }
     let gi = find_global(name)
     if gi >= 0 and (not declare or g_in_top) {
+        t = coerce(t, g_gl_type[gi])
         if g_gl_type[gi] != t {
             err("'" + name + "' holds " + g_gl_type[gi] + ", cannot assign " + t)
         }
@@ -3731,7 +4361,7 @@ fn gen_let() {
     expect("=")
     let saved_want = g_want
     g_want = t
-    let vt = gen_expr()
+    let vt = coerce(gen_expr(), t)
     g_want = saved_want
     if t != "" and vt != t {
         err("'" + name + "' is declared as " + t + " but given " + vt)
@@ -3800,7 +4430,7 @@ fn gen_assign() {
         g_pos = after + 1
         let saved_want = g_want
         g_want = lt
-        vt = gen_expr()
+        vt = coerce(gen_expr(), lt)
         g_want = saved_want
     } else {
         g_pos = lhs_at
@@ -3815,21 +4445,38 @@ fn gen_assign() {
             e_add_rsp(32)
             take_result("string")
         } else {
-            need_int(vt, op)
+            need_num(vt, op)
             e_push(0)
-            need_int(gen_expr(), op)
+            let rt = gen_expr()
+            need_num(rt, op)
             e_mov_rr(1, 0)
             e_pop(0)
-            if op == "+=" {
+            if vt == "float" {
+                if rt != "float" {
+                    e_f_from_int(1)
+                }
+                let fops = [0, 1, 6, 7]
+                let names = ["+=", "-=", "*=", "/="]
+                for k in 0..4 {
+                    if op == names[k] {
+                        e_f_op(fops[k])
+                    }
+                }
+            } else {
+                if rt == "float" {
+                    err("cannot store a float in " + name + " (int); use int()")
+                }
+            }
+            if vt != "float" and op == "+=" {
                 e_op_rcx(0)
             }
-            if op == "-=" {
+            if vt != "float" and op == "-=" {
                 e_op_rcx(1)
             }
-            if op == "*=" {
+            if vt != "float" and op == "*=" {
                 e_op_rcx(6)
             }
-            if op == "/=" {
+            if vt != "float" and op == "/=" {
                 e_divmod_rcx(false)
             }
         }
@@ -4038,7 +4685,7 @@ fn gen_return() {
     }
     g_lit_end = -1
     let start = g_code_len
-    let t = gen_expr()
+    let t = coerce(gen_expr(), g_cur_ret)
     if t != g_cur_ret {
         err("should return " + g_cur_ret + ", not " + t)
     }
@@ -4372,7 +5019,7 @@ fn runtime_source() -> string {
     if g_target == 3 {
         os = embed("runtime/windows.slop")
     }
-    return embed("runtime/core.slop") + os
+    return embed("runtime/core.slop") + embed("runtime/numbers.slop") + embed("runtime/math.slop") + os
 }
 
 fn import_index(name: string) -> int {
@@ -4410,7 +5057,8 @@ fn e_ccall(name: string, n: int) {
         a_sub_imm(16, 16, 16)
         a32(2432696832 + 31)
         if name == "open" and n == 3 {
-            a32(4177527793)
+            # str x2, [sp]
+            a32(4177527778)
         }
         a_adr_fixup(16, 14, idx)
         a32(3594453504)
@@ -4570,7 +5218,7 @@ fn resolve_fixups(code_addr: int, ro_addr: int, data_addr: int, imp_addr: array[
         let kind = g_fx_kind[i]
         let val = g_fx_val[i]
         let target = 0
-        if kind == 0 or kind == 10 or kind == 11 {
+        if kind == 0 or kind == 10 or kind == 11 or kind == 15 {
             target = g_lbl[val]
             if target < 0 {
                 print("internal error: unplaced label")
@@ -4599,7 +5247,11 @@ fn resolve_fixups(code_addr: int, ro_addr: int, data_addr: int, imp_addr: array[
         if kind == 11 {
             patch32(at, read32(at) + ((target - at) / 4 & 524287) * 32)
         }
-        if kind >= 12 {
+        if kind == 15 {
+            let d = target - at
+            patch32(at, read32(at) + (d & 3) * 536870912 + (d / 4 & 524287) * 32)
+        }
+        if kind >= 12 and kind <= 14 {
             # adrp: distance in 4 KB pages; then the low 12 bits in add/ldr
             let pages = target / 4096 - (code_addr + at) / 4096
             if pages < 0 {

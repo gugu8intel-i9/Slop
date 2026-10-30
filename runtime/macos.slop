@@ -6,19 +6,50 @@ fn __os_name() -> string {
 }
 
 fn __rt_init() {
-    for b in 0..3 {
-        size = 17179869184
-        p = -1
-        while p == -1 and size >= 16777216 {
-            # PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON|MAP_NORESERVE
-            p = __ccall("mmap", 0, size, 3, 4162, -1, 0)
-            if p == -1 {
-                size = size / 4
-            }
-        }
-        __store64(__data() + 16 + b * 8, p)
-        __store64(__data() + 40 + b * 8, p + size)
+    __init_buckets(17179869184, 17179869184)
+}
+
+# address space that gets memory when touched; 0 if there is none
+fn __os_reserve(size: int) -> int {
+    # PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON|MAP_NORESERVE
+    p = __ccall("mmap", 0, size, 3, 4162, -1, 0)
+    if p == -1 {
+        return 0
     }
+    return p
+}
+
+fn __os_alloc(size: int) -> int {
+    return __os_reserve(size)
+}
+
+fn __os_release(p: int, size: int) {
+    __ccall("munmap", p, size)
+}
+
+fn __os_commit_on_grow() -> bool {
+    return false
+}
+
+# ---------- threads ----------
+fn __os_thread_start(block: int, entry: int) -> bool {
+    attr = block + 7256
+    __ccall("pthread_attr_init", attr)
+    __ccall("pthread_attr_setstacksize", attr, 67108864)
+    return __ccall32("pthread_create", block + 7184, attr, entry, block) == 0
+}
+
+fn __os_thread_join(block: int) {
+    __ccall("pthread_join", __load64(block + 7184), 0)
+}
+
+fn __cpu_count() -> int {
+    # sysconf(_SC_NPROCESSORS_ONLN)
+    n = __ccall("sysconf", 58)
+    if n < 1 {
+        return 1
+    }
+    return n
 }
 
 fn __grow(b: int, need: int) {
