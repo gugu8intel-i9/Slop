@@ -60,6 +60,7 @@ bin/slop install
 | `slop add NAME` / `slop remove NAME` | adds or removes a package (see below) |
 | `slop list` / `slop search [word]` | shows your packages / finds packages |
 | `slop std [NAME]` | lists the standard library / shows one module |
+| `slop convert hello.rs` | turns code in another language into Slop (see below) |
 | `slop sync` / `slop update` | gets missing packages / gets the newest versions |
 | `slop version` / `slop help` | shows the version / all commands |
 | `--target SYSTEM` | builds for another system from any system: `linux`, `linux-arm64`, `macos`, `macos-arm64`, `windows`, `windows-arm64` |
@@ -199,6 +200,7 @@ Run `bin/slop run examples/benchmark.slop` to time a few more workloads on your 
 | `runtime/` | the runtime built into every program: `core.slop` plus one file per system |
 | `bin/` | the compiler for each system (`slop`, `slop-linux-arm64`, `slop-macos`, `slop-macos-arm64`, `slop.exe`, `slop-windows-arm64.exe`) |
 | `std/` | the standard library, in Slop |
+| `tools/convert.slop` | `slop convert`, in Slop |
 | `packages/` | the package list and the packages that come with Slop (`stats`, `text`, `colors`) |
 | `examples/` | example programs |
 | `tests/` | the test suite (`bin/slop run tests/run.slop`) |
@@ -237,6 +239,32 @@ bin/slop run tests/run.slop
 ```
 
 The tests check that the compiler reproduces itself byte for byte and that all six compilers in `bin/` match the source. GitHub Actions runs them on Linux, macOS and Windows, on both Intel/AMD and ARM64, for every push.
+
+## Bring code from other languages
+
+`slop convert` reads a program written in Rust, C, C++, Java, C#, JavaScript, TypeScript, Go, Kotlin, Swift or Python and writes the Slop version next to it:
+
+```rust
+fn main() {
+    println!("Hello");
+}
+```
+
+```bash
+slop convert hello.rs
+```
+
+```slop
+# converted from hello.rs by slop convert
+fn main() {
+    print("Hello")
+}
+```
+
+- It translates functions, variables and types, printing (`println!`, `printf`, `cout`, `System.out.println`, `console.log`, `fmt.Println`, f-strings, `${}` and `{}` formats), if/else, loops (including C-style `for`), `switch`/`match`, `a ? b : c`, structs (and Rust `impl` and Go methods), and common string and list methods.
+- Anything it cannot translate (classes, pointers, exceptions, closures, ...) is kept as a `# TODO:` comment, so nothing is lost silently.
+- It then checks the result and says whether it builds. Python and JavaScript have no types, so it guesses them from how the code uses its values; the line says so when it guessed.
+- The language comes from the file's extension; `--from python` (or `rust`, `c`, `cpp`, `java`, `csharp`, `js`, `go`, `kotlin`, `swift`) sets it by hand. `-o name.slop` picks the output file.
 
 ## Standard library
 

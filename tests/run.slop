@@ -255,6 +255,29 @@ if run_status() == 0 and not contains(read_file("slop.pkg"), "stats") {
 remove_file("slop.pkg")
 remove_file("slop-test-pkg.slop")
 
+# 7. slop convert: programs in other languages become Slop that prints the same
+converted = ["hello.rs", "demo.rs", "match.rs", "demo.c", "switch.c", "demo.cpp", "Demo.java", "Demo.cs", "demo.js", "demo.go", "demo.py", "classes.py", "demo.kt", "demo.swift"]
+for f in converted {
+    src = "tests/convert/" + f
+    out = "slop-test-conv.slop"
+    log = run(stage, [stage, "convert", src, "-o", out])
+    exe = tmp("conv")
+    if run_status() != 0 or not file_exists(out) {
+        fail("slop convert " + f + ":\n" + log)
+    } else {
+        if build(out, exe) {
+            got = run_program(exe)
+            want = read_file(src + ".out")
+            if got == want {
+                ok("slop convert " + f)
+            } else {
+                fail("converted " + f + " printed:\n" + got + "\nexpected:\n" + want)
+            }
+        }
+    }
+}
+remove_file("slop-test-conv.slop")
+
 print("")
 print(int_to_string(passed) + " passed, " + int_to_string(failures) + " failed")
 if failures > 0 {
