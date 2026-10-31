@@ -1,5 +1,5 @@
 # A tiny neural network that knows XOR, run with the npu module: on the NPU
-# when there is one (Apple Neural Engine, Intel NPU), else the GPU or CPU.
+# when there is one (Apple, Intel, Qualcomm or AMD), else the GPU or CPU.
 use "npu"
 
 fn main() {

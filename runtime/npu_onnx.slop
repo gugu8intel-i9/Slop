@@ -1,0 +1,400 @@
+# the npu module on Windows and Linux, part 2: AMD (Ryzen AI) and Qualcomm
+# (Snapdragon) NPUs through ONNX Runtime, with its VitisAI or QNN provider.
+# SLOP_ONNXRUNTIME names the library file if it is not on the usual path.
+__ort_state = 0
+__ort_api = 0
+__ort_env = 0
+__ort_mem = 0
+__ort_ep = 0
+__ort_backend = 0
+__ort_kind = 0
+__ort_cache = 0
+__ort_cached = 0
+__ort_tmp = 0
+
+# which NPU library the npu module uses: 1 OpenVINO, 2 ONNX Runtime, -1 none
+# (SLOP_NPU_BACKEND=openvino or onnxruntime picks one)
+__npu_which = 0
+
+fn __npu_backend() -> int {
+    if __npu_which != 0 {
+        return __npu_which
+    }
+    __npu_which = -1
+    forced = __env("SLOP_NPU_BACKEND")
+    if forced != "onnxruntime" and __ov_init() {
+        __npu_which = 1
+    } else if forced != "openvino" and __ort_init() {
+        __npu_which = 2
+    }
+    return __npu_which
+}
+
+fn __npu_dense(x: array[float], w: array[float], bias: array[float], m: int, k: int, n: int, act: int, out: array[float]) -> bool {
+    if not __gpu_thread_ok() {
+        return false
+    }
+    b = __npu_backend()
+    if b == 1 {
+        return __ov_dense(x, w, bias, m, k, n, act, out)
+    }
+    if b == 2 {
+        return __ort_dense(x, w, bias, m, k, n, act, out)
+    }
+    return false
+}
+
+# the NPU's name, or "" when there is none
+fn __npu_name() -> string {
+    if not __gpu_thread_ok() {
+        return ""
+    }
+    b = __npu_backend()
+    if b == 1 {
+        return __ov_name()
+    }
+    if b == 2 {
+        if __ort_kind == 1 {
+            return "Qualcomm NPU"
+        }
+        if __ort_kind == 2 {
+            return "AMD NPU"
+        }
+        if __ort_kind == 3 {
+            return "ONNX Runtime QNN CPU"
+        }
+        return "ONNX Runtime CPU"
+    }
+    return ""
+}
+
+fn __ort_fn(i: int) -> int {
+    return __load64(__ort_api + i * 8)
+}
+
+# a C string kept for the whole run
+fn __ort_keep(s: string) -> int {
+    p = __alloc_bytes_in(2, len(s) + 1)
+    __memcpy(p, __str_ptr(s), len(s))
+    __store8(p + len(s), 0)
+    return p
+}
+
+# an error from ONNX Runtime (and lets it go); "" for none
+fn __ort_status(st: int) -> string {
+    if st == 0 {
+        return ""
+    }
+    c = __ccall_ptr(__ort_fn(2), st)
+    # copy it: the text goes away with the status
+    n = __strlen(c)
+    p = __alloc_bytes(n + 1)
+    __memcpy(p, c, n)
+    __ccall_ptr(__ort_fn(93), st)
+    return __str(p, n)
+}
+
+fn __ort_init() -> bool {
+    if __ort_state != 0 {
+        return __ort_state == 1
+    }
+    __ort_state = -1
+    lib = 0
+    path = __env("SLOP_ONNXRUNTIME")
+    if path != "" {
+        lib = __dl_load(path)
+    }
+    if lib == 0 {
+        lib = __dl_open("onnxruntime")
+    }
+    if lib == 0 {
+        return false
+    }
+    get_base = __dl_sym(lib, "OrtGetApiBase")
+    if get_base == 0 {
+        return false
+    }
+    base = __ccall_ptr(get_base)
+    # API version 16 (ONNX Runtime 1.16 and later)
+    __ort_api = __ccall_ptr(__load64(base), 16)
+    if __ort_api == 0 {
+        return false
+    }
+    __ort_tmp = __alloc_bytes_in(2, 64)
+    t = __ort_tmp
+    # ORT_LOGGING_LEVEL_ERROR
+    if __ort_status(__ccall_ptr(__ort_fn(3), 3, __cstr("slop"), t)) != "" {
+        return false
+    }
+    __ort_env = __load64(t)
+    # CPU memory for inputs: arena allocator, default memory
+    if __ort_status(__ccall_ptr(__ort_fn(69), 1, 0, t)) != "" {
+        return false
+    }
+    __ort_mem = __load64(t)
+    # which provider: QNN (Qualcomm), VitisAI (AMD), or the CPU for tests
+    if __ort_status(__ccall_ptr(__ort_fn(125), t, t + 8)) != "" {
+        return false
+    }
+    list = __load64(t)
+    count = __load32(t + 8)
+    has_qnn = false
+    has_vitis = false
+    for i in 0..count {
+        c = __load64(list + i * 8)
+        name = __str(c, __strlen(c))
+        if name == "QNNExecutionProvider" {
+            has_qnn = true
+        }
+        if name == "VitisAIExecutionProvider" {
+            has_vitis = true
+        }
+    }
+    __ccall_ptr(__ort_fn(126), list, count)
+    want = __env("SLOP_NPU_DEVICE")
+    dir = ""
+    if path != "" {
+        cut = len(path)
+        while cut > 0 and __char_at(path, cut - 1) != "/" and __char_at(path, cut - 1) != "\\" {
+            cut -= 1
+        }
+        dir = __slice(path, 0, cut)
+    }
+    so = ".so"
+    pre = "lib"
+    if __os_name() == "windows" {
+        so = ".dll"
+        pre = ""
+    }
+    if want == "CPU" {
+        __ort_kind = 0
+    } else if want == "QNN-CPU" and has_qnn {
+        # QNN's CPU backend: the Qualcomm path, tested without the NPU
+        __ort_kind = 3
+        __ort_ep = __ort_keep("QNN")
+        __ort_backend = __ort_keep(dir + pre + "QnnCpu" + so)
+    } else if has_qnn and want == "" {
+        __ort_kind = 1
+        __ort_ep = __ort_keep("QNN")
+        __ort_backend = __ort_keep(dir + pre + "QnnHtp" + so)
+    } else if has_vitis and want == "" {
+        __ort_kind = 2
+        __ort_ep = __ort_keep("VitisAI")
+    } else {
+        return false
+    }
+    __ort_cache = __alloc_bytes_in(2, 40 * 256)
+    __ort_state = 1
+    return true
+}
+
+fn __pb_varint(v: int) -> string {
+    s = ""
+    while v >= 128 {
+        s = s + __chr(v % 128 + 128)
+        v = v / 128
+    }
+    return s + __chr(v)
+}
+
+fn __pb_bytes(field: int, payload: string) -> string {
+    return __pb_varint(field * 8 + 2) + __pb_varint(len(payload)) + payload
+}
+
+fn __pb_int(field: int, v: int) -> string {
+    return __pb_varint(field * 8) + __pb_varint(v)
+}
+
+# a float tensor input or output called name, with these sizes (ONNX)
+fn __onnx_value(name: string, dims: array[int]) -> string {
+    shape = ""
+    for d in dims {
+        shape = shape + __pb_bytes(1, __pb_int(1, d))
+    }
+    tensor = __pb_int(1, 1) + __pb_bytes(2, shape)
+    return __pb_bytes(1, name) + __pb_bytes(2, __pb_bytes(1, tensor))
+}
+
+fn __onnx_node(op: string, inputs: array[string], output: string) -> string {
+    s = ""
+    for i in inputs {
+        s = s + __pb_bytes(1, i)
+    }
+    return __pb_bytes(1, s + __pb_bytes(2, output) + __pb_bytes(3, output) + __pb_bytes(4, op))
+}
+
+# the network as an ONNX model: x times w, plus bias, then the activation
+fn __onnx_model(m: int, k: int, n: int, has_bias: bool, act: int) -> string {
+    last = "out"
+    if has_bias or act > 0 {
+        last = "mm"
+    }
+    graph = __onnx_node("MatMul", ["x", "w"], last)
+    if has_bias {
+        to = "out"
+        if act > 0 {
+            to = "sum"
+        }
+        graph = graph + __onnx_node("Add", [last, "b"], to)
+        last = to
+    }
+    if act > 0 {
+        op = "Relu"
+        if act == 2 {
+            op = "Sigmoid"
+        }
+        if act == 3 {
+            op = "Tanh"
+        }
+        graph = graph + __onnx_node(op, [last], "out")
+    }
+    graph = graph + __pb_bytes(2, "slop") + __pb_bytes(11, __onnx_value("x", [m, k])) + __pb_bytes(11, __onnx_value("w", [k, n]))
+    if has_bias {
+        graph = graph + __pb_bytes(11, __onnx_value("b", [n]))
+    }
+    graph = graph + __pb_bytes(12, __onnx_value("out", [m, n]))
+    # IR version 7, operator set 13
+    return __pb_int(1, 7) + __pb_bytes(2, "slop") + __pb_bytes(7, graph) + __pb_bytes(8, __pb_int(2, 13))
+}
+
+# the session for this shape (made once); -1 if the NPU refused it
+fn __ort_session(m: int, k: int, n: int, has_bias: bool, act: int) -> int {
+    kind = act * 2
+    if has_bias {
+        kind += 1
+    }
+    for i in 0..__ort_cached {
+        c = __ort_cache + i * 40
+        if __load64(c) == m and __load64(c + 8) == k and __load64(c + 16) == n and __load64(c + 24) == kind {
+            return __load64(c + 32)
+        }
+    }
+    t = __ort_tmp
+    session = -1
+    msg = __ort_status(__ccall_ptr(__ort_fn(10), t))
+    if msg == "" {
+        opts = __load64(t)
+        if __ort_ep != 0 {
+            # all of it on the NPU, or not at all
+            msg = __ort_status(__ccall_ptr(__ort_fn(130), opts, __cstr("session.disable_cpu_ep_fallback"), __cstr("1")))
+            keys = t + 16
+            vals = t + 24
+            nk = 0
+            if __ort_backend != 0 {
+                __store64(keys, __cstr("backend_path"))
+                __store64(vals, __ort_backend)
+                nk = 1
+            } else {
+                cfg = __env("SLOP_VITISAI_CONFIG")
+                if cfg != "" {
+                    __store64(keys, __cstr("config_file"))
+                    __store64(vals, __cstr(cfg))
+                    nk = 1
+                }
+            }
+            if msg == "" {
+                msg = __ort_status(__ccall_ptr(__ort_fn(216), opts, __ort_ep, keys, vals, nk))
+            }
+        }
+        if msg == "" {
+            model = __onnx_model(m, k, n, has_bias, act)
+            msg = __ort_status(__ccall_ptr(__ort_fn(8), __ort_env, __str_ptr(model), len(model), opts, t))
+            if msg == "" {
+                session = __load64(t)
+            }
+        }
+        __ccall_ptr(__ort_fn(100), opts)
+    }
+    if session == -1 {
+        __eprint("Slop: the NPU could not take this network, so it runs on the GPU or CPU: " + msg)
+    }
+    if __ort_cached < 256 {
+        c = __ort_cache + __ort_cached * 40
+        __store64(c, m)
+        __store64(c + 8, k)
+        __store64(c + 16, n)
+        __store64(c + 24, kind)
+        __store64(c + 32, session)
+        __ort_cached += 1
+    }
+    return session
+}
+
+# a float tensor over memory at p with these sizes; 0 on failure
+fn __ort_tensor(p: int, count: int, dims: array[int]) -> int {
+    shape = __alloc_bytes(8 * len(dims))
+    for i in 0..len(dims) {
+        __store64(shape + i * 8, dims[i])
+    }
+    t = __alloc_bytes(8)
+    # ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
+    if __ort_status(__ccall_ptr(__ort_fn(49), __ort_mem, p, count * 4, shape, len(dims), 1, t)) != "" {
+        return 0
+    }
+    return __load64(t)
+}
+
+fn __ort_floats(xs: array[float]) -> int {
+    p = __alloc_bytes(len(xs) * 4 + 16)
+    for i in 0..len(xs) {
+        __store32(p + i * 4, __f64_to_f32(float_bits(xs[i])))
+    }
+    return p
+}
+
+fn __ort_dense(x: array[float], w: array[float], bias: array[float], m: int, k: int, n: int, act: int, out: array[float]) -> bool {
+    has_bias = len(bias) > 0
+    session = __ort_session(m, k, n, has_bias, act)
+    if session == -1 {
+        return false
+    }
+    names = __alloc_bytes(24)
+    vals = __alloc_bytes(24)
+    __store64(names, __cstr("x"))
+    __store64(vals, __ort_tensor(__ort_floats(x), m * k, [m, k]))
+    __store64(names + 8, __cstr("w"))
+    __store64(vals + 8, __ort_tensor(__ort_floats(w), k * n, [k, n]))
+    count = 2
+    if has_bias {
+        __store64(names + 16, __cstr("b"))
+        __store64(vals + 16, __ort_tensor(__ort_floats(bias), n, [n]))
+        count = 3
+    }
+    ok = true
+    for i in 0..count {
+        if __load64(vals + i * 8) == 0 {
+            ok = false
+        }
+    }
+    outname = __alloc_bytes(8)
+    __store64(outname, __cstr("out"))
+    outv = __alloc_bytes(8)
+    __store64(outv, 0)
+    if ok {
+        msg = __ort_status(__ccall_ptr(__ort_fn(9), session, 0, names, vals, count, outname, 1, outv))
+        if msg != "" {
+            __eprint("Slop: the NPU could not run this network: " + msg)
+            ok = false
+        }
+    }
+    if ok {
+        t = __alloc_bytes(8)
+        if __ort_status(__ccall_ptr(__ort_fn(51), __load64(outv), t)) == "" {
+            p = __load64(t)
+            for i in 0..m * n {
+                out[i] = float_from_bits(__f32_to_f64(__load32(p + i * 4)))
+            }
+        } else {
+            ok = false
+        }
+    }
+    if __load64(outv) != 0 {
+        __ccall_ptr(__ort_fn(96), __load64(outv))
+    }
+    for i in 0..count {
+        if __load64(vals + i * 8) != 0 {
+            __ccall_ptr(__ort_fn(96), __load64(vals + i * 8))
+        }
+    }
+    return ok
+}

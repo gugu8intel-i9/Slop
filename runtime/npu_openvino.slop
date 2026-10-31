@@ -203,10 +203,7 @@ fn __ov_floats(xs: array[float]) -> int {
     return p
 }
 
-fn __npu_dense(x: array[float], w: array[float], bias: array[float], m: int, k: int, n: int, act: int, out: array[float]) -> bool {
-    if not __gpu_thread_ok() or not __ov_init() {
-        return false
-    }
+fn __ov_dense(x: array[float], w: array[float], bias: array[float], m: int, k: int, n: int, act: int, out: array[float]) -> bool {
     has_bias = len(bias) > 0
     req = __ov_request(m, k, n, has_bias, act)
     if req == -1 {
@@ -247,11 +244,7 @@ fn __npu_dense(x: array[float], w: array[float], bias: array[float], m: int, k: 
     return ok
 }
 
-# the NPU's name, or "" when there is none
-fn __npu_name() -> string {
-    if not __gpu_thread_ok() or not __ov_init() {
-        return ""
-    }
+fn __ov_name() -> string {
     if __ov_is_npu {
         return "Intel NPU"
     }
