@@ -1,0 +1,68 @@
+# matrix: fast matrix math
+#   use "matrix"
+#
+#   c = matmul(a, b, m, k, n)     # a is m x k, b is k x n, c is m x n
+#
+# Lists hold the numbers row after row. matmul uses the computer's own tuned
+# math library when there is one (Accelerate on macOS, which uses Apple's
+# matrix units; OpenBLAS or MKL on Linux and Windows), and otherwise Slop's
+# own: blocks that fit the CPU caches, all cores, two numbers per instruction.
+# Results are full 64-bit floats either way.
+
+fn matmul(a: array[float], b: array[float], m: int, k: int, n: int) -> array[float] {
+    if m < 1 or k < 1 or n < 1 or len(a) != m * k or len(b) != k * n {
+        eprint("matmul: the lists do not match the sizes m=" + str(m) + " k=" + str(k) + " n=" + str(n) + " (a needs m*k numbers, b needs k*n)")
+        exit(1)
+    }
+    let c: array[float] = []
+    for i in 0..m * n {
+        push(c, 0.0)
+    }
+    let pa = __load64(addr_of(a))
+    let pb = __load64(addr_of(b))
+    let pc = __load64(addr_of(c))
+    if __blas_dgemm(pa, pb, pc, m, k, n) {
+        return c
+    }
+    # rows are shared out in groups; each group goes through b in blocks
+    # small enough to stay in the cache while every row of the group uses them
+    let rows = 16
+    let kb = 128
+    let nb = 512
+    let groups = (m + rows - 1) / rows
+    parallel for g in 0..groups {
+        let i0 = g * rows
+        let i1 = i0 + rows
+        if i1 > m {
+            i1 = m
+        }
+        let k0 = 0
+        while k0 < k {
+            let k1 = k0 + kb
+            if k1 > k {
+                k1 = k
+            }
+            let j0 = 0
+            while j0 < n {
+                let w = nb
+                if j0 + w > n {
+                    w = n - j0
+                }
+                for i in i0..i1 {
+                    let row = pc + (i * n + j0) * 8
+                    for q in k0..k1 {
+                        __axpy(row, pb + (q * n + j0) * 8, float_bits(a[i * k + q]), w)
+                    }
+                }
+                j0 += nb
+            }
+            k0 = k1
+        }
+    }
+    return c
+}
+
+# the name of the math library matmul uses, or "" for Slop's own
+fn matmul_library() -> string {
+    return __blas_name()
+}

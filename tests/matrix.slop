@@ -1,0 +1,52 @@
+# matrix: matmul against plain loops, with odd sizes (leftovers in every block)
+use "matrix"
+
+fn plain(a: array[float], b: array[float], m: int, k: int, n: int) -> array[float] {
+    let c: array[float] = []
+    for i in 0..m {
+        for j in 0..n {
+            let s = 0.0
+            for q in 0..k {
+                s += a[i * k + q] * b[q * n + j]
+            }
+            push(c, s)
+        }
+    }
+    return c
+}
+
+fn check(m: int, k: int, n: int) {
+    let a: array[float] = []
+    let b: array[float] = []
+    for i in 0..m * k {
+        push(a, float(i % 11) * 0.3 - 1.1)
+    }
+    for i in 0..k * n {
+        push(b, float(i % 13) * 0.7 - 2.0)
+    }
+    let c = matmul(a, b, m, k, n)
+    let d = plain(a, b, m, k, n)
+    let worst = 0.0
+    let total = 0.0
+    for i in 0..m * n {
+        let diff = abs(c[i] - d[i])
+        if diff > worst {
+            worst = diff
+        }
+        total += d[i]
+    }
+    let verdict = "ok"
+    if worst > 0.000000001 * (1.0 + abs(total)) {
+        verdict = "WRONG by " + str(worst)
+    }
+    print(str(m) + "x" + str(k) + " * " + str(k) + "x" + str(n) + ": " + verdict + ", sum " + str(round(total * 1000.0) / 1000.0))
+}
+
+fn main() {
+    check(1, 1, 1)
+    check(3, 5, 2)
+    check(37, 53, 29)
+    check(64, 64, 64)
+    check(17, 300, 1031)
+    check(130, 7, 515)
+}

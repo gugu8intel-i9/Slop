@@ -908,3 +908,16 @@ fn __npu_name() -> string {
     }
     return "Apple Neural Engine"
 }
+
+# ---------- system libraries (for BLAS) ----------
+fn __dl_load(file: string) -> int {
+    return __ccall("dlopen", __cstr(file), 2)
+}
+
+fn __dl_sym(lib: int, name: string) -> int {
+    return __ccall("dlsym", lib, __cstr(name))
+}
+
+fn __gpu_thread_ok() -> bool {
+    return true
+}

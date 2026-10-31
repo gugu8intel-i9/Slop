@@ -1,0 +1,67 @@
+# Multiplies two big matrices with the matrix module and shows how fast it
+# was, next to plain loops on all cores.   slop run examples/matmul.slop 1024
+use "matrix"
+use "time"
+
+fn plain(a: array[float], b: array[float], n: int) -> array[float] {
+    let c: array[float] = []
+    for i in 0..n * n {
+        push(c, 0.0)
+    }
+    parallel for i in 0..n {
+        for j in 0..n {
+            let s = 0.0
+            for q in 0..n {
+                s += a[i * n + q] * b[q * n + j]
+            }
+            c[i * n + j] = s
+        }
+    }
+    return c
+}
+
+fn gflops(n: int, ms: int) -> string {
+    if ms < 1 {
+        ms = 1
+    }
+    let g = 2.0 * float(n) * float(n) * float(n) / float(ms) / 1000000.0
+    return str(round(g * 10.0) / 10.0) + " GFLOP/s"
+}
+
+fn main(args: array[string]) {
+    let n = 512
+    if len(args) > 1 {
+        n = to_int(args[1])
+    }
+    let a: array[float] = []
+    let b: array[float] = []
+    for i in 0..n * n {
+        push(a, float(i % 7) * 0.5 - 1.25)
+        push(b, float(i % 5) * 0.75 - 1.0)
+    }
+    let t = now_ms()
+    let c = matmul(a, b, n, n, n)
+    let ms = now_ms() - t
+    let lib = matmul_library()
+    if lib == "" {
+        lib = "Slop's own"
+    }
+    print(str(n) + " x " + str(n) + " matmul with " + lib + ": " + str(ms) + " ms, " + gflops(n, ms))
+    if n <= 1024 {
+        t = now_ms()
+        let d = plain(a, b, n)
+        let ms2 = now_ms() - t
+        let worst = 0.0
+        for i in 0..n * n {
+            if abs(c[i] - d[i]) > worst {
+                worst = abs(c[i] - d[i])
+            }
+        }
+        print("plain loops on all cores: " + str(ms2) + " ms, " + gflops(n, ms2))
+        if worst < 0.000001 {
+            print("same answers")
+        } else {
+            print("answers differ by " + str(worst))
+        }
+    }
+}

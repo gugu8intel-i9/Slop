@@ -1,7 +1,7 @@
 # npu: neural network math on the NPU (the chip for AI in newer computers)
 #   use "npu"
 #
-#   out = matmul(a, b, m, k, n)                 # a is m x k, b is k x n
+#   out = npu_matmul(a, b, m, k, n)             # a is m x k, b is k x n
 #   out = dense(x, w, bias, m, k, n, "relu")    # one network layer
 #   print(npu_name())                           # "" when there is no NPU
 #
@@ -10,6 +10,7 @@
 # and AMD NPUs (ONNX Runtime with its QNN or VitisAI provider).
 # Without one, the same math runs on the GPU (gpu for), or else the CPU.
 # NPUs compute with 16-bit floats: expect about 3 correct digits.
+use "matrix.slop"
 
 # the NPU's name, or "" when there is none
 fn npu_name() -> string {
@@ -17,7 +18,7 @@ fn npu_name() -> string {
 }
 
 # a (m x k) times b (k x n): an m x n list
-fn matmul(a: array[float], b: array[float], m: int, k: int, n: int) -> array[float] {
+fn npu_matmul(a: array[float], b: array[float], m: int, k: int, n: int) -> array[float] {
     let none: array[float] = []
     return dense(a, b, none, m, k, n, "")
 }
@@ -50,6 +51,33 @@ fn dense(x: array[float], w: array[float], bias: array[float], m: int, k: int, n
         push(out, 0.0)
     }
     if __npu_dense(x, w, bias, m, k, n, act, out) {
+        return out
+    }
+    if gpu_name() == "" {
+        # no GPU either: the fast CPU multiply (or the system's BLAS), then
+        # the bias and the activation
+        let prod = matmul(x, w, m, k, n)
+        for p in 0..m * n {
+            let s = prod[p]
+            if has_bias {
+                s += bias[p % n]
+            }
+            if act == 1 and s < 0.0 {
+                s = 0.0
+            }
+            if act == 2 {
+                s = 1.0 / (1.0 + exp(-s))
+            }
+            if act == 3 {
+                let t = exp(-2.0 * abs(s))
+                let r = (1.0 - t) / (1.0 + t)
+                if s < 0.0 {
+                    r = -r
+                }
+                s = r
+            }
+            out[p] = s
+        }
         return out
     }
     let b = bias

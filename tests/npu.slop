@@ -13,7 +13,7 @@ fn show(xs: array[float]) {
 fn main() {
     let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
     let b = [1.0, 0.5, -1.0, 2.0, 0.0, 1.0]
-    show(matmul(a, b, 2, 3, 2))
+    show(npu_matmul(a, b, 2, 3, 2))
     show(dense(a, b, [0.5, -10.0], 2, 3, 2, ""))
     show(dense(a, b, [0.5, -10.0], 2, 3, 2, "relu"))
     show(dense([0.0, 1.0, -1.0], [1.0], [], 3, 1, 1, "sigmoid"))
@@ -27,7 +27,7 @@ fn main() {
         push(w, float(i % 5) * 0.25)
     }
     for r in 0..2 {
-        let y = matmul(x, w, n, n, n)
+        let y = npu_matmul(x, w, n, n, n)
         let total = 0.0
         for v in y {
             total += v
