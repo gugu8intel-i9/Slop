@@ -602,11 +602,25 @@ fn tls_check_chain(chain: array[X509Cert], host: string) -> string {
 }
 
 # ---------- keys ----------
+# a server's certificate chain and private key: ECDSA (curve, d) or RSA (rsa)
 struct TlsKey {
     ok: bool,
     curve: string,
     d: array[int],
-    chain: array[array[int]]
+    chain: array[array[int]],
+    kind: string,
+    rsa: RsaKey
+}
+
+# the numbers of a PKCS#1 RSAPrivateKey { version, n, e, d, p, q, dp, dq, qinv }
+fn __rsa_key(b: array[int]) -> RsaKey {
+    top = der_at(b, 0)
+    it = der_items(b, top[1], top[3])
+    if len(it) < 9 {
+        e: array[int] = []
+        return RsaKey(e, e, e, e, e, e, e, e)
+    }
+    return RsaKey(der_content(b, it[1]), der_content(b, it[2]), der_content(b, it[3]), der_content(b, it[4]), der_content(b, it[5]), der_content(b, it[6]), der_content(b, it[7]), der_content(b, it[8]))
 }
 
 # reads a certificate file (the chain, PEM) and its private key (PEM: EC or PKCS#8)
@@ -616,13 +630,22 @@ fn tls_load_key(cert_path: string, key_path: string) -> TlsKey {
     e: array[int] = []
     curve = ""
     d = e
+    kind = ""
+    rsa = RsaKey(e, e, e, e, e, e, e, e)
     for blk in pem_blocks(kt, "PRIVATE KEY") {
-        # PKCS#8: { version, { ecPublicKey, curve }, OCTET STRING { EC key } }
+        # PKCS#8: { version, { algorithm, parameters }, OCTET STRING { the key } }
         top = der_at(blk, 0)
         it = der_items(blk, top[1], top[3])
         alg = der_at(blk, it[1])
         ai = der_items(blk, alg[1], alg[3])
-        if len(ai) > 1 {
+        inner = der_content(blk, it[2])
+        oid = to_hex(der_content(blk, ai[0]))
+        if oid == "2a864886f70d010101" {
+            kind = "rsa"
+            rsa = __rsa_key(inner)
+        }
+        if oid == "2a8648ce3d0201" and len(ai) > 1 {
+            kind = "ec"
             c = to_hex(der_content(blk, ai[1]))
             if c == "2a8648ce3d030107" {
                 curve = "P-256"
@@ -630,13 +653,17 @@ fn tls_load_key(cert_path: string, key_path: string) -> TlsKey {
             if c == "2b81040022" {
                 curve = "P-384"
             }
+            ie = der_at(inner, 0)
+            ii = der_items(inner, ie[1], ie[3])
+            d = der_content(inner, ii[1])
         }
-        inner = der_content(blk, it[2])
-        ie = der_at(inner, 0)
-        ii = der_items(inner, ie[1], ie[3])
-        d = der_content(inner, ii[1])
+    }
+    for blk in pem_blocks(kt, "RSA PRIVATE KEY") {
+        kind = "rsa"
+        rsa = __rsa_key(blk)
     }
     for blk in pem_blocks(kt, "EC PRIVATE KEY") {
+        kind = "ec"
         top = der_at(blk, 0)
         it = der_items(blk, top[1], top[3])
         d = der_content(blk, it[1])
@@ -653,7 +680,53 @@ fn tls_load_key(cert_path: string, key_path: string) -> TlsKey {
             }
         }
     }
-    return TlsKey(len(chain) > 0 and len(d) > 0 and curve != "", curve, d, chain)
+    ok = len(chain) > 0 and ((kind == "ec" and len(d) > 0 and curve != "") or (kind == "rsa" and len(rsa.n) > 0))
+    return TlsKey(ok, curve, d, chain, kind, rsa)
+}
+
+# the signature scheme to use with this key, from those the client offers (0 if none fits)
+fn __pick_scheme(key: TlsKey, offered: array[int], v13: bool) -> int {
+    want: array[int] = []
+    if key.kind == "ec" {
+        if key.curve == "P-384" {
+            want = [1283]
+        } else {
+            want = [1027]
+        }
+    } else {
+        # RSA-PSS first; TLS 1.2 may also use the older PKCS#1 v1.5
+        want = [2052, 2053, 2054]
+        if not v13 {
+            want = [2052, 2053, 2054, 1025, 1281, 1537]
+        }
+    }
+    for w in want {
+        for o in offered {
+            if o == w {
+                return w
+            }
+        }
+    }
+    return 0
+}
+
+# signs content with the server's key using scheme (ECDSA signatures in DER form)
+fn __server_sign(key: TlsKey, scheme: int, content: array[int]) -> array[int] {
+    if key.kind == "ec" {
+        C = curve_named(key.curve)
+        return ecdsa_sig_der(ecdsa_sign(C, key.d, hash_with(__curve_hash(key.curve), content)))
+    }
+    alg = "sha256"
+    if scheme == 2053 or scheme == 1281 {
+        alg = "sha384"
+    }
+    if scheme == 2054 or scheme == 1537 {
+        alg = "sha512"
+    }
+    if scheme >= 2052 and scheme <= 2054 {
+        return rsa_sign_pss(key.rsa, alg, hash_with(alg, content))
+    }
+    return rsa_sign_pkcs1(key.rsa, alg, hash_with(alg, content))
 }
 
 # a self-signed certificate and key for trying https on your own computer
@@ -1188,11 +1261,7 @@ fn tls_accept(fd: int, key: TlsKey) -> Tls {
     tls12 = __num(ch, 4, 2) >= 771
     share: array[int] = []
     groups: array[int] = []
-    scheme = 1027
-    if key.curve == "P-384" {
-        scheme = 1283
-    }
-    has_scheme = false
+    offered: array[int] = []
     alpn = false
     ems = false
     reneg = false
@@ -1240,9 +1309,7 @@ fn tls_accept(fd: int, key: TlsKey) -> Tls {
         if t == 13 {
             j = a + 2
             while j < a + n {
-                if __num(ch, j, 2) == scheme {
-                    has_scheme = true
-                }
+                push(offered, __num(ch, j, 2))
                 j += 2
             }
         }
@@ -1271,21 +1338,29 @@ fn tls_accept(fd: int, key: TlsKey) -> Tls {
             }
         }
     }
-    if tls13 and suite13 != 0 and len(share) == 32 and has_scheme {
+    scheme = __pick_scheme(key, offered, true)
+    if tls13 and suite13 != 0 and len(share) == 32 and scheme != 0 {
         c.aes = suite13 == 4865
         return __accept13(c, key, ch, sid, share, suite13, scheme, alpn)
     }
-    # else TLS 1.2 with ECDHE and the certificate's ECDSA key
+    # else TLS 1.2 with ECDHE, signed with the certificate's key
+    scheme = __pick_scheme(key, offered, false)
+    chacha12 = 52393
+    aes12 = 49195
+    if key.kind == "rsa" {
+        chacha12 = 52392
+        aes12 = 49199
+    }
     suite12 = 0
     for su in suites {
-        if su == 52393 {
-            suite12 = 52393
+        if su == chacha12 {
+            suite12 = chacha12
         }
     }
     if suite12 == 0 {
         for su in suites {
-            if su == 49195 {
-                suite12 = 49195
+            if su == aes12 {
+                suite12 = aes12
             }
         }
     }
@@ -1310,19 +1385,19 @@ fn tls_accept(fd: int, key: TlsKey) -> Tls {
     if key.curve == "P-384" {
         cert_group = 24
     }
-    cert_ok = len(groups) == 0
+    cert_ok = len(groups) == 0 or key.kind == "rsa"
     for g in groups {
         if g == cert_group {
             cert_ok = true
         }
     }
-    if not tls12 or suite12 == 0 or group == 0 or not has_scheme or not cert_ok {
+    if not tls12 or suite12 == 0 or group == 0 or scheme == 0 or not cert_ok {
         # handshake_failure
         __tls_write_plain(c, 21, "\x02\x28")
         return __tls_fail(c, "the browser and server have no TLS settings in common")
     }
     c.ver = 12
-    c.aes = suite12 == 49195
+    c.aes = suite12 == 49195 or suite12 == 49199
     # the last 8 bytes of our random say we could have done TLS 1.3
     sr = join_bytes(random_bytes(24), to_bytes("DOWNGRD\x01"))
     sh_ext = "\x00\x0b\x00\x02\x01\x00"
@@ -1345,9 +1420,11 @@ fn tls_accept(fd: int, key: TlsKey) -> Tls {
     priv = __kx_private(group)
     pub = __kx_public(group, priv)
     params = "\x03" + __u16(group) + chr(len(pub)) + from_bytes(pub)
-    C = curve_named(key.curve)
     signed = join_bytes(join_bytes(cr, sr), to_bytes(params))
-    sig = ecdsa_sig_der(ecdsa_sign(C, key.d, hash_with(__curve_hash(key.curve), signed)))
+    sig = __server_sign(key, scheme, signed)
+    if len(sig) == 0 {
+        return __tls_fail(c, "signing failed")
+    }
     ske_body = params + __u16(scheme) + __u16(len(sig)) + from_bytes(sig)
     ske = "\x0c" + __u24(len(ske_body)) + ske_body
     shd = "\x0e\x00\x00\x00"
@@ -1414,8 +1491,10 @@ fn __accept13(c0: Tls, key: TlsKey, ch: string, sid: string, share: array[int], 
     cm = "\x0b" + __u24(len(cert_body)) + cert_body
     th = th + ee + cm
     content = repeat(" ", 64) + "TLS 1.3, server CertificateVerify\x00" + from_bytes(__tls_hash(th))
-    C = curve_named(key.curve)
-    sig = ecdsa_sig_der(ecdsa_sign(C, key.d, hash_with(__curve_hash(key.curve), to_bytes(content))))
+    sig = __server_sign(key, scheme, to_bytes(content))
+    if len(sig) == 0 {
+        return __tls_fail(c, "signing failed")
+    }
     cv_body = __u16(scheme) + __u16(len(sig)) + from_bytes(sig)
     cv = "\x0f" + __u24(len(cv_body)) + cv_body
     th = th + cv
