@@ -42,7 +42,7 @@ fn __ov_init() -> bool {
         __store64(__ov_fns + i * 8, f)
     }
     t = __alloc_bytes(16)
-    if __ccall_ptr(__ov_fn(0), t) != 0 {
+    if __i32(__ccall_ptr(__ov_fn(0), t)) != 0 {
         return false
     }
     __ov_core = __load64(t)
@@ -51,7 +51,7 @@ fn __ov_init() -> bool {
         want = "NPU"
     }
     # is that device there?
-    if __ccall_ptr(__ov_fn(1), __ov_core, t) != 0 {
+    if __i32(__ccall_ptr(__ov_fn(1), __ov_core, t)) != 0 {
         return false
     }
     list = __load64(t)
@@ -146,11 +146,11 @@ fn __ov_request(m: int, k: int, n: int, has_bias: bool, act: int) -> int {
     t = __alloc_bytes(16)
     xml = __ov_model(m, k, n, has_bias, act)
     req = 0
-    if __ccall_ptr(__ov_fn(3), __ov_core, __cstr(xml), len(xml), 0, t) == 0 {
+    if __i32(__ccall_ptr(__ov_fn(3), __ov_core, __cstr(xml), len(xml), 0, t)) == 0 {
         model = __load64(t)
-        if __ccall_ptr(__ov_fn(4), __ov_core, model, __ov_device, 0, t) == 0 {
+        if __i32(__ccall_ptr(__ov_fn(4), __ov_core, model, __ov_device, 0, t)) == 0 {
             compiled = __load64(t)
-            if __ccall_ptr(__ov_fn(5), compiled, t) == 0 {
+            if __i32(__ccall_ptr(__ov_fn(5), compiled, t)) == 0 {
                 req = __load64(t)
             }
         }
@@ -185,9 +185,9 @@ fn __ov_tensor(p: int, dims: array[int]) -> int {
     if __os_name() == "windows" and __arch() != 2 {
         __store64(t + 8, len(dims))
         __store64(t + 16, shape)
-        r = __ccall_ptr(__ov_fn(6), 5, t + 8, p, t)
+        r = __i32(__ccall_ptr(__ov_fn(6), 5, t + 8, p, t))
     } else {
-        r = __ccall_ptr(__ov_fn(6), 5, len(dims), shape, p, t)
+        r = __i32(__ccall_ptr(__ov_fn(6), 5, len(dims), shape, p, t))
     }
     if r != 0 {
         return 0
@@ -217,14 +217,14 @@ fn __ov_dense(x: array[float], w: array[float], bias: array[float], m: int, k: i
     }
     ok = true
     for i in 0..len(ins) {
-        if ins[i] == 0 or __ccall_ptr(__ov_fn(7), req, i, ins[i]) != 0 {
+        if ins[i] == 0 or __i32(__ccall_ptr(__ov_fn(7), req, i, ins[i])) != 0 {
             ok = false
         }
     }
     t = __alloc_bytes(16)
-    if ok and __ccall_ptr(__ov_fn(8), req) == 0 and __ccall_ptr(__ov_fn(9), req, 0, t) == 0 {
+    if ok and __i32(__ccall_ptr(__ov_fn(8), req)) == 0 and __i32(__ccall_ptr(__ov_fn(9), req, 0, t)) == 0 {
         res = __load64(t)
-        if __ccall_ptr(__ov_fn(10), res, t) == 0 {
+        if __i32(__ccall_ptr(__ov_fn(10), res, t)) == 0 {
             p = __load64(t)
             for i in 0..m * n {
                 out[i] = float_from_bits(__f32_to_f64(__load32(p + i * 4)))
