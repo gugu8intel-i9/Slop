@@ -227,7 +227,36 @@ fn __socket_listen(port: int) -> int {
 
 fn __socket_accept(fd: int) -> int {
     __flush()
-    return __ccall32("accept", fd, 0, 0)
+    c = __ccall32("accept", fd, 0, 0)
+    __no_sigpipe(c)
+    return c
+}
+
+# SO_NOSIGPIPE: a visitor who left early must not stop the program
+fn __no_sigpipe(fd: int) {
+    if fd >= 0 {
+        one = __scratch()
+        __store64(one, 1)
+        __ccall32("setsockopt", fd, 65535, 4130, one, 4)
+    }
+}
+
+# connects to ip:port (like "127.0.0.1"); -1 if it can't
+fn __socket_connect(ip: string, port: int) -> int {
+    fd = __ccall32("socket", 2, 1, 0)
+    if fd < 0 {
+        return -1
+    }
+    a = __scratch() + 16
+    __memzero(a, 16)
+    __store8(a, 16)
+    __store8(a + 1, 2)
+    if not __ipv4_fill(a, ip, port) or __ccall32("connect", fd, a, 16) != 0 {
+        __ccall32("close", fd)
+        return -1
+    }
+    __no_sigpipe(fd)
+    return fd
 }
 
 fn __socket_read(fd: int) -> string {

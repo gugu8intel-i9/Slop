@@ -1,50 +1,45 @@
-# High-Performance, Zero-Copy HTTP Web Server Microservice
-# Written in 100% PURE SLOP - NO raw blocks, NO inline C, NO FFI!
-# ============================================================================
+# A small website with a page, a form, a JSON API and files from a folder.
+#   slop run examples/web_server.slop     then open http://localhost:8080
+use "web"
 
-# Processes a single client web request zero-copy!
-fn handle_client(client_fd: int) {
-    # 1. Read the HTTP Request directly into the active SEAA Memory Arena
-    # This has 100% zero-copy, zero-fragmentation performance!
-    let request = socket_read(client_fd)
-    
-    if length(request) > 0 {
-        # 2. Build a high-performance HTTP response header and payload
-        let body = "=== [Slop High-Performance Microservice Node] ===\nStatus: 200 OK\nCore: lock-free, zero-copy socket pipeline\nMemory: preallocated SEAA stack bucket\n"
-        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + int_to_string(length(body)) + "\r\nConnection: close\r\n\r\n" + body
-        
-        # 3. Write directly back to the network interface
-        socket_write(client_fd, response)
+notes: array[string] = []
+
+fn notes_page() -> string {
+    items = ""
+    for n in notes {
+        items = items + "<li>" + escape_html(n) + "</li>"
     }
-    
-    # 4. Close the hardware connection
-    socket_close(client_fd)
+    if items == "" {
+        items = "<li><em>No notes yet.</em></li>"
+    }
+    return page("Notes", render("<h1>Notes</h1><ul>{{{items}}}</ul><form method=\"post\" action=\"/add\"><input name=\"note\" placeholder=\"Write a note\" required> <button>Add</button></form><p><a href=\"/api/notes\">as JSON</a></p>", ["items", items]))
 }
 
-fn main(args: array[string]) {
-    print("--- [Slop High-Performance Concurrent Web Server Node] ---")
-    let port = 9090
-    print("Binding socket to port: " + int_to_string(port))
-    
-    # 1. Listen on POSIX standard socket port
-    let server_fd = socket_listen(port)
-    if server_fd < 0 {
-        print("ERROR: Failed to bind to network port!")
-        return
+fn handle(req: Request) -> Response {
+    if route(req, "GET", "/") {
+        return html(notes_page())
     }
-    
-    print("Server successfully listening on port 9090...")
-    print("Entering high-performance event loop...")
-
-    # 2. Event loop: continuously accept and handle incoming connections
-    # We will accept up to 10,050 connections (covering our benchmark) and exit gracefully,
-    # or loop infinitely. To allow clean exit in normal use, we loop based on a counter or run infinitely.
-    # Since it runs in the background, we can run infinitely.
-    let active = true
-    while active {
-        let client_fd = socket_accept(server_fd)
-        if client_fd >= 0 {
-            handle_client(client_fd)
+    if route(req, "POST", "/add") {
+        note = trim(form(req, "note"))
+        if note != "" {
+            push(notes, note)
         }
+        return redirect("/")
     }
+    if route(req, "GET", "/api/notes") {
+        items: array[string] = []
+        for n in notes {
+            push(items, json_string(n))
+        }
+        return json(json_object(["count", str(len(notes)), "notes", json_list(items)]))
+    }
+    if route(req, "GET", "/hello/:name") {
+        return text("Hello, " + param("name") + "!")
+    }
+    if route(req, "GET", "/examples/*") {
+        return send_dir(req, "/examples/", "examples")
+    }
+    return not_found()
 }
+
+serve(8080)

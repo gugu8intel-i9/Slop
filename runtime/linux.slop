@@ -350,10 +350,10 @@ fn __sleep_ms(ms: int) {
 # x86-64 and ARM64 numbers for socket, setsockopt, bind, listen, accept
 fn __sock_nr(i: int) -> int {
     if __arm() {
-        nums = [198, 208, 200, 201, 202]
+        nums = [198, 208, 200, 201, 202, 203, 206]
         return nums[i]
     }
-    nums = [41, 54, 49, 50, 43]
+    nums = [41, 54, 49, 50, 43, 42, 44]
     return nums[i]
 }
 
@@ -391,8 +391,34 @@ fn __socket_read(fd: int) -> string {
     return __str(p, r)
 }
 
+# MSG_NOSIGNAL: a visitor who left early must not stop the program
 fn __socket_write(fd: int, s: string) {
-    __write_all(fd, __str_ptr(s), len(s))
+    p = __str_ptr(s)
+    n = len(s)
+    while n > 0 {
+        w = __syscall(__sock_nr(6), fd, p, n, 16384, 0, 0)
+        if w <= 0 {
+            return
+        }
+        p += w
+        n -= w
+    }
+}
+
+# connects to ip:port (like "127.0.0.1"); -1 if it can't
+fn __socket_connect(ip: string, port: int) -> int {
+    fd = __syscall(__sock_nr(0), 2, 1, 0)
+    if fd < 0 {
+        return -1
+    }
+    a = __scratch() + 16
+    __memzero(a, 16)
+    __store8(a, 2)
+    if not __ipv4_fill(a, ip, port) or __syscall(__sock_nr(5), fd, a, 16) < 0 {
+        __os_close(fd)
+        return -1
+    }
+    return fd
 }
 
 fn __socket_close(fd: int) {

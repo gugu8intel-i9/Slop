@@ -1,0 +1,492 @@
+# web: websites and web services
+#   use "web"
+#
+#   fn handle(req: Request) -> Response {
+#       if route(req, "GET", "/") {
+#           return html(page("Home", "<h1>Hello!</h1>"))
+#       }
+#       if route(req, "GET", "/hello/:name") {
+#           return text("Hi " + param("name"))
+#       }
+#       return not_found()
+#   }
+#
+#   serve(8080)    # then open http://localhost:8080
+
+struct Request {
+    method: string,
+    path: string,
+    query: string,
+    headers: string,
+    body: string
+}
+
+struct Response {
+    status: int,
+    content_type: string,
+    headers: string,
+    body: string
+}
+
+__web_param_names: array[string] = []
+__web_param_values: array[string] = []
+__web_quiet = false
+__web_status = 0
+
+# ---------- answers ----------
+fn html(body: string) -> Response {
+    return Response(200, "text/html; charset=utf-8", "", body)
+}
+
+fn text(body: string) -> Response {
+    return Response(200, "text/plain; charset=utf-8", "", body)
+}
+
+fn json(body: string) -> Response {
+    return Response(200, "application/json", "", body)
+}
+
+# sends the visitor to another address
+fn redirect(url: string) -> Response {
+    return Response(303, "text/plain", "Location: " + url + "\r\n", "")
+}
+
+fn not_found() -> Response {
+    return Response(404, "text/html; charset=utf-8", "", page("Not found", "<h1>Not found</h1><p>There is no page here.</p>"))
+}
+
+fn bad_request(why: string) -> Response {
+    return Response(400, "text/plain; charset=utf-8", "", why)
+}
+
+# the same answer with another status code (201, 403, 500, ...)
+fn with_status(r: Response, code: int) -> Response {
+    return Response(code, r.content_type, r.headers, r.body)
+}
+
+fn with_header(r: Response, name: string, value: string) -> Response {
+    return Response(r.status, r.content_type, r.headers + name + ": " + value + "\r\n", r.body)
+}
+
+fn set_cookie(r: Response, name: string, value: string) -> Response {
+    return with_header(r, "Set-Cookie", name + "=" + url_encode(value) + "; Path=/; HttpOnly; SameSite=Lax")
+}
+
+# a file from disk, with the right type for its extension (404 if missing)
+fn send_file(path: string) -> Response {
+    if not file_exists(path) or contains(path, "..") {
+        return not_found()
+    }
+    return Response(200, content_type_for(path), "", read_file(path))
+}
+
+# answers /prefix/... from the files in dir: send_dir(req, "/static/", "public")
+fn send_dir(req: Request, prefix: string, dir: string) -> Response {
+    rest = slice(req.path, len(prefix), len(req.path))
+    if rest == "" or ends_with(rest, "/") {
+        rest = rest + "index.html"
+    }
+    return send_file(dir + "/" + rest)
+}
+
+fn content_type_for(path: string) -> string {
+    p = lower(path)
+    types = [".html", "text/html; charset=utf-8", ".htm", "text/html; charset=utf-8", ".css", "text/css", ".js", "text/javascript", ".json", "application/json", ".txt", "text/plain; charset=utf-8", ".svg", "image/svg+xml", ".png", "image/png", ".jpg", "image/jpeg", ".jpeg", "image/jpeg", ".gif", "image/gif", ".webp", "image/webp", ".ico", "image/x-icon", ".pdf", "application/pdf", ".wasm", "application/wasm", ".woff2", "font/woff2", ".mp4", "video/mp4", ".xml", "application/xml"]
+    k = 0
+    while k < len(types) {
+        if ends_with(p, types[k]) {
+            return types[k + 1]
+        }
+        k += 2
+    }
+    return "application/octet-stream"
+}
+
+# ---------- reading the request ----------
+# true when the request matches: route(req, "GET", "/users/:id"). "*" as the
+# method matches any; a last "*" segment matches the rest of the path.
+fn route(req: Request, method: string, pattern: string) -> bool {
+    if method != "*" and method != req.method and not (method == "GET" and req.method == "HEAD") {
+        return false
+    }
+    want = split(pattern, "/")
+    got = split(req.path, "/")
+    names: array[string] = []
+    values: array[string] = []
+    for i in 0..len(want) {
+        w = want[i]
+        if w == "*" and i == len(want) - 1 {
+            rest: array[string] = []
+            for k in i..len(got) {
+                push(rest, got[k])
+            }
+            push(names, "*")
+            push(values, join(rest, "/"))
+            __web_param_names = names
+            __web_param_values = values
+            return true
+        }
+        if i >= len(got) {
+            return false
+        }
+        if starts_with(w, ":") {
+            if got[i] == "" {
+                return false
+            }
+            push(names, slice(w, 1, len(w)))
+            push(values, got[i])
+        } else {
+            if w != got[i] {
+                return false
+            }
+        }
+    }
+    if len(got) != len(want) {
+        return false
+    }
+    __web_param_names = names
+    __web_param_values = values
+    return true
+}
+
+# a :name part of the path that route() matched
+fn param(name: string) -> string {
+    for i in 0..len(__web_param_names) {
+        if __web_param_names[i] == name {
+            return __web_param_values[i]
+        }
+    }
+    return ""
+}
+
+# a value from "a=1&b=2" text
+fn __web_field(data: string, key: string) -> string {
+    for pair in split(data, "&") {
+        eq = find(pair, "=")
+        if eq >= 0 {
+            if url_decode(slice(pair, 0, eq)) == key {
+                return url_decode(slice(pair, eq + 1, len(pair)))
+            }
+        } else {
+            if url_decode(pair) == key {
+                return ""
+            }
+        }
+    }
+    return ""
+}
+
+# ?key=value in the address
+fn query(req: Request, key: string) -> string {
+    return __web_field(req.query, key)
+}
+
+# a field of a submitted form (<form method="post">)
+fn form(req: Request, key: string) -> string {
+    return __web_field(req.body, key)
+}
+
+# a request header, any capitalization: header(req, "User-Agent")
+fn header(req: Request, name: string) -> string {
+    want = lower(name)
+    for line in split(req.headers, "\n") {
+        c = find(line, ":")
+        if c > 0 and lower(trim(slice(line, 0, c))) == want {
+            return trim(slice(line, c + 1, len(line)))
+        }
+    }
+    return ""
+}
+
+fn cookie(req: Request, name: string) -> string {
+    for part in split(header(req, "Cookie"), ";") {
+        p = trim(part)
+        eq = find(p, "=")
+        if eq > 0 and slice(p, 0, eq) == name {
+            return url_decode(slice(p, eq + 1, len(p)))
+        }
+    }
+    return ""
+}
+
+# ---------- text for the web ----------
+fn url_decode(s: string) -> string {
+    out = ""
+    i = 0
+    while i < len(s) {
+        c = byte_at(s, i)
+        if c == 43 {
+            out = out + " "
+            i += 1
+            continue
+        }
+        if c == 37 and i + 2 < len(s) {
+            hi = __web_hex(byte_at(s, i + 1))
+            lo = __web_hex(byte_at(s, i + 2))
+            if hi >= 0 and lo >= 0 {
+                out = out + chr(hi * 16 + lo)
+                i += 3
+                continue
+            }
+        }
+        out = out + char_at(s, i)
+        i += 1
+    }
+    return out
+}
+
+fn __web_hex(c: int) -> int {
+    if c >= 48 and c <= 57 {
+        return c - 48
+    }
+    if c >= 97 and c <= 102 {
+        return c - 87
+    }
+    if c >= 65 and c <= 70 {
+        return c - 55
+    }
+    return -1
+}
+
+fn url_encode(s: string) -> string {
+    digits = "0123456789ABCDEF"
+    out = ""
+    for i in 0..len(s) {
+        c = byte_at(s, i)
+        if (c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or c == 45 or c == 46 or c == 95 or c == 126 {
+            out = out + char_at(s, i)
+        } else {
+            out = out + "%" + char_at(digits, c / 16) + char_at(digits, c % 16)
+        }
+    }
+    return out
+}
+
+# makes text safe to put inside HTML
+fn escape_html(s: string) -> string {
+    out = replace(s, "&", "&amp;")
+    out = replace(out, "<", "&lt;")
+    out = replace(out, ">", "&gt;")
+    out = replace(out, "\"", "&quot;")
+    return replace(out, "'", "&#39;")
+}
+
+# fills {{name}} in a template with values (made safe for HTML);
+# {{{name}}} puts the value in as it is. pairs: ["name", "Ada", "age", "36"]
+fn render(template: string, pairs: array[string]) -> string {
+    out = template
+    k = 0
+    while k + 1 < len(pairs) {
+        out = replace(out, "{{{" + pairs[k] + "}}}", pairs[k + 1])
+        out = replace(out, "{{" + pairs[k] + "}}", escape_html(pairs[k + 1]))
+        k += 2
+    }
+    return out
+}
+
+fn render_file(path: string, pairs: array[string]) -> string {
+    return render(read_file(path), pairs)
+}
+
+# a whole HTML page with a clean, readable look
+fn page(title: string, body: string) -> string {
+    style = "body{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#222;background:#fff}a{color:#0b5fff}input,textarea,button{font:inherit;padding:.4rem .6rem;margin:.2rem 0}button{cursor:pointer}pre,code{background:#f4f4f4;padding:.1rem .3rem}@media(prefers-color-scheme:dark){body{background:#151515;color:#e8e8e8}a{color:#6ea8ff}pre,code{background:#262626}}"
+    return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + escape_html(title) + "</title>\n<style>" + style + "</style>\n</head>\n<body>\n" + body + "\n</body>\n</html>\n"
+}
+
+# ---------- JSON ----------
+# a JSON string, quoted and escaped
+fn json_string(s: string) -> string {
+    out = replace(s, "\\", "\\\\")
+    out = replace(out, "\"", "\\\"")
+    out = replace(out, "\n", "\\n")
+    out = replace(out, "\r", "\\r")
+    out = replace(out, "\t", "\\t")
+    return "\"" + out + "\""
+}
+
+# {"key": value, ...} from pairs of key and JSON text:
+# json_object(["name", json_string("Ada"), "age", "36"])
+fn json_object(pairs: array[string]) -> string {
+    parts: array[string] = []
+    k = 0
+    while k + 1 < len(pairs) {
+        push(parts, json_string(pairs[k]) + ": " + pairs[k + 1])
+        k += 2
+    }
+    return "{" + join(parts, ", ") + "}"
+}
+
+# [a, b, ...] from JSON texts
+fn json_list(items: array[string]) -> string {
+    return "[" + join(items, ", ") + "]"
+}
+
+# ---------- the server ----------
+fn reason(code: int) -> string {
+    codes = [200, 201, 204, 301, 302, 303, 304, 400, 401, 403, 404, 405, 413, 500, 503]
+    names = ["OK", "Created", "No Content", "Moved Permanently", "Found", "See Other", "Not Modified", "Bad Request", "Unauthorized", "Forbidden", "Not Found", "Method Not Allowed", "Payload Too Large", "Internal Server Error", "Service Unavailable"]
+    for i in 0..len(codes) {
+        if codes[i] == code {
+            return names[i]
+        }
+    }
+    return "OK"
+}
+
+# stops serve() from printing a line for every request
+fn quiet() {
+    __web_quiet = true
+}
+
+# answers visitors on this port with your handle(req) function, forever
+fn serve(port: int) {
+    serve_count(port, -1)
+}
+
+# like serve, but stops after count requests (handy for tests)
+fn serve_count(port: int, count: int) {
+    fd = socket_listen(port)
+    if fd < 0 {
+        eprint("web: cannot use port " + str(port) + " (is another program using it?)")
+        exit(1)
+    }
+    if not __web_quiet {
+        print("Serving on http://localhost:" + str(port) + "  (stop with Ctrl+C)")
+    }
+    served = 0
+    while count < 0 or served < count {
+        c = socket_accept(fd)
+        if c >= 0 {
+            __web_answer(c)
+            served += 1
+        }
+    }
+    socket_close(fd)
+}
+
+# reads one request, answers it with handle(), closes the connection
+fn __web_answer(c: int) {
+    raw = ""
+    head_end = -1
+    while head_end < 0 and len(raw) < 1048576 {
+        piece = socket_read(c)
+        if piece == "" {
+            break
+        }
+        raw = raw + piece
+        head_end = find(raw, "\r\n\r\n")
+    }
+    if head_end < 0 {
+        socket_close(c)
+        return
+    }
+    head = slice(raw, 0, head_end)
+    body = slice(raw, head_end + 4, len(raw))
+    lines = split(head, "\r\n")
+    first = split(lines[0], " ")
+    if len(first) < 2 {
+        socket_close(c)
+        return
+    }
+    headers = ""
+    for i in 1..len(lines) {
+        headers = headers + lines[i] + "\n"
+    }
+    target = first[1]
+    q = find(target, "?")
+    path = target
+    qs = ""
+    if q >= 0 {
+        path = slice(target, 0, q)
+        qs = slice(target, q + 1, len(target))
+    }
+    req = Request(first[0], url_decode(path), qs, headers, body)
+    want = to_int(header(req, "Content-Length"))
+    while len(body) < want and len(body) < 16777216 {
+        more = socket_read(c)
+        if more == "" {
+            break
+        }
+        body = body + more
+    }
+    req = Request(first[0], url_decode(path), qs, headers, body)
+    __web_param_names = []
+    __web_param_values = []
+    resp = handle(req)
+    out = "HTTP/1.1 " + str(resp.status) + " " + reason(resp.status) + "\r\nContent-Type: " + resp.content_type + "\r\nContent-Length: " + str(len(resp.body)) + "\r\nConnection: close\r\n" + resp.headers + "\r\n"
+    if req.method != "HEAD" {
+        out = out + resp.body
+    }
+    socket_write(c, out)
+    socket_close(c)
+    if not __web_quiet {
+        print(req.method + " " + req.path + " " + str(resp.status))
+    }
+}
+
+# ---------- asking other servers ----------
+# http_get("http://127.0.0.1:8080/hello") gives the page's text; http_status()
+# then gives its status code (0 if it could not connect). Works with http://
+# and a number address or localhost (no https yet).
+fn http_get(url: string) -> string {
+    return http_request("GET", url, "")
+}
+
+fn http_post(url: string, form_data: string) -> string {
+    return http_request("POST", url, form_data)
+}
+
+fn http_status() -> int {
+    return __web_status
+}
+
+fn http_request(method: string, url: string, body: string) -> string {
+    __web_status = 0
+    if not starts_with(url, "http://") {
+        return ""
+    }
+    rest = slice(url, 7, len(url))
+    slash = find(rest, "/")
+    hostport = rest
+    path = "/"
+    if slash >= 0 {
+        hostport = slice(rest, 0, slash)
+        path = slice(rest, slash, len(rest))
+    }
+    host = hostport
+    port = 80
+    colon = find(hostport, ":")
+    if colon >= 0 {
+        host = slice(hostport, 0, colon)
+        port = to_int(slice(hostport, colon + 1, len(hostport)))
+    }
+    fd = socket_connect(host, port)
+    if fd < 0 {
+        return ""
+    }
+    msg = method + " " + path + " HTTP/1.1\r\nHost: " + hostport + "\r\nConnection: close\r\nUser-Agent: slop\r\n"
+    if body != "" or method == "POST" {
+        msg = msg + "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " + str(len(body)) + "\r\n"
+    }
+    socket_write(fd, msg + "\r\n" + body)
+    raw = ""
+    while true {
+        piece = socket_read(fd)
+        if piece == "" {
+            break
+        }
+        raw = raw + piece
+    }
+    socket_close(fd)
+    he = find(raw, "\r\n\r\n")
+    if he < 0 {
+        return ""
+    }
+    status_line = split(slice(raw, 0, he), "\r\n")[0]
+    parts = split(status_line, " ")
+    if len(parts) > 1 {
+        __web_status = to_int(parts[1])
+    }
+    return slice(raw, he + 4, len(raw))
+}
