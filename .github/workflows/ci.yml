@@ -46,5 +46,25 @@ jobs:
           diff gpu-opencl.txt tests/expected/gpu.txt
           SLOP_OPENCL_CPU=1 bin/slop run examples/gpu.slop | tail -n 1 | tee gpu-name.txt
           grep -v "the CPU cores" gpu-name.txt
+      - uses: actions/setup-python@v5
+        if: matrix.slop == 'bin/slop' || matrix.slop == 'bin/slop.exe'
+        with:
+          python-version: '3.12'
+      - name: npu module through OpenVINO (its CPU device) and Core ML (its CPU mode)
+        if: matrix.slop == 'bin/slop' || matrix.slop == 'bin/slop.exe' || matrix.slop == 'bin/slop-macos-arm64'
+        run: |
+          if [ "${{ matrix.slop }}" = "bin/slop-macos-arm64" ]; then
+            export SLOP_NPU_DEVICE=CPU
+          else
+            python -m pip install -q openvino
+            export SLOP_OPENVINO=$(python -c "import openvino, os, glob; print(sorted(glob.glob(os.path.join(os.path.dirname(openvino.__file__), 'libs', '*openvino_c*')))[0])")
+            export SLOP_NPU_DEVICE=CPU
+            echo "using $SLOP_OPENVINO"
+          fi
+          ${{ matrix.slop }} run tests/npu.slop > npu-out.txt
+          cat npu-out.txt
+          diff --strip-trailing-cr npu-out.txt tests/expected/npu.txt
+          ${{ matrix.slop }} run examples/npu.slop | tail -n 1 | tee npu-name.txt
+          grep -v "no NPU" npu-name.txt
       - name: https to a real site (system certificates and name lookup)
         run: ${{ matrix.slop }} run examples/fetch.slop https://github.com/

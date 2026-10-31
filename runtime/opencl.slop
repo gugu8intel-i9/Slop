@@ -29,7 +29,8 @@ fn __cl_init() -> bool {
         return false
     }
     names = ["clGetPlatformIDs", "clGetDeviceIDs", "clCreateContext", "clCreateCommandQueue", "clCreateProgramWithSource", "clBuildProgram", "clGetProgramBuildInfo", "clCreateKernel", "clSetKernelArg", "clCreateBuffer", "clEnqueueNDRangeKernel", "clFinish", "clEnqueueReadBuffer", "clReleaseMemObject", "clGetDeviceInfo"]
-    __cl_fns = __alloc_bytes(8 * len(names))
+    # kept for the whole run (bucket 2 is never given back)
+    __cl_fns = __alloc_bytes_in(2, 8 * len(names))
     for i in 0..len(names) {
         f = __dl_sym(lib, names[i])
         if f == 0 {
@@ -37,7 +38,7 @@ fn __cl_init() -> bool {
         }
         __store64(__cl_fns + i * 8, f)
     }
-    __cl_tmp = __alloc_bytes(256)
+    __cl_tmp = __alloc_bytes_in(2, 256)
     __memzero(__cl_tmp, 256)
     t = __cl_tmp
     plats = __alloc_bytes(8 * 16)
@@ -75,9 +76,9 @@ fn __cl_init() -> bool {
     if __cl_queue == 0 {
         return false
     }
-    __cl_kernels = __alloc_bytes(8 * 4096)
+    __cl_kernels = __alloc_bytes_in(2, 8 * 4096)
     __memzero(__cl_kernels, 8 * 4096)
-    __cl_bufs = __alloc_bytes(32 * 32)
+    __cl_bufs = __alloc_bytes_in(2, 32 * 32)
     __cl_state = 1
     return true
 }

@@ -1,0 +1,85 @@
+# npu: neural network math on the NPU (the chip for AI in newer computers)
+#   use "npu"
+#
+#   out = matmul(a, b, m, k, n)                 # a is m x k, b is k x n
+#   out = dense(x, w, bias, m, k, n, "relu")    # one network layer
+#   print(npu_name())                           # "" when there is no NPU
+#
+# Lists hold the numbers row after row. NPUs: the Apple Neural Engine (macOS,
+# through Core ML) and Intel NPUs (Windows and Linux, through OpenVINO).
+# Without one, the same math runs on the GPU (gpu for), or else the CPU.
+# NPUs compute with 16-bit floats: expect about 3 correct digits.
+
+# the NPU's name, or "" when there is none
+fn npu_name() -> string {
+    return __npu_name()
+}
+
+# a (m x k) times b (k x n): an m x n list
+fn matmul(a: array[float], b: array[float], m: int, k: int, n: int) -> array[float] {
+    let none: array[float] = []
+    return dense(a, b, none, m, k, n, "")
+}
+
+# a network layer: x (m x k) times weights w (k x n), plus bias (n numbers,
+# or an empty list), then the activation: "" (none), "relu", "sigmoid" or "tanh"
+fn dense(x: array[float], w: array[float], bias: array[float], m: int, k: int, n: int, activation: string) -> array[float] {
+    if m < 1 or k < 1 or n < 1 or len(x) != m * k or len(w) != k * n {
+        eprint("npu: the lists do not match the sizes m=" + str(m) + " k=" + str(k) + " n=" + str(n) + " (x needs m*k numbers, w needs k*n)")
+        exit(1)
+    }
+    let has_bias = len(bias) > 0
+    if has_bias and len(bias) != n {
+        eprint("npu: bias needs n=" + str(n) + " numbers (or none)")
+        exit(1)
+    }
+    let act = 0
+    if activation == "relu" {
+        act = 1
+    } else if activation == "sigmoid" {
+        act = 2
+    } else if activation == "tanh" {
+        act = 3
+    } else if activation != "" {
+        eprint("npu: unknown activation '" + activation + "' (use \"\", \"relu\", \"sigmoid\" or \"tanh\")")
+        exit(1)
+    }
+    let out: array[float] = []
+    for i in 0..m * n {
+        push(out, 0.0)
+    }
+    if __npu_dense(x, w, bias, m, k, n, act, out) {
+        return out
+    }
+    let b = bias
+    if not has_bias {
+        b = [0.0]
+    }
+    gpu for p in 0..m * n {
+        let i = p / n
+        let j = p % n
+        let s = 0.0
+        for q in 0..k {
+            s += x[i * k + q] * w[q * n + j]
+        }
+        if has_bias {
+            s += b[j]
+        }
+        if act == 1 and s < 0.0 {
+            s = 0.0
+        }
+        if act == 2 {
+            s = 1.0 / (1.0 + exp(-s))
+        }
+        if act == 3 {
+            let t = exp(-2.0 * abs(s))
+            let r = (1.0 - t) / (1.0 + t)
+            if s < 0.0 {
+                r = -r
+            }
+            s = r
+        }
+        out[p] = s
+    }
+    return out
+}

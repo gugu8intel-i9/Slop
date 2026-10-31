@@ -1,0 +1,37 @@
+# the npu module: the same answers on an NPU, a GPU or the CPU
+# (NPUs use 16-bit floats, so results are rounded to 2 places here)
+use "npu"
+
+fn show(xs: array[float]) {
+    let parts: array[string] = []
+    for x in xs {
+        push(parts, str(round(x * 100.0) / 100.0))
+    }
+    print(join(parts, " "))
+}
+
+fn main() {
+    let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    let b = [1.0, 0.5, -1.0, 2.0, 0.0, 1.0]
+    show(matmul(a, b, 2, 3, 2))
+    show(dense(a, b, [0.5, -10.0], 2, 3, 2, ""))
+    show(dense(a, b, [0.5, -10.0], 2, 3, 2, "relu"))
+    show(dense([0.0, 1.0, -1.0], [1.0], [], 3, 1, 1, "sigmoid"))
+    show(dense([0.0, 0.5, -0.5], [2.0], [0.0], 3, 1, 1, "tanh"))
+    # a bigger one, twice (the second time reuses the compiled network)
+    let n = 64
+    let x: array[float] = []
+    let w: array[float] = []
+    for i in 0..n * n {
+        push(x, float(i % 7) - 3.0)
+        push(w, float(i % 5) * 0.25)
+    }
+    for r in 0..2 {
+        let y = matmul(x, w, n, n, n)
+        let total = 0.0
+        for v in y {
+            total += v
+        }
+        print(total)
+    }
+}

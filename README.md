@@ -163,6 +163,7 @@ Types: `int`, `float`, `bool`, `string`, `array[T]`, `thread[T]` and your struct
 | Lists | `len`, `push`, `pop`, `a[i]`, `for x in a` |
 | Threads | `spawn f(args)`, `join(t)`, `lock()`, `unlock()`, `cpu_count()` |
 | Async | `async f(args)`, `await t`, `done(t)`, `task[T]` |
+| NPU (`use "npu"`) | `matmul`, `dense`, `npu_name` |
 | Files | `read_file`, `write_file`, `remove_file`, `make_dir`, `make_executable` |
 | Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()`, `env(name)`, `program_path()`, `input_ended()` |
 | Network | `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close` (or `use "web"`) |
@@ -416,6 +417,28 @@ print(gpu_name())    # e.g. "Apple M2", or "" when there is no GPU
 - Going past the end of a list stops the program, as everywhere else in Slop.
 - `slop --show-gpu check app.slop` prints the GPU code made for each `gpu for` (Metal for `--target macos-arm64`, OpenCL otherwise).
 - Moving lists to and from the GPU takes time, so it pays off for loops with lots of work per step, or millions of steps. `examples/gpu.slop` draws the Mandelbrot set this way.
+
+## Using the NPU
+
+NPUs are the chips for AI in newer computers. They don't run any code, only neural-network math, so Slop offers that math in the `npu` module:
+
+```slop
+use "npu"
+
+# 4 examples with 2 numbers each, through a layer of 3 (weights 2 x 3)
+x = [0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.5, 0.5]
+w = [0.2, -0.4, 1.0, 0.7, 0.1, -1.0]
+y = dense(x, w, [0.1, 0.0, -0.1], 4, 2, 3, "relu")
+z = matmul(x, w, 4, 2, 3)
+print(npu_name())    # "Apple Neural Engine", "Intel NPU", or "" without one
+```
+
+- `matmul(a, b, m, k, n)` multiplies `a` (m rows of k) by `b` (k rows of n). `dense(x, w, bias, m, k, n, activation)` is one network layer: the same, plus `bias` (n numbers, or `[]`), then `"relu"`, `"sigmoid"`, `"tanh"` or `""`. Lists hold their numbers row after row.
+- Uses the Apple Neural Engine on Macs (through Core ML, macOS 14 and later) and Intel NPUs (Core Ultra) on Windows and Linux (through OpenVINO, which must be installed; `SLOP_OPENVINO` can name its `openvino_c` library file). Without an NPU, the same math runs on the GPU (`gpu for`), or else the CPU.
+- NPUs compute with 16-bit floats, so expect about 3 correct digits.
+- Each new size of network is prepared once (that takes a moment on an NPU); later calls with the same sizes are fast.
+- `SLOP_NPU_DEVICE=CPU` sends the work through Core ML or OpenVINO on the CPU, for testing without an NPU.
+- `examples/npu.slop` runs a tiny network that knows XOR.
 
 ## Doing things at the same time (async)
 
