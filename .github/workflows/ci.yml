@@ -36,5 +36,7 @@ jobs:
         run: /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
       - name: Test suite
         run: ${{ matrix.slop }} run tests/run.slop
+      - name: gpu for (shows whether the GPU was used)
+        run: ${{ matrix.slop }} run examples/gpu.slop | tail -n 1
       - name: https to a real site (system certificates and name lookup)
         run: ${{ matrix.slop }} run examples/fetch.slop https://github.com/

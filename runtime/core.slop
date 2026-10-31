@@ -837,3 +837,53 @@ fn __min_int(x: int, y: int) -> int {
     }
     return y
 }
+
+# ---------- gpu for ----------
+# The compiler turns gpu for into: __gpu_begin, one call per list or number the
+# loop uses, __gpu_run, __gpu_back_* for each list, __gpu_end. GPUs work with
+# 32-bit floats, so floats are converted on the way in and out.
+fn __gpu_floats(x: array[float]) {
+    n = len(x)
+    p = __gpu_buffer(n * 4, n)
+    for i in 0..n {
+        __store32(p + i * 4, __f64_to_f32(float_bits(x[i])))
+    }
+}
+
+fn __gpu_ints(x: array[int]) {
+    n = len(x)
+    p = __gpu_buffer(n * 8, n)
+    for i in 0..n {
+        __store64(p + i * 8, x[i])
+    }
+}
+
+fn __gpu_back_floats(x: array[float]) {
+    p = __gpu_back()
+    for i in 0..len(x) {
+        x[i] = float_from_bits(__f32_to_f64(__load32(p + i * 4)))
+    }
+}
+
+fn __gpu_back_ints(x: array[int]) {
+    p = __gpu_back()
+    for i in 0..len(x) {
+        x[i] = __load64(p + i * 8)
+    }
+}
+
+fn __gpu_int(v: int) {
+    __gpu_bytes(v, 8)
+}
+
+fn __gpu_bool(v: bool) {
+    if v {
+        __gpu_bytes(1, 8)
+    } else {
+        __gpu_bytes(0, 8)
+    }
+}
+
+fn __gpu_float(v: float) {
+    __gpu_bytes(__f64_to_f32(float_bits(v)), 4)
+}

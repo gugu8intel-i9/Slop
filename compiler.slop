@@ -3530,7 +3530,7 @@ fn builtin_alias(name: string) -> string {
     if name == "slop_pack" or name == "slop_unpack" or name == "run" or name == "run_status" or name == "os_name" or name == "arch_name" {
         return "__" + name
     }
-    if name == "replace" or name == "repeat" or name == "lock" or name == "unlock" or name == "cpu_count" {
+    if name == "replace" or name == "repeat" or name == "lock" or name == "unlock" or name == "cpu_count" or name == "gpu_name" {
         return "__" + name
     }
     if name == "env" or name == "make_dir" or name == "program_path" or name == "input_ended" or name == "file_exists" {
@@ -3860,6 +3860,37 @@ fn gen_intrinsic(name: string, n: int) -> string {
         e_xchg()
         return "int"
     }
+    if name == "__f64_to_f32" or name == "__f32_to_f64" {
+        e_pop(0)
+        if arm() {
+            if name == "__f64_to_f32" {
+                # fmov d0, x0 / fcvt s0, d0 / fmov w0, s0
+                a32(2657550336)
+                a32(509755392)
+                a32(505806848)
+            } else {
+                # fmov s0, w0 / fcvt d0, s0 / fmov x0, d0
+                a32(505872384)
+                a32(505593856)
+                a32(2657484800)
+            }
+        } else {
+            if name == "__f64_to_f32" {
+                # movq xmm0, rax / cvtsd2ss / movd eax, xmm0
+                emit4(102, 72, 15, 110)
+                emit(192)
+                emit4(242, 15, 90, 192)
+                emit4(102, 15, 126, 192)
+            } else {
+                # movd xmm0, eax / cvtss2sd / movq rax, xmm0
+                emit4(102, 15, 110, 192)
+                emit4(243, 15, 90, 192)
+                emit4(102, 72, 15, 126)
+                emit(192)
+            }
+        }
+        return "int"
+    }
     if name == "__cur_bucket" {
         e_cur_bucket_rcx()
         e_mov_rr(0, 1)
@@ -3954,6 +3985,9 @@ fn intrinsic_arity(name: string) -> int {
     }
     if name == "__xchg" {
         return 2
+    }
+    if name == "__f64_to_f32" or name == "__f32_to_f64" {
+        return 1
     }
     if name == "__clone" {
         return 4
@@ -4488,6 +4522,609 @@ fn gen_parallel_for() {
     g_pos = resume
 }
 
+# ---------- gpu for ----------
+# gpu for i in a..b { body } runs the body on the GPU, one GPU thread per i
+# (Apple GPUs through Metal). Everywhere else, or when no GPU is there, the
+# same loop runs as a parallel for on the CPU cores.
+# The compiler translates the body into Metal's shading language: numbers,
+# lists of numbers, math, if/while/for. GPUs compute floats with 32 bits.
+let g_gx_type = ""
+let g_gx_names: array[string] = []
+let g_gx_types: array[string] = []
+let g_gx_caps: array[string] = []
+let g_gx_kinds: array[string] = []
+let g_gx_var = ""
+let g_gx_depth = 0
+
+fn gx_err(msg: string) {
+    err("gpu for: " + msg)
+}
+
+# MSL type of a name the body can see: long, float, bool, "af"/"ai" (lists), or ""
+fn gx_type_of(name: string) -> string {
+    if name == g_gx_var {
+        return "long"
+    }
+    for i in 0..len(g_gx_names) {
+        if g_gx_names[i] == name {
+            return g_gx_types[i]
+        }
+    }
+    for i in 0..len(g_gx_caps) {
+        if g_gx_caps[i] == name {
+            let k = g_gx_kinds[i]
+            if k == "i" {
+                return "long"
+            }
+            if k == "f" {
+                return "float"
+            }
+            if k == "b" {
+                return "bool"
+            }
+            return k
+        }
+    }
+    return ""
+}
+
+fn gx_num_type(a: string, b: string) -> string {
+    if a == "float" or b == "float" {
+        return "float"
+    }
+    return "long"
+}
+
+fn gx_need_num(t: string, what: string) {
+    if t != "long" and t != "float" {
+        gx_err(what + " needs numbers")
+    }
+}
+
+fn gx_expr() -> string {
+    let a = gx_and()
+    while is_kw("or") or is_sym("||") {
+        g_pos += 1
+        let b = gx_and()
+        a = "(" + a + " || " + b + ")"
+        g_gx_type = "bool"
+    }
+    return a
+}
+
+fn gx_and() -> string {
+    let a = gx_cmp()
+    while is_kw("and") or is_sym("&&") {
+        g_pos += 1
+        let b = gx_cmp()
+        a = "(" + a + " && " + b + ")"
+        g_gx_type = "bool"
+    }
+    return a
+}
+
+fn gx_cmp() -> string {
+    let a = gx_bits()
+    let ta = g_gx_type
+    let ops = ["==", "!=", "<", ">", "<=", ">="]
+    for op in ops {
+        if is_sym(op) {
+            g_pos += 1
+            let b = gx_bits()
+            g_gx_type = "bool"
+            return "(" + a + " " + op + " " + b + ")"
+        }
+    }
+    g_gx_type = ta
+    return a
+}
+
+fn gx_bits() -> string {
+    let a = gx_add()
+    let ta = g_gx_type
+    while is_sym("&") or is_sym("|") or is_sym("^") or is_sym("<<") or is_sym(">>") {
+        let op = tk()
+        g_pos += 1
+        let b = gx_add()
+        if ta != "long" or g_gx_type != "long" {
+            gx_err("'" + op + "' needs whole numbers")
+        }
+        a = "(" + a + " " + op + " " + b + ")"
+    }
+    g_gx_type = ta
+    return a
+}
+
+fn gx_add() -> string {
+    let a = gx_mul()
+    let ta = g_gx_type
+    while is_sym("+") or is_sym("-") {
+        let op = tk()
+        g_pos += 1
+        let b = gx_mul()
+        gx_need_num(ta, "'" + op + "'")
+        gx_need_num(g_gx_type, "'" + op + "'")
+        ta = gx_num_type(ta, g_gx_type)
+        a = "(" + a + " " + op + " " + b + ")"
+    }
+    g_gx_type = ta
+    return a
+}
+
+fn gx_mul() -> string {
+    let a = gx_unary()
+    let ta = g_gx_type
+    while is_sym("*") or is_sym("/") or is_sym("%") {
+        let op = tk()
+        g_pos += 1
+        let b = gx_unary()
+        gx_need_num(ta, "'" + op + "'")
+        gx_need_num(g_gx_type, "'" + op + "'")
+        let tb = g_gx_type
+        if op == "%" and (ta == "float" or tb == "float") {
+            gx_err("'%' needs whole numbers")
+        }
+        ta = gx_num_type(ta, tb)
+        a = "(" + a + " " + op + " " + b + ")"
+    }
+    g_gx_type = ta
+    return a
+}
+
+fn gx_unary() -> string {
+    if is_sym("-") {
+        g_pos += 1
+        let a = gx_unary()
+        gx_need_num(g_gx_type, "'-'")
+        return "(-" + a + ")"
+    }
+    if is_kw("not") or is_sym("!") {
+        g_pos += 1
+        let a = gx_unary()
+        g_gx_type = "bool"
+        return "(!" + a + ")"
+    }
+    return gx_primary()
+}
+
+fn gx_primary() -> string {
+    let k = kind()
+    if k == 3 {
+        let v = g_tk_num[g_pos]
+        g_pos += 1
+        g_gx_type = "long"
+        return "(" + int_to_string(v) + "L)"
+    }
+    if k == 7 {
+        let t = replace(tk(), "_", "")
+        g_pos += 1
+        g_gx_type = "float"
+        if not contains(t, ".") and not contains(t, "e") and not contains(t, "E") {
+            t = t + ".0"
+        }
+        return "(" + t + "f)"
+    }
+    if is_kw("true") or is_kw("false") {
+        let t = tk()
+        g_pos += 1
+        g_gx_type = "bool"
+        return t
+    }
+    if is_sym("(") {
+        g_pos += 1
+        let a = gx_expr()
+        expect(")")
+        return "(" + a + ")"
+    }
+    if k != 1 {
+        gx_err("'" + tk() + "' is not supported on the GPU")
+    }
+    let name = tk()
+    g_pos += 1
+    if is_sym("(") {
+        return gx_call(name)
+    }
+    let t = gx_type_of(name)
+    if t == "" {
+        gx_err("'" + name + "' must be a number, a list of numbers, or made in the loop")
+    }
+    if t == "af" or t == "ai" {
+        if not is_sym("[") {
+            gx_err("use a list on the GPU only by index, like " + name + "[i]")
+        }
+        g_pos += 1
+        let idx = gx_expr()
+        if g_gx_type != "long" {
+            gx_err("a list index must be a whole number")
+        }
+        expect("]")
+        g_gx_type = "long"
+        if t == "af" {
+            g_gx_type = "float"
+        }
+        return "__rd(v_" + name + ", v_" + name + "_n, (long)(" + idx + "), __err)"
+    }
+    g_gx_type = t
+    return "v_" + name
+}
+
+fn gx_call(name: string) -> string {
+    expect("(")
+    let args: array[string] = []
+    let types: array[string] = []
+    while not is_sym(")") {
+        push(args, gx_expr())
+        push(types, g_gx_type)
+        if is_sym(",") {
+            g_pos += 1
+        }
+    }
+    expect(")")
+    let unary = ["sqrt", "sin", "cos", "tan", "exp", "log", "floor", "ceil", "round", "atan"]
+    for f in unary {
+        if name == f {
+            if len(args) != 1 {
+                gx_err(name + " takes one number")
+            }
+            gx_need_num(types[0], name)
+            g_gx_type = "float"
+            return "metal::" + f + "(float(" + args[0] + "))"
+        }
+    }
+    if name == "pow" and len(args) == 2 {
+        g_gx_type = "float"
+        return "metal::pow(float(" + args[0] + "), float(" + args[1] + "))"
+    }
+    if name == "abs" and len(args) == 1 {
+        gx_need_num(types[0], name)
+        g_gx_type = types[0]
+        return "metal::abs(" + args[0] + ")"
+    }
+    if name == "float" and len(args) == 1 {
+        g_gx_type = "float"
+        return "float(" + args[0] + ")"
+    }
+    if name == "int" and len(args) == 1 {
+        g_gx_type = "long"
+        return "long(" + args[0] + ")"
+    }
+    gx_err("'" + name + "()' cannot run on the GPU (only math like sqrt, sin, pow, abs, float, int)")
+    return ""
+}
+
+fn gx_block() -> string {
+    expect("{")
+    let out = ""
+    while not is_sym("}") {
+        out = out + gx_stmt()
+    }
+    g_pos += 1
+    return out
+}
+
+fn gx_stmt() -> string {
+    if is_kw("if") {
+        g_pos += 1
+        let c = gx_expr()
+        let out = "if (" + c + ") {\n" + gx_block() + "}"
+        while is_kw("else") {
+            g_pos += 1
+            if is_kw("if") {
+                g_pos += 1
+                let c2 = gx_expr()
+                out = out + " else if (" + c2 + ") {\n" + gx_block() + "}"
+            } else {
+                out = out + " else {\n" + gx_block() + "}"
+            }
+        }
+        return out + "\n"
+    }
+    if is_kw("while") {
+        g_pos += 1
+        let c = gx_expr()
+        g_gx_depth += 1
+        let b = gx_block()
+        g_gx_depth -= 1
+        return "while (" + c + ") {\n" + b + "}\n"
+    }
+    if is_kw("for") {
+        g_pos += 1
+        let v = expect_name()
+        expect("in")
+        let a = gx_expr()
+        gx_need_num(g_gx_type, "a loop range")
+        expect("..")
+        let b = gx_expr()
+        push(g_gx_names, v)
+        push(g_gx_types, "long")
+        g_gx_depth += 1
+        let body = gx_block()
+        g_gx_depth -= 1
+        return "for (long v_" + v + " = (long)(" + a + "); v_" + v + " < (long)(" + b + "); v_" + v + "++) {\n" + body + "}\n"
+    }
+    if is_kw("continue") {
+        g_pos += 1
+        if g_gx_depth == 0 {
+            return "return;\n"
+        }
+        return "continue;\n"
+    }
+    if is_kw("break") {
+        gx_err("break cannot be used here")
+    }
+    let had_let = false
+    if is_kw("let") {
+        g_pos += 1
+        had_let = true
+    }
+    if kind() != 1 {
+        gx_err("'" + tk() + "' is not supported on the GPU")
+    }
+    let name = tk()
+    g_pos += 1
+    let t = gx_type_of(name)
+    if had_let {
+        t = ""
+    }
+    if is_sym("[") {
+        if t != "af" and t != "ai" {
+            gx_err("'" + name + "' is not a list of numbers")
+        }
+        g_pos += 1
+        let idx = gx_expr()
+        expect("]")
+        if not is_assign_op(tk()) {
+            gx_err("expected = after " + name + "[...]")
+        }
+        let op = tk()
+        g_pos += 1
+        let v = gx_expr()
+        if t == "ai" and g_gx_type == "float" {
+            gx_err("cannot store a float in a list of whole numbers (use int())")
+        }
+        return "{ long __i = (long)(" + idx + "); if (__ok(v_" + name + "_n, __i, __err)) { v_" + name + "[__i] " + op + " " + v + "; } }\n"
+    }
+    if t == "af" or t == "ai" {
+        gx_err("the loop cannot change '" + name + "' (only its items, like " + name + "[i] = ...)")
+    }
+    let declared = ""
+    if is_sym(":") {
+        g_pos += 1
+        declared = parse_type()
+    }
+    if not is_assign_op(tk()) {
+        gx_err("'" + name + "' must be set with = (calling functions is not supported on the GPU)")
+    }
+    let op = tk()
+    g_pos += 1
+    let v = gx_expr()
+    let vt = g_gx_type
+    if t == "" {
+        if op != "=" {
+            gx_err("'" + name + "' is not set yet")
+        }
+        let mt = vt
+        if declared == "float" {
+            mt = "float"
+        }
+        if declared == "int" {
+            mt = "long"
+        }
+        push(g_gx_names, name)
+        push(g_gx_types, mt)
+        return mt + " v_" + name + " = " + v + ";\n"
+    }
+    let local = false
+    for n in g_gx_names {
+        if n == name {
+            local = true
+        }
+    }
+    if not local {
+        gx_err("the loop cannot change '" + name + "' (only lists, by index, and its own variables)")
+    }
+    if t == "long" and vt == "float" {
+        gx_err("cannot store a float in the whole number '" + name + "' (use int())")
+    }
+    return "v_" + name + " " + op + " " + v + ";\n"
+}
+
+fn gen_gpu_for() {
+    let line = g_tk_line[g_pos]
+    let file = g_tk_file[g_pos]
+    g_pos += 2
+    let var = expect_name()
+    expect("in")
+    let a_start = g_pos
+    let a_end = expr_end(g_pos, "..", "")
+    if not is_sym_at(a_end, "..") {
+        gx_err("needs a range of numbers: gpu for i in 0..n")
+    }
+    let b_start = a_end + 1
+    let b_end = expr_end(b_start, "{", "")
+    let body_start = b_end
+    g_pos = body_start
+    skip_block()
+    let body_end = g_pos
+    # what the body uses from outside: lists of numbers and numbers
+    g_gx_caps = []
+    g_gx_kinds = []
+    g_gx_names = []
+    g_gx_types = []
+    g_gx_var = var
+    g_gx_depth = 0
+    let assigned: array[string] = []
+    for i in body_start..body_end {
+        if g_tk_kind[i] == 1 and g_tk_kind[i + 1] == 5 and is_assign_op(g_tk_text[i + 1]) {
+            push(assigned, g_tk_text[i])
+        }
+    }
+    for i in body_start..body_end {
+        if g_tk_kind[i] != 1 or g_tk_text[i] == var or is_sym_at(i + 1, "(") or (i > 0 and g_tk_text[i - 1] == ".") {
+            continue
+        }
+        let name = g_tk_text[i]
+        let seen = false
+        for c in g_gx_caps {
+            if c == name {
+                seen = true
+            }
+        }
+        let t = ""
+        let li = find_local(name)
+        if li >= 0 {
+            t = g_lc_type[li]
+        } else {
+            let gi = find_global(name)
+            if gi >= 0 {
+                t = g_gl_type[gi]
+            }
+        }
+        if seen or t == "" {
+            continue
+        }
+        let kd = ""
+        if t == "array[float]" {
+            kd = "af"
+        }
+        if t == "array[int]" {
+            kd = "ai"
+        }
+        if t == "int" {
+            kd = "i"
+        }
+        if t == "float" {
+            kd = "f"
+        }
+        if t == "bool" {
+            kd = "b"
+        }
+        if kd == "" {
+            g_pos = i
+            gx_err("'" + name + "' has type " + t + "; the GPU works only with numbers and lists of numbers")
+        }
+        if kd == "i" or kd == "f" or kd == "b" {
+            for a in assigned {
+                if a == name {
+                    g_pos = i
+                    gx_err("the loop cannot change '" + name + "' (only lists, by index, and its own variables)")
+                }
+            }
+        }
+        push(g_gx_caps, name)
+        push(g_gx_kinds, kd)
+    }
+    g_par_count += 1
+    let k = int_to_string(g_par_count)
+    let kname = "slop_gpu_" + k
+    # the kernel in Metal's shading language
+    let params = "device atomic_int* __err [[buffer(0)]], constant long& __base [[buffer(1)]], constant long& __count [[buffer(2)]]"
+    let slot = 3
+    for i in 0..len(g_gx_caps) {
+        let n = g_gx_caps[i]
+        let kd = g_gx_kinds[i]
+        if kd == "af" or kd == "ai" {
+            let ty = "float"
+            if kd == "ai" {
+                ty = "long"
+            }
+            params = params + ", device " + ty + "* v_" + n + " [[buffer(" + int_to_string(slot) + ")]], constant long& v_" + n + "_n [[buffer(" + int_to_string(slot + 1) + ")]]"
+            slot += 2
+        } else {
+            let ty = "long"
+            if kd == "f" {
+                ty = "float"
+            }
+            params = params + ", constant " + ty + "& v_" + n + "_in [[buffer(" + int_to_string(slot) + ")]]"
+            slot += 1
+        }
+    }
+    if slot > 31 {
+        gx_err("the loop uses too many lists and numbers from outside (at most about 14)")
+    }
+    let setup = ""
+    for i in 0..len(g_gx_caps) {
+        let kd = g_gx_kinds[i]
+        let n = g_gx_caps[i]
+        if kd == "i" {
+            setup = setup + "long v_" + n + " = v_" + n + "_in;\n"
+        }
+        if kd == "f" {
+            setup = setup + "float v_" + n + " = v_" + n + "_in;\n"
+        }
+        if kd == "b" {
+            setup = setup + "bool v_" + n + " = v_" + n + "_in != 0;\n"
+        }
+    }
+    let saved_pos = g_pos
+    g_pos = body_start
+    let body = gx_block()
+    g_pos = saved_pos
+    let msl = "#include <metal_stdlib>\nusing namespace metal;\n" + "template<typename T> T __rd(device T* a, long n, long i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return T(0); } return a[i]; }\n" + "inline bool __ok(long n, long i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return false; } return true; }\n" + "kernel void " + kname + "(" + params + ", uint __gid [[thread_position_in_grid]]) {\n" + "if ((long)__gid >= __count) return;\n" + "long v_" + var + " = __base + (long)__gid;\n" + setup + body + "}\n"
+    # the code that runs it: on the GPU if there is one, else on the CPU cores
+    let saved_file = g_cur_file
+    g_cur_file = file
+    let code_at = len(g_tk_kind)
+    let a = "__gpu_a" + k
+    let b = "__gpu_b" + k
+    add_code("{ let " + a + " = ", line)
+    copy_tokens(a_start, a_end)
+    add_code(" let " + b + " = ", line)
+    copy_tokens(b_start, b_end)
+    add_code(" if __gpu_begin(", line)
+    push(g_tk_kind, 4)
+    push(g_tk_text, msl)
+    push(g_tk_line, line)
+    push(g_tk_num, 0)
+    push(g_tk_file, file)
+    let args = ", " + k + ", " + a + ", " + b + ") { "
+    for i in 0..len(g_gx_caps) {
+        let kd = g_gx_kinds[i]
+        let n = g_gx_caps[i]
+        if kd == "af" {
+            args = args + "__gpu_floats(" + n + ") "
+        }
+        if kd == "ai" {
+            args = args + "__gpu_ints(" + n + ") "
+        }
+        if kd == "i" {
+            args = args + "__gpu_int(" + n + ") "
+        }
+        if kd == "f" {
+            args = args + "__gpu_float(" + n + ") "
+        }
+        if kd == "b" {
+            args = args + "__gpu_bool(" + n + ") "
+        }
+    }
+    args = args + "__gpu_run() "
+    for i in 0..len(g_gx_caps) {
+        let kd = g_gx_kinds[i]
+        if kd == "af" {
+            args = args + "__gpu_back_floats(" + g_gx_caps[i] + ") "
+        }
+        if kd == "ai" {
+            args = args + "__gpu_back_ints(" + g_gx_caps[i] + ") "
+        }
+    }
+    add_code(args + "__gpu_end() } else ", line)
+    # the CPU version: the same loop as a parallel for
+    add_code("{ parallel for " + var + " in " + a + ".." + b + " ", line)
+    copy_tokens(body_start, body_end)
+    add_code(" } }", line)
+    g_cur_file = saved_file
+    if g_show_gpu {
+        print("--- " + kname + " ---")
+        print(msl)
+    }
+    let resume = body_end
+    g_pos = code_at
+    gen_block()
+    g_pos = resume
+}
+
+let g_show_gpu = false
+
 fn gen_cond(l_false: int) {
     g_cmp_end = -1
     let t = gen_expr()
@@ -4927,6 +5564,10 @@ fn gen_return() {
 
 fn gen_stmt() {
     let k = kind()
+    if k == 1 and tk() == "gpu" and kind_at(g_pos + 1) == 2 and tk_at(g_pos + 1) == "for" and find_local("gpu") < 0 and find_global("gpu") < 0 {
+        gen_gpu_for()
+        return
+    }
     if k == 1 and tk() == "parallel" and kind_at(g_pos + 1) == 2 and tk_at(g_pos + 1) == "for" and find_local("parallel") < 0 and find_global("parallel") < 0 {
         gen_parallel_for()
         return
@@ -5709,10 +6350,33 @@ fn o_uleb(v: int) {
 }
 
 # macOS: Mach-O that dyld loads, linked against libSystem
+# which library an imported function comes from: 1 libSystem, 2 libobjc, 3 Metal
+fn macho_lib(name: string) -> int {
+    if starts_with_s(name, "objc_") or starts_with_s(name, "sel_") {
+        return 2
+    }
+    if starts_with_s(name, "MTL") {
+        return 3
+    }
+    return 1
+}
+
 fn build_macho() {
     let text_vm = 4294967296
     let cmds_size = 760
     let ncmds = 12
+    # programs that use the GPU also load Objective-C, Metal, Foundation and
+    # CoreGraphics (without which command-line programs get no GPU)
+    let gpu = false
+    for nm in g_imp_name {
+        if macho_lib(nm) != 1 {
+            gpu = true
+        }
+    }
+    if gpu {
+        cmds_size += 320
+        ncmds += 4
+    }
     let page = 4096
     if arm() {
         # Apple Silicon: 16 KB pages and a code signature
@@ -5739,6 +6403,9 @@ fn build_macho() {
     g_out = empty
     o8(17)
     for k in 0..len(g_imp_name) {
+        if gpu {
+            o8(16 + macho_lib(g_imp_name[k]))
+        }
         o8(64)
         o_text("_" + g_imp_name[k], len(g_imp_name[k]) + 2)
         o8(81)
@@ -5854,6 +6521,12 @@ fn build_macho() {
     o32(65536)
     o32(65536)
     o_text("/usr/lib/libSystem.B.dylib", 32)
+    if gpu {
+        o_dylib("/usr/lib/libobjc.A.dylib", 56)
+        o_dylib("/System/Library/Frameworks/Metal.framework/Metal", 80)
+        o_dylib("/System/Library/Frameworks/Foundation.framework/Foundation", 88)
+        o_dylib("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", 96)
+    }
     if arm() {
         # LC_CODE_SIGNATURE
         o32(29)
@@ -5873,6 +6546,17 @@ fn build_macho() {
         o_code_signature(sig_off, text_file)
     }
     o_pad_to(text_file + le_size)
+}
+
+# LC_LOAD_DYLIB
+fn o_dylib(path: string, size: int) {
+    o32(12)
+    o32(size)
+    o32(24)
+    o32(2)
+    o32(65536)
+    o32(65536)
+    o_text(path, size - 24)
 }
 
 # ---------- SHA-256 (for the code signature Apple requires on ARM64) ----------
@@ -7013,6 +7697,12 @@ fn main(args: array[string]) {
             # everything after the program's file goes to the program
             push(program_args, a)
         } else {
+            if a == "--show-gpu" {
+                # prints the GPU code made for each gpu for
+                g_show_gpu = true
+                k += 1
+                continue
+            }
             if (a == "--target" or a == "-o" or a == "--from") and k + 1 < len(args) {
                 if a == "--target" {
                     target = args[k + 1]

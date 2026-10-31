@@ -113,7 +113,7 @@ for s in shipped {
 }
 
 # 2. test programs: output must match tests/expected/<name>.txt exactly
-tests = ["array", "array_struct_string", "core", "features", "fib", "float", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop", "std", "thread", "use", "web", "crypto", "https", "parallel"]
+tests = ["array", "array_struct_string", "core", "features", "fib", "float", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop", "std", "thread", "use", "web", "crypto", "https", "parallel", "gpu"]
 for name in tests {
     exe = tmp(name)
     if build("tests/" + name + ".slop", exe) {
@@ -145,7 +145,8 @@ checks = [
     Check("slopfetch", "Kernel:"),
     Check("web_server", ""),
     Check("benchmark", ""),
-    Check("fetch", "")
+    Check("fetch", ""),
+    Check("gpu", "ran on")
 ]
 for c in checks {
     exe = tmp(c.name)
@@ -176,7 +177,10 @@ bad = [
     BadCase("print(1 + \"a\")", "'+' needs numbers"),
     BadCase("if 1 < 2 {\n    print(1)", "missing '}'"),
     BadCase("print(7.5 % 2)", "'%' needs whole numbers"),
-    BadCase("n = 1\nn = 2.5", "cannot assign float")
+    BadCase("n = 1\nn = 2.5", "cannot assign float"),
+    BadCase("names = [\"a\"]\ngpu for i in 0..1 {\n    print(names[i])\n}", "line 3: gpu for: 'names' has type array[string]"),
+    BadCase("n = 0\nxs = [1]\ngpu for i in 0..1 {\n    n = xs[i]\n}", "line 4: gpu for: the loop cannot change 'n'"),
+    BadCase("fn f(x: int) -> int {\n    return x\n}\nxs = [1]\ngpu for i in 0..1 {\n    xs[i] = f(i)\n}", "'f()' cannot run on the GPU")
 ]
 for b in bad {
     write_file("slop-test-bad.slop", b.code)

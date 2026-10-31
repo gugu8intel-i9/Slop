@@ -1,0 +1,44 @@
+# Draws the Mandelbrot set as text, working out each of 4 million points
+# with gpu for. On an Apple Silicon Mac it runs on the GPU; elsewhere it
+# runs on all the CPU cores.
+use "time"
+
+fn main() {
+    let w = 2000
+    let h = 2000
+    let counts: array[int] = []
+    for i in 0..w * h {
+        push(counts, 0)
+    }
+    let start = now_ms()
+    gpu for p in 0..w * h {
+        let cx = float(p % w) / float(w) * 3.0 - 2.0
+        let cy = float(p / w) / float(h) * 3.0 - 1.5
+        let x = 0.0
+        let y = 0.0
+        let k = 0
+        while k < 200 and x * x + y * y < 4.0 {
+            let t = x * x - y * y + cx
+            y = 2.0 * x * y + cy
+            x = t
+            k += 1
+        }
+        counts[p] = k
+    }
+    let took = now_ms() - start
+    # a small picture: one character per 50 x 100 points
+    let shades = " .:-=+*#%@"
+    for row in 0..20 {
+        let line = ""
+        for col in 0..80 {
+            let k = counts[(row * 100 + 50) * w + col * 25]
+            line = line + char_at(shades, k * 9 / 200)
+        }
+        print(line)
+    }
+    let name = gpu_name()
+    if name == "" {
+        name = "the CPU cores"
+    }
+    print("ran on " + name + " in " + str(took) + " ms")
+}
