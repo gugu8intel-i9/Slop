@@ -399,6 +399,11 @@ fn __gpu_pipe(src: string, id: int) -> int {
         __ccall("objc_msgSend", opts, __objc("setFastMathEnabled:"), 0)
     }
     lib = __ccall("objc_msgSend", __gpu_dev, __objc("newLibraryWithSource:options:error:"), __gpu_nsstring(src), opts, e)
+    if lib == 0 and opts != 0 {
+        # some GPUs (like virtual ones) only take the default settings
+        __store64(e, 0)
+        lib = __ccall("objc_msgSend", __gpu_dev, __objc("newLibraryWithSource:options:error:"), __gpu_nsstring(src), 0, e)
+    }
     p = 0
     if lib != 0 {
         f = __ccall("objc_msgSend", lib, __objc("newFunctionWithName:"), __gpu_nsstring("slop_gpu_" + __int_to_string(id)))

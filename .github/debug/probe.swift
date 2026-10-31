@@ -20,4 +20,7 @@ for f in CommandLine.arguments.dropFirst() {
   let src = try! String(contentsOfFile: f, encoding: .utf8)
   do { _ = try dev.makeLibrary(source: src, options: nil); print("OK  ", f) }
   catch { print("FAIL", f, error) }
+  let o = MTLCompileOptions(); o.fastMathEnabled = false
+  do { _ = try dev.makeLibrary(source: src, options: o); print("OK   precise", f) }
+  catch { print("FAIL precise", f, error) }
 }
