@@ -6059,7 +6059,7 @@ fn runtime_source() -> string {
         os = embed("runtime/windows.slop")
     }
     if g_target != 2 {
-        os = os + embed("runtime/opencl.slop") + embed("runtime/npu_openvino.slop")
+        os = os + embed("runtime/opencl.slop") + embed("runtime/npu_openvino.slop") + embed("runtime/npu_onnx.slop")
     }
     return embed("runtime/core.slop") + embed("runtime/numbers.slop") + embed("runtime/math.slop") + os
 }

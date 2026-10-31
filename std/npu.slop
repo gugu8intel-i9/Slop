@@ -6,7 +6,8 @@
 #   print(npu_name())                           # "" when there is no NPU
 #
 # Lists hold the numbers row after row. NPUs: the Apple Neural Engine (macOS,
-# through Core ML) and Intel NPUs (Windows and Linux, through OpenVINO).
+# through Core ML); on Windows and Linux Intel NPUs (OpenVINO), and Qualcomm
+# and AMD NPUs (ONNX Runtime with its QNN or VitisAI provider).
 # Without one, the same math runs on the GPU (gpu for), or else the CPU.
 # NPUs compute with 16-bit floats: expect about 3 correct digits.
 

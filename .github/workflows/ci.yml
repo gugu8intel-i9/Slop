@@ -66,5 +66,33 @@ jobs:
           diff --strip-trailing-cr npu-out.txt tests/expected/npu.txt
           ${{ matrix.slop }} run examples/npu.slop | tail -n 1 | tee npu-name.txt
           grep -v "no NPU" npu-name.txt
+      - name: npu module through ONNX Runtime (its CPU; Qualcomm's QNN with its CPU backend on Windows ARM64)
+        if: matrix.slop == 'bin/slop' || matrix.slop == 'bin/slop.exe' || matrix.slop == 'bin/slop-windows-arm64.exe'
+        run: |
+          V=1.24.4
+          case "${{ matrix.slop }}" in
+            bin/slop)
+              curl -sSfL -o ort.tgz https://github.com/microsoft/onnxruntime/releases/download/v$V/onnxruntime-linux-x64-$V.tgz
+              tar xzf ort.tgz
+              export SLOP_ONNXRUNTIME=$(ls $PWD/onnxruntime-linux-x64-$V/lib/libonnxruntime.so.1* | head -n 1)
+              export SLOP_NPU_DEVICE=CPU ;;
+            bin/slop.exe)
+              curl -sSfL -o ort.zip https://github.com/microsoft/onnxruntime/releases/download/v$V/onnxruntime-win-x64-$V.zip
+              unzip -q ort.zip
+              export SLOP_ONNXRUNTIME=$(cygpath -w $PWD/onnxruntime-win-x64-$V/lib/onnxruntime.dll)
+              export SLOP_NPU_DEVICE=CPU ;;
+            *)
+              curl -sSfL -o qnn.zip https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.qnn/$V/microsoft.ml.onnxruntime.qnn.$V.nupkg
+              unzip -q qnn.zip -d qnn
+              export SLOP_ONNXRUNTIME=$(cygpath -w $PWD/qnn/runtimes/win-arm64/native/onnxruntime.dll)
+              export SLOP_NPU_DEVICE=QNN-CPU ;;
+          esac
+          export SLOP_NPU_BACKEND=onnxruntime
+          echo "using $SLOP_ONNXRUNTIME"
+          ${{ matrix.slop }} run tests/npu.slop > npu-ort.txt
+          cat npu-ort.txt
+          diff --strip-trailing-cr npu-ort.txt tests/expected/npu.txt
+          ${{ matrix.slop }} run examples/npu.slop | tail -n 1 | tee npu-ort-name.txt
+          grep "ONNX Runtime" npu-ort-name.txt
       - name: https to a real site (system certificates and name lookup)
         run: ${{ matrix.slop }} run examples/fetch.slop https://github.com/

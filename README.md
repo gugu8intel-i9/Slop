@@ -430,14 +430,18 @@ x = [0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.5, 0.5]
 w = [0.2, -0.4, 1.0, 0.7, 0.1, -1.0]
 y = dense(x, w, [0.1, 0.0, -0.1], 4, 2, 3, "relu")
 z = matmul(x, w, 4, 2, 3)
-print(npu_name())    # "Apple Neural Engine", "Intel NPU", or "" without one
+print(npu_name())    # "Apple Neural Engine", "Intel NPU", "Qualcomm NPU", "AMD NPU", or ""
 ```
 
 - `matmul(a, b, m, k, n)` multiplies `a` (m rows of k) by `b` (k rows of n). `dense(x, w, bias, m, k, n, activation)` is one network layer: the same, plus `bias` (n numbers, or `[]`), then `"relu"`, `"sigmoid"`, `"tanh"` or `""`. Lists hold their numbers row after row.
-- Uses the Apple Neural Engine on Macs (through Core ML, macOS 14 and later) and Intel NPUs (Core Ultra) on Windows and Linux (through OpenVINO, which must be installed; `SLOP_OPENVINO` can name its `openvino_c` library file). Without an NPU, the same math runs on the GPU (`gpu for`), or else the CPU.
+- Uses the Apple Neural Engine on Macs (through Core ML, macOS 14 and later). On Windows and Linux:
+  - Intel NPUs (Core Ultra) through OpenVINO (`SLOP_OPENVINO` can name its `openvino_c` library file).
+  - Qualcomm NPUs (Snapdragon X) through ONNX Runtime with its QNN provider, and AMD NPUs (Ryzen AI) through ONNX Runtime with its VitisAI provider (`SLOP_ONNXRUNTIME` can name the `onnxruntime` library file; `SLOP_VITISAI_CONFIG` passes AMD's config file if your setup needs one).
+  - These libraries come with the vendors' NPU software and must be installed. `SLOP_NPU_BACKEND=openvino` or `onnxruntime` picks one when both are there.
+- Without an NPU, the same math runs on the GPU (`gpu for`), or else the CPU. If the NPU can't take a network, it runs there too (never half on the NPU).
 - NPUs compute with 16-bit floats, so expect about 3 correct digits.
 - Each new size of network is prepared once (that takes a moment on an NPU); later calls with the same sizes are fast.
-- `SLOP_NPU_DEVICE=CPU` sends the work through Core ML or OpenVINO on the CPU, for testing without an NPU.
+- `SLOP_NPU_DEVICE=CPU` sends the work through Core ML, OpenVINO or ONNX Runtime on the CPU, for testing without an NPU; `SLOP_NPU_DEVICE=QNN-CPU` uses Qualcomm's QNN with its CPU backend.
 - `examples/npu.slop` runs a tiny network that knows XOR.
 
 ## Doing things at the same time (async)
