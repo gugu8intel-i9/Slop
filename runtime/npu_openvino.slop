@@ -1,0 +1,259 @@
+# the npu module on Linux and Windows: Intel NPUs through OpenVINO, loaded
+# when first used. SLOP_OPENVINO names the library file if it is not on the
+# usual path; SLOP_NPU_DEVICE picks another OpenVINO device (CPU, for tests).
+__ov_state = 0
+__ov_fns = 0
+__ov_core = 0
+__ov_device = 0
+__ov_is_npu = false
+# compiled networks: (m, k, n, activation and bias, request) for each
+__ov_cache = 0
+__ov_cached = 0
+
+fn __ov_fn(i: int) -> int {
+    return __load64(__ov_fns + i * 8)
+}
+
+fn __ov_init() -> bool {
+    if __ov_state != 0 {
+        return __ov_state == 1
+    }
+    __ov_state = -1
+    lib = 0
+    path = __env("SLOP_OPENVINO")
+    if path != "" {
+        lib = __dl_load(path)
+    }
+    if lib == 0 {
+        lib = __dl_open("openvino_c")
+    }
+    if lib == 0 {
+        return false
+    }
+    names = ["ov_core_create", "ov_core_get_available_devices", "ov_available_devices_free", "ov_core_read_model_from_memory_buffer", "ov_core_compile_model", "ov_compiled_model_create_infer_request", "ov_tensor_create_from_host_ptr", "ov_infer_request_set_input_tensor_by_index", "ov_infer_request_infer", "ov_infer_request_get_output_tensor_by_index", "ov_tensor_data", "ov_tensor_free", "ov_model_free"]
+    # kept for the whole run (bucket 2 is never given back)
+    __ov_fns = __alloc_bytes_in(2, 8 * len(names))
+    __ov_cache = __alloc_bytes_in(2, 40 * 256)
+    for i in 0..len(names) {
+        f = __dl_sym(lib, names[i])
+        if f == 0 {
+            return false
+        }
+        __store64(__ov_fns + i * 8, f)
+    }
+    t = __alloc_bytes(16)
+    if __ccall_ptr(__ov_fn(0), t) != 0 {
+        return false
+    }
+    __ov_core = __load64(t)
+    want = __env("SLOP_NPU_DEVICE")
+    if want == "" {
+        want = "NPU"
+    }
+    # is that device there?
+    if __ccall_ptr(__ov_fn(1), __ov_core, t) != 0 {
+        return false
+    }
+    list = __load64(t)
+    count = __load64(t + 8)
+    found = false
+    for i in 0..count {
+        c = __load64(list + i * 8)
+        if __str(c, __strlen(c)) == want {
+            found = true
+        }
+    }
+    __ccall_ptr(__ov_fn(2), t)
+    if not found {
+        return false
+    }
+    __ov_device = __alloc_bytes_in(2, len(want) + 1)
+    __memcpy(__ov_device, __str_ptr(want), len(want))
+    __store8(__ov_device + len(want), 0)
+    __ov_is_npu = want == "NPU"
+    __ov_state = 1
+    return true
+}
+
+fn __ov_dims(dims: array[int]) -> string {
+    s = ""
+    for d in dims {
+        s = s + "<dim>" + __int_to_string(d) + "</dim>"
+    }
+    return s
+}
+
+fn __ov_param(id: int, name: string, dims: array[int]) -> string {
+    shape = ""
+    for i in 0..len(dims) {
+        if i > 0 {
+            shape = shape + ","
+        }
+        shape = shape + __int_to_string(dims[i])
+    }
+    return "<layer id=\"" + __int_to_string(id) + "\" name=\"" + name + "\" type=\"Parameter\" version=\"opset1\"><data shape=\"" + shape + "\" element_type=\"f32\"/><output><port id=\"0\" precision=\"FP32\">" + __ov_dims(dims) + "</port></output></layer>\n"
+}
+
+fn __ov_edge(a: int, ap: int, b: int, bp: int) -> string {
+    return "<edge from-layer=\"" + __int_to_string(a) + "\" from-port=\"" + __int_to_string(ap) + "\" to-layer=\"" + __int_to_string(b) + "\" to-port=\"" + __int_to_string(bp) + "\"/>\n"
+}
+
+# the network (OpenVINO's XML form): x times w, plus bias, then the activation
+fn __ov_model(m: int, k: int, n: int, has_bias: bool, act: int) -> string {
+    mn = __ov_dims([m, n])
+    layers = __ov_param(0, "x", [m, k]) + __ov_param(1, "w", [k, n])
+    layers = layers + "<layer id=\"2\" name=\"mm\" type=\"MatMul\" version=\"opset1\"><data transpose_a=\"false\" transpose_b=\"false\"/><input><port id=\"0\">" + __ov_dims([m, k]) + "</port><port id=\"1\">" + __ov_dims([k, n]) + "</port></input><output><port id=\"2\" precision=\"FP32\">" + mn + "</port></output></layer>\n"
+    edges = __ov_edge(0, 0, 2, 0) + __ov_edge(1, 0, 2, 1)
+    last = 2
+    last_port = 2
+    if has_bias {
+        layers = layers + __ov_param(3, "b", [n])
+        layers = layers + "<layer id=\"4\" name=\"add\" type=\"Add\" version=\"opset1\"><data auto_broadcast=\"numpy\"/><input><port id=\"0\">" + mn + "</port><port id=\"1\">" + __ov_dims([n]) + "</port></input><output><port id=\"2\" precision=\"FP32\">" + mn + "</port></output></layer>\n"
+        edges = edges + __ov_edge(2, 2, 4, 0) + __ov_edge(3, 0, 4, 1)
+        last = 4
+        last_port = 2
+    }
+    if act > 0 {
+        kind = "Relu"
+        if act == 2 {
+            kind = "Sigmoid"
+        }
+        if act == 3 {
+            kind = "Tanh"
+        }
+        layers = layers + "<layer id=\"5\" name=\"act\" type=\"" + kind + "\" version=\"opset1\"><input><port id=\"0\">" + mn + "</port></input><output><port id=\"1\" precision=\"FP32\">" + mn + "</port></output></layer>\n"
+        edges = edges + __ov_edge(last, last_port, 5, 0)
+        last = 5
+        last_port = 1
+    }
+    layers = layers + "<layer id=\"6\" name=\"out\" type=\"Result\" version=\"opset1\"><input><port id=\"0\">" + mn + "</port></input></layer>\n"
+    edges = edges + __ov_edge(last, last_port, 6, 0)
+    return "<?xml version=\"1.0\"?>\n<net name=\"slop\" version=\"11\">\n<layers>\n" + layers + "</layers>\n<edges>\n" + edges + "</edges>\n</net>\n"
+}
+
+# a ready-to-run request for this shape (compiled once: that is slow on an NPU)
+fn __ov_request(m: int, k: int, n: int, has_bias: bool, act: int) -> int {
+    kind = act * 2
+    if has_bias {
+        kind += 1
+    }
+    for i in 0..__ov_cached {
+        e = __ov_cache + i * 40
+        if __load64(e) == m and __load64(e + 8) == k and __load64(e + 16) == n and __load64(e + 24) == kind {
+            return __load64(e + 32)
+        }
+    }
+    t = __alloc_bytes(16)
+    xml = __ov_model(m, k, n, has_bias, act)
+    req = 0
+    if __ccall_ptr(__ov_fn(3), __ov_core, __cstr(xml), len(xml), 0, t) == 0 {
+        model = __load64(t)
+        if __ccall_ptr(__ov_fn(4), __ov_core, model, __ov_device, 0, t) == 0 {
+            compiled = __load64(t)
+            if __ccall_ptr(__ov_fn(5), compiled, t) == 0 {
+                req = __load64(t)
+            }
+        }
+        __ccall_ptr(__ov_fn(6 + 6), model)
+    }
+    if req == 0 {
+        __eprint("Slop: the NPU could not take this network, so it runs on the GPU or CPU")
+        req = -1
+    }
+    if __ov_cached < 256 {
+        e = __ov_cache + __ov_cached * 40
+        __store64(e, m)
+        __store64(e + 8, k)
+        __store64(e + 16, n)
+        __store64(e + 24, kind)
+        __store64(e + 32, req)
+        __ov_cached += 1
+    }
+    return req
+}
+
+# a float32 tensor over memory at p, with these sizes
+fn __ov_tensor(p: int, dims: array[int]) -> int {
+    shape = __alloc_bytes(8 * len(dims))
+    for i in 0..len(dims) {
+        __store64(shape + i * 8, dims[i])
+    }
+    t = __alloc_bytes(32)
+    r = 0
+    # F32; the shape (rank, sizes) goes by value: in two registers, or by
+    # address on Windows x86-64
+    if __os_name() == "windows" and __arch() != 2 {
+        __store64(t + 8, len(dims))
+        __store64(t + 16, shape)
+        r = __ccall_ptr(__ov_fn(6), 5, t + 8, p, t)
+    } else {
+        r = __ccall_ptr(__ov_fn(6), 5, len(dims), shape, p, t)
+    }
+    if r != 0 {
+        return 0
+    }
+    return __load64(t)
+}
+
+fn __ov_floats(xs: array[float]) -> int {
+    p = __alloc_bytes(len(xs) * 4 + 16)
+    for i in 0..len(xs) {
+        __store32(p + i * 4, __f64_to_f32(float_bits(xs[i])))
+    }
+    return p
+}
+
+fn __npu_dense(x: array[float], w: array[float], bias: array[float], m: int, k: int, n: int, act: int, out: array[float]) -> bool {
+    if not __gpu_thread_ok() or not __ov_init() {
+        return false
+    }
+    has_bias = len(bias) > 0
+    req = __ov_request(m, k, n, has_bias, act)
+    if req == -1 {
+        return false
+    }
+    ins: array[int] = []
+    push(ins, __ov_tensor(__ov_floats(x), [m, k]))
+    push(ins, __ov_tensor(__ov_floats(w), [k, n]))
+    if has_bias {
+        push(ins, __ov_tensor(__ov_floats(bias), [n]))
+    }
+    ok = true
+    for i in 0..len(ins) {
+        if ins[i] == 0 or __ccall_ptr(__ov_fn(7), req, i, ins[i]) != 0 {
+            ok = false
+        }
+    }
+    t = __alloc_bytes(16)
+    if ok and __ccall_ptr(__ov_fn(8), req) == 0 and __ccall_ptr(__ov_fn(9), req, 0, t) == 0 {
+        res = __load64(t)
+        if __ccall_ptr(__ov_fn(10), res, t) == 0 {
+            p = __load64(t)
+            for i in 0..m * n {
+                out[i] = float_from_bits(__f32_to_f64(__load32(p + i * 4)))
+            }
+        } else {
+            ok = false
+        }
+        __ccall_ptr(__ov_fn(11), res)
+    } else {
+        ok = false
+    }
+    for tn in ins {
+        if tn != 0 {
+            __ccall_ptr(__ov_fn(11), tn)
+        }
+    }
+    return ok
+}
+
+# the NPU's name, or "" when there is none
+fn __npu_name() -> string {
+    if not __gpu_thread_ok() or not __ov_init() {
+        return ""
+    }
+    if __ov_is_npu {
+        return "Intel NPU"
+    }
+    return "OpenVINO " + __str(__ov_device, __strlen(__ov_device))
+}

@@ -6059,7 +6059,7 @@ fn runtime_source() -> string {
         os = embed("runtime/windows.slop")
     }
     if g_target != 2 {
-        os = os + embed("runtime/opencl.slop")
+        os = os + embed("runtime/opencl.slop") + embed("runtime/npu_openvino.slop")
     }
     return embed("runtime/core.slop") + embed("runtime/numbers.slop") + embed("runtime/math.slop") + os
 }
@@ -6207,7 +6207,7 @@ fn use_lines(src: string) -> array[string] {
 
 # the standard library: modules built into slop itself
 fn std_modules() -> array[string] {
-    return ["crypto", "csv", "files", "lists", "math", "random", "strings", "testing", "time", "tls", "web"]
+    return ["crypto", "csv", "files", "lists", "math", "npu", "random", "strings", "testing", "time", "tls", "web"]
 }
 
 fn std_source(name: string) -> string {
@@ -6231,6 +6231,9 @@ fn std_source(name: string) -> string {
     }
     if name == "random" {
         return embed("std/random.slop")
+    }
+    if name == "npu" {
+        return embed("std/npu.slop")
     }
     if name == "strings" {
         return embed("std/strings.slop")

@@ -480,6 +480,14 @@ fn __dl_open(name: string) -> int {
     return __ccall("LoadLibraryA", __cstr(name + ".dll"))
 }
 
+fn __dl_load(file: string) -> int {
+    if __contains(file, "/") or __contains(file, "\\") {
+        # LOAD_WITH_ALTERED_SEARCH_PATH: its own folder is searched for what it needs
+        return __ccall("LoadLibraryExA", __cstr(file), 0, 8)
+    }
+    return __ccall("LoadLibraryA", __cstr(file))
+}
+
 fn __dl_sym(lib: int, name: string) -> int {
     return __ccall("GetProcAddress", lib, __cstr(name))
 }

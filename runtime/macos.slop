@@ -348,7 +348,8 @@ __gpu_sels = 0
 # the Objective-C selector for a method name (looked up once per name)
 fn __objc(s: string) -> int {
     if __gpu_sels == 0 {
-        __gpu_sels = __alloc_bytes(16 * 64)
+        # kept for the whole run (bucket 2 is never given back)
+        __gpu_sels = __alloc_bytes_in(2, 16 * 64)
         __memzero(__gpu_sels, 16 * 64)
     }
     k = __str_ptr(s)
@@ -383,10 +384,11 @@ fn __gpu_init() -> bool {
     if __gpu_queue == 0 {
         return false
     }
-    __gpu_pipes = __alloc_bytes(8 * 4096)
+    # kept for the whole run (bucket 2 is never given back)
+    __gpu_pipes = __alloc_bytes_in(2, 8 * 4096)
     __memzero(__gpu_pipes, 8 * 4096)
-    __gpu_bufs = __alloc_bytes(8 * 32)
-    __gpu_tmp = __alloc_bytes(64)
+    __gpu_bufs = __alloc_bytes_in(2, 8 * 32)
+    __gpu_tmp = __alloc_bytes_in(2, 64)
     __gpu_state = 1
     return true
 }
@@ -576,4 +578,333 @@ fn __gpu_name() -> string {
     __ccall("objc_autoreleasePoolPop", pool)
     s = __str(p, n)
     return s
+}
+
+# ---------- the npu module: the Apple Neural Engine through Core ML ----------
+# Core ML runs networks it loads from model files, so each shape gets a small
+# one, written in Core ML's format (protocol buffers). SLOP_NPU_DEVICE=CPU
+# uses Core ML on the CPU instead (for testing on Macs without the NPU).
+__ane_state = 0
+__ane_units = 0
+__ane_cache = 0
+__ane_cached = 0
+
+fn __pb_varint(v: int) -> string {
+    s = ""
+    while v >= 128 {
+        s = s + __chr(v % 128 + 128)
+        v = v / 128
+    }
+    return s + __chr(v)
+}
+
+fn __pb_bytes(field: int, payload: string) -> string {
+    return __pb_varint(field * 8 + 2) + __pb_varint(len(payload)) + payload
+}
+
+fn __pb_int(field: int, v: int) -> string {
+    return __pb_varint(field * 8) + __pb_varint(v)
+}
+
+# a float32 multi-array input or output called name, with these sizes
+fn __ane_feature(name: string, dims: array[int]) -> string {
+    packed = ""
+    for d in dims {
+        packed = packed + __pb_varint(d)
+    }
+    array_type = __pb_bytes(1, packed) + __pb_int(2, 65568)
+    return __pb_bytes(1, name) + __pb_bytes(3, __pb_bytes(5, array_type))
+}
+
+fn __ane_layer(name: string, inputs: array[string], output: string, field: int, params: string) -> string {
+    s = __pb_bytes(1, name)
+    for i in inputs {
+        s = s + __pb_bytes(2, i)
+    }
+    return s + __pb_bytes(3, output) + __pb_bytes(field, params)
+}
+
+fn __ane_model(m: int, k: int, n: int, has_bias: bool, act: int) -> string {
+    desc = __pb_bytes(1, __ane_feature("x", [m, k])) + __pb_bytes(1, __ane_feature("w", [k, n]))
+    if has_bias {
+        desc = desc + __pb_bytes(1, __ane_feature("b", [n]))
+    }
+    desc = desc + __pb_bytes(10, __ane_feature("out", [m, n]))
+    last = "out"
+    if has_bias or act > 0 {
+        last = "mm"
+    }
+    # batchedMatmul
+    layers = __pb_bytes(1, __ane_layer("mm", ["x", "w"], last, 1045, ""))
+    if has_bias {
+        to = "out"
+        if act > 0 {
+            to = "sum"
+        }
+        # addBroadcastable
+        layers = layers + __pb_bytes(1, __ane_layer("add", [last, "b"], to, 880, ""))
+        last = to
+    }
+    if act > 0 {
+        # activation: ReLU 10, sigmoid 40, tanh 30
+        kind = 10
+        if act == 2 {
+            kind = 40
+        }
+        if act == 3 {
+            kind = 30
+        }
+        layers = layers + __pb_bytes(1, __ane_layer("act", [last], "out", 130, __pb_bytes(kind, "")))
+    }
+    # exact array shapes; specification version 4 (macOS 10.15)
+    network = layers + __pb_int(5, 1)
+    return __pb_int(1, 4) + __pb_bytes(2, desc) + __pb_bytes(500, network)
+}
+
+fn __ns_number(v: int) -> int {
+    return __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("NSNumber")), __objc("numberWithLongLong:"), v)
+}
+
+fn __ns_array(items: array[int]) -> int {
+    p = __alloc_bytes(8 * len(items) + 8)
+    for i in 0..len(items) {
+        __store64(p + i * 8, items[i])
+    }
+    return __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("NSArray")), __objc("arrayWithObjects:count:"), p, len(items))
+}
+
+fn __ane_init() -> bool {
+    if __ane_state != 0 {
+        return __ane_state == 1
+    }
+    __ane_state = -1
+    if __ccall("dlopen", __cstr("/System/Library/Frameworks/CoreML.framework/CoreML"), 2) == 0 {
+        return false
+    }
+    want = __env("SLOP_NPU_DEVICE")
+    if want == "CPU" {
+        # MLComputeUnitsCPUOnly
+        __ane_units = 0
+    } else {
+        if not __ane_present() {
+            return false
+        }
+        # MLComputeUnitsCPUAndNeuralEngine
+        __ane_units = 3
+    }
+    # kept for the whole run (bucket 2 is never given back)
+    __ane_cache = __alloc_bytes_in(2, 40 * 256)
+    __ane_state = 1
+    return true
+}
+
+# does this Mac have a Neural Engine? (macOS 14 and later can tell)
+fn __ane_present() -> bool {
+    devices = __ccall("objc_getClass", __cstr("MLComputeDevice"))
+    ane = __ccall("objc_getClass", __cstr("MLNeuralEngineComputeDevice"))
+    if devices == 0 or ane == 0 {
+        return false
+    }
+    pool = __ccall("objc_autoreleasePoolPush")
+    list = __ccall("objc_msgSend", devices, __objc("allComputeDevices"))
+    found = false
+    if list != 0 {
+        count = __ccall("objc_msgSend", list, __objc("count"))
+        for i in 0..count {
+            d = __ccall("objc_msgSend", list, __objc("objectAtIndex:"), i)
+            if __ccall("objc_msgSend", d, __objc("isKindOfClass:"), ane) % 256 != 0 {
+                found = true
+            }
+        }
+    }
+    __ccall("objc_autoreleasePoolPop", pool)
+    return found
+}
+
+fn __ane_error(e: int) -> string {
+    if __load64(e) == 0 {
+        return "unknown error"
+    }
+    d = __ccall("objc_msgSend", __load64(e), __objc("description"))
+    c = __ccall("objc_msgSend", d, __objc("UTF8String"))
+    return __str(c, __strlen(c))
+}
+
+# the loaded model for this shape (made once); -1 if Core ML refused it
+fn __ane_model_for(m: int, k: int, n: int, has_bias: bool, act: int) -> int {
+    kind = act * 2
+    if has_bias {
+        kind += 1
+    }
+    for i in 0..__ane_cached {
+        c = __ane_cache + i * 40
+        if __load64(c) == m and __load64(c + 8) == k and __load64(c + 16) == n and __load64(c + 24) == kind {
+            return __load64(c + 32)
+        }
+    }
+    pool = __ccall("objc_autoreleasePoolPush")
+    e = __alloc_bytes(8)
+    __store64(e, 0)
+    path = "/tmp/slop-npu-" + __int_to_string(__ccall32("getpid")) + "-" + __int_to_string(__ane_cached) + ".mlmodel"
+    __write_file(path, __ane_model(m, k, n, has_bias, act))
+    url = __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("NSURL")), __objc("fileURLWithPath:"), __gpu_nsstring(path))
+    compiled = __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("MLModel")), __objc("compileModelAtURL:error:"), url, e)
+    __remove_file(path)
+    model = -1
+    if compiled != 0 {
+        cfg = __ccall("objc_msgSend", __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("MLModelConfiguration")), __objc("alloc")), __objc("init"))
+        __ccall("objc_msgSend", cfg, __objc("setComputeUnits:"), __ane_units)
+        model = __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("MLModel")), __objc("modelWithContentsOfURL:configuration:error:"), compiled, cfg, e)
+        if model != 0 {
+            __ccall("objc_msgSend", model, __objc("retain"))
+        } else {
+            model = -1
+        }
+    }
+    if model == -1 {
+        __eprint("Slop: the NPU could not take this network, so it runs on the GPU or CPU: " + __ane_error(e))
+    }
+    __ccall("objc_autoreleasePoolPop", pool)
+    if __ane_cached < 256 {
+        c = __ane_cache + __ane_cached * 40
+        __store64(c, m)
+        __store64(c + 8, k)
+        __store64(c + 16, n)
+        __store64(c + 24, kind)
+        __store64(c + 32, model)
+        __ane_cached += 1
+    }
+    return model
+}
+
+# a float32 MLMultiArray over memory at p (rows of the last size)
+fn __ane_array(p: int, dims: array[int]) -> int {
+    shape: array[int] = []
+    strides: array[int] = []
+    for i in 0..len(dims) {
+        push(shape, __ns_number(dims[i]))
+        s = 1
+        for j in i + 1..len(dims) {
+            s = s * dims[j]
+        }
+        push(strides, __ns_number(s))
+    }
+    a = __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("MLMultiArray")), __objc("alloc"))
+    e = __alloc_bytes(8)
+    __store64(e, 0)
+    return __ccall("objc_msgSend", a, __objc("initWithDataPointer:shape:dataType:strides:deallocator:error:"), p, __ns_array(shape), 65568, __ns_array(strides), 0, e)
+}
+
+fn __ane_floats(xs: array[float]) -> int {
+    p = __alloc_bytes(len(xs) * 4 + 16)
+    for i in 0..len(xs) {
+        __store32(p + i * 4, __f64_to_f32(float_bits(xs[i])))
+    }
+    return p
+}
+
+# a 16-bit float's bits -> float
+fn __half_to_float(h: int) -> float {
+    sign = 1.0
+    if h >= 32768 {
+        sign = -1.0
+        h -= 32768
+    }
+    ex = h / 1024
+    fr = h % 1024
+    if ex == 0 {
+        return sign * float(fr) / 16777216.0
+    }
+    if ex == 31 {
+        return sign * 1.0 / 0.0
+    }
+    v = float(1024 + fr)
+    ex -= 25
+    while ex > 0 {
+        v = v * 2.0
+        ex -= 1
+    }
+    while ex < 0 {
+        v = v / 2.0
+        ex += 1
+    }
+    return sign * v
+}
+
+fn __ane_input(name: string, p: int, dims: array[int], keys: int, objs: int, i: int) {
+    fv = __ccall("objc_getClass", __cstr("MLFeatureValue"))
+    __store64(keys + i * 8, __gpu_nsstring(name))
+    __store64(objs + i * 8, __ccall("objc_msgSend", fv, __objc("featureValueWithMultiArray:"), __ane_array(p, dims)))
+}
+
+fn __npu_dense(x: array[float], w: array[float], bias: array[float], m: int, k: int, n: int, act: int, out: array[float]) -> bool {
+    if not __ane_init() {
+        return false
+    }
+    has_bias = len(bias) > 0
+    model = __ane_model_for(m, k, n, has_bias, act)
+    if model == -1 {
+        return false
+    }
+    pool = __ccall("objc_autoreleasePoolPush")
+    keys = __alloc_bytes(32)
+    objs = __alloc_bytes(32)
+    count = 2
+    __ane_input("x", __ane_floats(x), [m, k], keys, objs, 0)
+    __ane_input("w", __ane_floats(w), [k, n], keys, objs, 1)
+    if has_bias {
+        __ane_input("b", __ane_floats(bias), [n], keys, objs, 2)
+        count = 3
+    }
+    dict = __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("NSDictionary")), __objc("dictionaryWithObjects:forKeys:count:"), objs, keys, count)
+    e = __alloc_bytes(8)
+    __store64(e, 0)
+    provider = __ccall("objc_msgSend", __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("MLDictionaryFeatureProvider")), __objc("alloc")), __objc("initWithDictionary:error:"), dict, e)
+    result = 0
+    if provider != 0 {
+        result = __ccall("objc_msgSend", model, __objc("predictionFromFeatures:error:"), provider, e)
+    }
+    ok = false
+    if result != 0 {
+        arr = __ccall("objc_msgSend", __ccall("objc_msgSend", result, __objc("featureValueForName:"), __gpu_nsstring("out")), __objc("multiArrayValue"))
+        if arr != 0 {
+            kind = __ccall("objc_msgSend", arr, __objc("dataType"))
+            p = __ccall("objc_msgSend", arr, __objc("dataPointer"))
+            st = __ccall("objc_msgSend", arr, __objc("strides"))
+            s0 = __ccall("objc_msgSend", __ccall("objc_msgSend", st, __objc("objectAtIndex:"), 0), __objc("longLongValue"))
+            s1 = __ccall("objc_msgSend", __ccall("objc_msgSend", st, __objc("objectAtIndex:"), 1), __objc("longLongValue"))
+            ok = true
+            for i in 0..m {
+                for j in 0..n {
+                    at = i * s0 + j * s1
+                    v = 0.0
+                    if kind == 65568 {
+                        v = float_from_bits(__f32_to_f64(__load32(p + at * 4)))
+                    } else if kind == 65600 {
+                        v = float_from_bits(__load64(p + at * 8))
+                    } else if kind == 65552 {
+                        v = __half_to_float(__load16(p + at * 2))
+                    } else {
+                        ok = false
+                    }
+                    out[i * n + j] = v
+                }
+            }
+        }
+    } else {
+        __eprint("Slop: the NPU could not run this network: " + __ane_error(e))
+    }
+    __ccall("objc_autoreleasePoolPop", pool)
+    return ok
+}
+
+# the NPU's name, or "" when there is none
+fn __npu_name() -> string {
+    if not __ane_init() {
+        return ""
+    }
+    if __ane_units == 0 {
+        return "Core ML CPU"
+    }
+    return "Apple Neural Engine"
 }

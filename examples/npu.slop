@@ -1,0 +1,25 @@
+# A tiny neural network that knows XOR, run with the npu module: on the NPU
+# when there is one (Apple Neural Engine, Intel NPU), else the GPU or CPU.
+use "npu"
+
+fn main() {
+    # four examples at once, 2 numbers each
+    let inputs = [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0]
+    # layer 1: 2 inputs -> 2 hidden numbers, with relu
+    let w1 = [1.0, 1.0, 1.0, 1.0]
+    let b1 = [0.0, -1.0]
+    let hidden = dense(inputs, w1, b1, 4, 2, 2, "relu")
+    # layer 2: 2 hidden numbers -> 1 answer
+    let w2 = [1.0, -2.0]
+    let answers = dense(hidden, w2, [], 4, 2, 1, "")
+    for i in 0..4 {
+        let a = int(inputs[i * 2])
+        let b = int(inputs[i * 2 + 1])
+        print(str(a) + " xor " + str(b) + " = " + str(int(round(answers[i]))))
+    }
+    let name = npu_name()
+    if name == "" {
+        name = "no NPU (the GPU or CPU did it)"
+    }
+    print("ran on " + name)
+}
