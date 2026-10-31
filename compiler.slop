@@ -4568,6 +4568,14 @@ fn gx_type_of(name: string) -> string {
     return ""
 }
 
+# the Metal type for a type tag: GPU whole numbers are 32-bit
+fn gx_ctype(t: string) -> string {
+    if t == "long" {
+        return "int"
+    }
+    return t
+}
+
 fn gx_num_type(a: string, b: string) -> string {
     if a == "float" or b == "float" {
         return "float"
@@ -4693,7 +4701,7 @@ fn gx_primary() -> string {
         let v = g_tk_num[g_pos]
         g_pos += 1
         g_gx_type = "long"
-        return "(" + int_to_string(v) + "L)"
+        return "(" + int_to_string(v) + ")"
     }
     if k == 7 {
         let t = replace(tk(), "_", "")
@@ -4742,7 +4750,7 @@ fn gx_primary() -> string {
         if t == "af" {
             g_gx_type = "float"
         }
-        return "slop_rd(v_" + name + ", v_" + name + "_n, (long)(" + idx + "), slop_err)"
+        return "slop_rd(v_" + name + ", v_" + name + "_n, (int)(" + idx + "), slop_err)"
     }
     g_gx_type = t
     return "v_" + name
@@ -4786,7 +4794,7 @@ fn gx_call(name: string) -> string {
     }
     if name == "int" and len(args) == 1 {
         g_gx_type = "long"
-        return "long(" + args[0] + ")"
+        return "int(" + args[0] + ")"
     }
     gx_err("'" + name + "()' cannot run on the GPU (only math like sqrt, sin, pow, abs, float, int)")
     return ""
@@ -4840,7 +4848,7 @@ fn gx_stmt() -> string {
         g_gx_depth += 1
         let body = gx_block()
         g_gx_depth -= 1
-        return "for (long v_" + v + " = (long)(" + a + "); v_" + v + " < (long)(" + b + "); v_" + v + "++) {\n" + body + "}\n"
+        return "for (int v_" + v + " = (int)(" + a + "); v_" + v + " < (int)(" + b + "); v_" + v + "++) {\n" + body + "}\n"
     }
     if is_kw("continue") {
         g_pos += 1
@@ -4882,7 +4890,7 @@ fn gx_stmt() -> string {
         if t == "ai" and g_gx_type == "float" {
             gx_err("cannot store a float in a list of whole numbers (use int())")
         }
-        return "{ long slop_i = (long)(" + idx + "); if (slop_ok(v_" + name + "_n, slop_i, slop_err)) { v_" + name + "[slop_i] " + op + " " + v + "; } }\n"
+        return "{ int slop_i = (int)(" + idx + "); if (slop_ok(v_" + name + "_n, slop_i, slop_err)) { v_" + name + "[slop_i] " + op + " " + v + "; } }\n"
     }
     if t == "af" or t == "ai" {
         gx_err("the loop cannot change '" + name + "' (only its items, like " + name + "[i] = ...)")
@@ -4912,7 +4920,7 @@ fn gx_stmt() -> string {
         }
         push(g_gx_names, name)
         push(g_gx_types, mt)
-        return mt + " v_" + name + " = " + v + ";\n"
+        return gx_ctype(mt) + " v_" + name + " = " + v + ";\n"
     }
     let local = false
     for n in g_gx_names {
@@ -5018,7 +5026,7 @@ fn gen_gpu_for() {
     let k = int_to_string(g_par_count)
     let kname = "slop_gpu_" + k
     # the kernel in Metal's shading language
-    let params = "device atomic_int* slop_err [[buffer(0)]], constant long& slop_base [[buffer(1)]], constant long& slop_count [[buffer(2)]]"
+    let params = "device atomic_int* slop_err [[buffer(0)]], constant int& slop_base [[buffer(1)]], constant int& slop_count [[buffer(2)]]"
     let slot = 3
     for i in 0..len(g_gx_caps) {
         let n = g_gx_caps[i]
@@ -5026,12 +5034,12 @@ fn gen_gpu_for() {
         if kd == "af" or kd == "ai" {
             let ty = "float"
             if kd == "ai" {
-                ty = "long"
+                ty = "int"
             }
-            params = params + ", device " + ty + "* v_" + n + " [[buffer(" + int_to_string(slot) + ")]], constant long& v_" + n + "_n [[buffer(" + int_to_string(slot + 1) + ")]]"
+            params = params + ", device " + ty + "* v_" + n + " [[buffer(" + int_to_string(slot) + ")]], constant int& v_" + n + "_n [[buffer(" + int_to_string(slot + 1) + ")]]"
             slot += 2
         } else {
-            let ty = "long"
+            let ty = "int"
             if kd == "f" {
                 ty = "float"
             }
@@ -5047,7 +5055,7 @@ fn gen_gpu_for() {
         let kd = g_gx_kinds[i]
         let n = g_gx_caps[i]
         if kd == "i" {
-            setup = setup + "long v_" + n + " = v_" + n + "_in;\n"
+            setup = setup + "int v_" + n + " = v_" + n + "_in;\n"
         }
         if kd == "f" {
             setup = setup + "float v_" + n + " = v_" + n + "_in;\n"
@@ -5060,7 +5068,7 @@ fn gen_gpu_for() {
     g_pos = body_start
     let body = gx_block()
     g_pos = saved_pos
-    let msl = "#include <metal_stdlib>\nusing namespace metal;\n" + "template<typename T> T slop_rd(device T* a, long n, long i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return T(0); } return a[i]; }\n" + "inline bool slop_ok(long n, long i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return false; } return true; }\n" + "kernel void " + kname + "(" + params + ", uint slop_gid [[thread_position_in_grid]]) {\n" + "if ((long)slop_gid >= slop_count) return;\n" + "long v_" + var + " = slop_base + (long)slop_gid;\n" + setup + body + "}\n"
+    let msl = "#include <metal_stdlib>\nusing namespace metal;\n" + "template<typename T> T slop_rd(device T* a, int n, int i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return T(0); } return a[i]; }\n" + "inline bool slop_ok(int n, int i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return false; } return true; }\n" + "kernel void " + kname + "(" + params + ", uint slop_gid [[thread_position_in_grid]]) {\n" + "if ((int)slop_gid >= slop_count) return;\n" + "int v_" + var + " = slop_base + (int)slop_gid;\n" + setup + body + "}\n"
     # the code that runs it: on the GPU if there is one, else on the CPU cores
     let saved_file = g_cur_file
     g_cur_file = file

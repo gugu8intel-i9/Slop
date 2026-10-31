@@ -420,9 +420,7 @@ fn __gpu_pipe(src: string, id: int) -> int {
             c = __ccall("objc_msgSend", d, __objc("UTF8String"))
             msg = __str(c, __strlen(c))
         }
-        ns = __gpu_nsstring(src)
-        info = " (source " + __int_to_string(len(src)) + " bytes, as text " + __int_to_string(ns) + "/" + __int_to_string(__ccall("objc_msgSend", ns, __objc("length"))) + ", lib " + __int_to_string(lib) + ", opts " + __int_to_string(opts) + ")"
-        __eprint("Slop: the GPU could not take this gpu for, so it runs on the CPU: " + msg + info)
+        __eprint("Slop: the GPU could not take this gpu for, so it runs on the CPU: " + msg)
         if id < 4096 {
             __store64(__gpu_pipes + id * 8, -1)
         }
@@ -439,7 +437,7 @@ fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
         return false
     }
     n = b - a
-    if n > 1073741824 {
+    if n > 1073741824 or a < -2147483648 or b > 2147483647 {
         return false
     }
     __gpu_pool = __ccall("objc_autoreleasePoolPush")
@@ -459,8 +457,8 @@ fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
     __gpu_err = __gpu_new_buffer(4)
     __store32(__ccall("objc_msgSend", __gpu_err, __objc("contents")), 0)
     __gpu_bind(__gpu_err)
-    __gpu_bytes(a, 8)
-    __gpu_bytes(n, 8)
+    __gpu_bytes(a, 4)
+    __gpu_bytes(n, 4)
     __store64(__gpu_tmp + 32, pipe)
     return true
 }
@@ -490,7 +488,7 @@ fn __gpu_bind(buf: int) {
 fn __gpu_buffer(bytes: int, n: int) -> int {
     buf = __gpu_new_buffer(bytes)
     __gpu_bind(buf)
-    __gpu_bytes(n, 8)
+    __gpu_bytes(n, 4)
     return __ccall("objc_msgSend", buf, __objc("contents"))
 }
 

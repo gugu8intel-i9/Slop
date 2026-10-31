@@ -409,7 +409,7 @@ print(gpu_name())    # e.g. "Apple M2", or "" when there is no GPU
 - Works on the GPU of Apple Silicon Macs (M1 and later). Everywhere else, and if the GPU is missing, the same loop runs as a `parallel for` on the CPU cores, so programs work the same on every machine.
 - The body can use numbers, lists of numbers (by index, like `xs[i]`), `if`/`else`, `for`, `while`, `continue`, and math: `sqrt`, `sin`, `cos`, `tan`, `atan`, `exp`, `log`, `pow`, `abs`, `floor`, `ceil`, `round`, `float()`, `int()`. It cannot print, use text, or call your own functions; the compiler says so if you try.
 - Like `parallel for`, it can read local numbers and write into lists, but not change outside variables.
-- GPUs work with 32-bit floats, so float results there have about 7 correct digits instead of about 16. Whole numbers are exact.
+- GPUs work with 32-bit numbers: floats there have about 7 correct digits instead of about 16, and whole numbers must stay between about -2 billion and 2 billion (bigger ones wrap around).
 - Going past the end of a list stops the program, as everywhere else in Slop.
 - `slop --show-gpu check app.slop` prints the GPU code made for each `gpu for`.
 - Moving lists to and from the GPU takes time, so it pays off for loops with lots of work per step, or millions of steps. `examples/gpu.slop` draws the Mandelbrot set this way.
