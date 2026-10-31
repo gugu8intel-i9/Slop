@@ -43,6 +43,18 @@ fn __os_thread_join(block: int) {
     __ccall("pthread_join", __load64(block + 7184), 0)
 }
 
+# sleeps while the 32-bit word at p still holds v (may wake early)
+fn __os_wait(p: int, v: int) {
+    # UL_COMPARE_AND_WAIT, no time limit
+    __ccall32("__ulock_wait", 1, p, v, 0)
+}
+
+# wakes everyone waiting on the word at p
+fn __os_wake(p: int) {
+    # UL_COMPARE_AND_WAIT | ULF_WAKE_ALL
+    __ccall32("__ulock_wake", 257, p, 0)
+}
+
 fn __os_thread_release(block: int) {
 }
 

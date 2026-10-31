@@ -7,3 +7,8 @@ slop-test-*
 *.out
 /slop_packages/
 /slop.pkg
+# programs built from tests (slop run)
+tests/*
+!tests/*.*
+!tests/*/
+tests/*.exe

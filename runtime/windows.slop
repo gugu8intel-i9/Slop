@@ -61,6 +61,18 @@ fn __os_thread_join(block: int) {
     __ccall("CloseHandle", h)
 }
 
+# sleeps while the 32-bit word at p still holds v (may wake early)
+fn __os_wait(p: int, v: int) {
+    w = __scratch() + 56
+    __store32(w, v)
+    __ccall32("WaitOnAddress", p, w, 4, 4294967295)
+}
+
+# wakes everyone waiting on the word at p
+fn __os_wake(p: int) {
+    __ccall("WakeByAddressAll", p)
+}
+
 fn __os_thread_release(block: int) {
 }
 

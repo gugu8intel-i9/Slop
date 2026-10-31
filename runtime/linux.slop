@@ -145,6 +145,26 @@ fn __os_thread_join(block: int) {
     }
 }
 
+# sleeps while the 32-bit word at p still holds v (may wake early)
+fn __os_wait(p: int, v: int) {
+    # FUTEX_WAIT_PRIVATE
+    if __arm() {
+        __syscall(98, p, 128, v, 0)
+    } else {
+        __syscall(202, p, 128, v, 0)
+    }
+}
+
+# wakes everyone waiting on the word at p
+fn __os_wake(p: int) {
+    # FUTEX_WAKE_PRIVATE
+    if __arm() {
+        __syscall(98, p, 129, 2147483647, 0)
+    } else {
+        __syscall(202, p, 129, 2147483647, 0)
+    }
+}
+
 fn __os_thread_release(block: int) {
     __os_release(__load64(block + 7208), __load64(block + 7216))
 }

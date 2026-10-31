@@ -388,7 +388,7 @@ parallel for i in 0..1_000_000 {
 
 - The range is cut into small blocks that are dealt out to one thread per core, so loops whose steps take different times stay balanced. The loop ends when every block is done.
 - The body can read local variables (it gets copies), write into lists (`results[i] = ...`), and change globals inside `lock()` / `unlock()`. Changing a local variable is an error, since the change would be lost; so are `break` and `return`.
-- Each `parallel for` starts its threads fresh, so use it for loops that do real work (thousands of steps or more).
+- Threads come from a pool that is kept between loops, so even small loops are cheap to share out.
 - On a 4-core machine, counting primes below 3 million takes 316 ms instead of 1047 ms.
 
 ## Using the GPU
@@ -437,6 +437,7 @@ for t in tasks {
 ```
 
 - `async f(a, b)` returns a `task[T]` right away, where `T` is what `f` returns. The call runs on its own thread, so waiting (for the network, files, `sleep`) and heavy work both happen in parallel.
+- Threads come from a pool: when a task's result is collected, its thread waits for the next task instead of ending. Starting a task then takes well under a microsecond (10,000 tasks one after another: 2 ms), instead of the tens of microseconds a new system thread costs. The pool keeps up to 256 threads; more are started when needed and end when done.
 - `await t` waits for the task and gives its result. Results can be anything: numbers, text, lists or structs. Await each task once.
 - `done(t)` tells whether a task has finished, without waiting.
 - `async http_get(url)` works directly, since `http_get` is a function too.
@@ -445,7 +446,7 @@ for t in tasks {
 
 ## Threads in short
 
-- `t = spawn f(a, b)` starts `f(a, b)` on a new thread. `f` must return `int`, `float`, `bool` or nothing.
+- `t = spawn f(a, b)` runs `f(a, b)` on another thread (from the same pool as `async`). `f` must return `int`, `float`, `bool` or nothing.
 - `join(t)` waits for it and gives its result. Join each thread once.
 - Global variables are shared. Wrap changes to shared values in `lock()` / `unlock()`.
 - Join a thread before the function that started it returns if you passed it strings or lists.
