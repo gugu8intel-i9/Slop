@@ -34,12 +34,6 @@ jobs:
       - name: Rosetta 2
         if: matrix.slop == 'bin/slop-macos'
         run: /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
-      - name: GPU probe (temporary)
-        if: matrix.slop == 'bin/slop-macos-arm64'
-        continue-on-error: true
-        run: |
-          bin/slop-macos-arm64 --show-gpu check tests/gpu.slop | awk '/^--- /{n++; f="k" n ".metal"; next} /^ok:/{next} {print > f}'
-          swiftc -O .github/debug/probe.swift -o probe && ./probe k*.metal
       - name: Test suite
         run: ${{ matrix.slop }} run tests/run.slop
       - name: gpu for (shows whether the GPU was used)
