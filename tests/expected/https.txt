@@ -1,0 +1,4 @@
+200 true 
+you sent hello tls 200
+true 404
+0 https: the certificate is not signed by anyone this computer trusts

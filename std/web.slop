@@ -12,6 +12,8 @@
 #   }
 #
 #   serve(8080)    # then open http://localhost:8080
+#   serve_https(8443, "cert.pem", "key.pem")   # https (make_cert makes a test pair)
+use "tls.slop"
 
 struct Request {
     method: string,
@@ -32,6 +34,8 @@ __web_param_names: array[string] = []
 __web_param_values: array[string] = []
 __web_quiet = false
 __web_status = 0
+__web_error = ""
+__web_insecure = false
 
 # ---------- answers ----------
 fn html(body: string) -> Response {
@@ -365,29 +369,34 @@ fn serve_count(port: int, count: int) {
     socket_close(fd)
 }
 
-# reads one request, answers it with handle(), closes the connection
-fn __web_answer(c: int) {
-    raw = ""
-    head_end = -1
-    while head_end < 0 and len(raw) < 1048576 {
-        piece = socket_read(c)
-        if piece == "" {
-            break
+# has a whole request (head and body) arrived?
+fn __web_complete(raw: string) -> bool {
+    he = find(raw, "\r\n\r\n")
+    if he < 0 {
+        return false
+    }
+    want = 0
+    for line in split(slice(raw, 0, he), "\r\n") {
+        c = find(line, ":")
+        if c > 0 and lower(trim(slice(line, 0, c))) == "content-length" {
+            want = to_int(trim(slice(line, c + 1, len(line))))
         }
-        raw = raw + piece
-        head_end = find(raw, "\r\n\r\n")
     }
-    if head_end < 0 {
-        socket_close(c)
-        return
+    return len(raw) - he - 4 >= want
+}
+
+# the answer (as bytes to send) for a whole raw request, from handle()
+fn __web_reply(raw: string, scheme: string) -> string {
+    he = find(raw, "\r\n\r\n")
+    if he < 0 {
+        return ""
     }
-    head = slice(raw, 0, head_end)
-    body = slice(raw, head_end + 4, len(raw))
+    head = slice(raw, 0, he)
+    body = slice(raw, he + 4, len(raw))
     lines = split(head, "\r\n")
     first = split(lines[0], " ")
     if len(first) < 2 {
-        socket_close(c)
-        return
+        return ""
     }
     headers = ""
     for i in 1..len(lines) {
@@ -402,33 +411,111 @@ fn __web_answer(c: int) {
         qs = slice(target, q + 1, len(target))
     }
     req = Request(first[0], url_decode(path), qs, headers, body)
-    want = to_int(header(req, "Content-Length"))
-    while len(body) < want and len(body) < 16777216 {
-        more = socket_read(c)
-        if more == "" {
-            break
-        }
-        body = body + more
-    }
-    req = Request(first[0], url_decode(path), qs, headers, body)
     __web_param_names = []
     __web_param_values = []
     resp = handle(req)
-    out = "HTTP/1.1 " + str(resp.status) + " " + reason(resp.status) + "\r\nContent-Type: " + resp.content_type + "\r\nContent-Length: " + str(len(resp.body)) + "\r\nConnection: close\r\n" + resp.headers + "\r\n"
+    extra = ""
+    if scheme == "https" {
+        # browsers remember to use https for this site
+        extra = "Strict-Transport-Security: max-age=31536000\r\n"
+    }
+    out = "HTTP/1.1 " + str(resp.status) + " " + reason(resp.status) + "\r\nContent-Type: " + resp.content_type + "\r\nContent-Length: " + str(len(resp.body)) + "\r\nConnection: close\r\n" + extra + resp.headers + "\r\n"
     if req.method != "HEAD" {
         out = out + resp.body
     }
-    socket_write(c, out)
-    socket_close(c)
     if not __web_quiet {
         print(req.method + " " + req.path + " " + str(resp.status))
     }
+    return out
+}
+
+# reads one request, answers it with handle(), closes the connection
+fn __web_answer(c: int) {
+    raw = ""
+    while not __web_complete(raw) and len(raw) < 16777216 {
+        piece = socket_read(c)
+        if piece == "" {
+            break
+        }
+        raw = raw + piece
+    }
+    out = __web_reply(raw, "http")
+    if out != "" {
+        socket_write(c, out)
+    }
+    socket_close(c)
+}
+
+# the same over TLS
+fn __web_answer_tls(c: int, key: TlsKey) {
+    t = tls_accept(c, key)
+    if not t.ok {
+        if not __web_quiet and t.err != "the connection closed" {
+            print("https handshake failed: " + t.err)
+        }
+        socket_close(c)
+        return
+    }
+    raw = ""
+    while not __web_complete(raw) and len(raw) < 16777216 {
+        t = tls_recv(t)
+        if t.data == "" {
+            break
+        }
+        raw = raw + t.data
+    }
+    out = __web_reply(raw, "https")
+    if out != "" {
+        t = tls_send(t, out)
+    }
+    tls_close(t)
+}
+
+# answers visitors over https on this port, forever; cert_file holds the
+# certificate (and any chain), key_file its private key (ECDSA P-256 or P-384)
+fn serve_https(port: int, cert_file: string, key_file: string) {
+    serve_https_count(port, cert_file, key_file, -1)
+}
+
+fn serve_https_count(port: int, cert_file: string, key_file: string, count: int) {
+    key = tls_load_key(cert_file, key_file)
+    if not key.ok {
+        eprint("web: cannot use " + cert_file + " and " + key_file + " (the key must be ECDSA P-256 or P-384; make_cert() makes a test pair)")
+        exit(1)
+    }
+    fd = socket_listen(port)
+    if fd < 0 {
+        eprint("web: cannot use port " + str(port) + " (is another program using it?)")
+        exit(1)
+    }
+    if not __web_quiet {
+        print("Serving on https://localhost:" + str(port) + "  (stop with Ctrl+C)")
+    }
+    served = 0
+    while count < 0 or served < count {
+        c = socket_accept(fd)
+        if c >= 0 {
+            __web_answer_tls(c, key)
+            served += 1
+        }
+    }
+    socket_close(fd)
+}
+
+# makes a self-signed certificate and key for trying https on your computer
+# (browsers will warn; http_get accepts it after trust_cert(cert_file))
+fn make_cert(host: string, cert_file: string, key_file: string) {
+    tls_make_cert(host, cert_file, key_file)
+}
+
+# trusts one more certificate for https (for example your own self-signed one)
+fn trust_cert(cert_file: string) {
+    tls_trust(cert_file)
 }
 
 # ---------- asking other servers ----------
-# http_get("http://127.0.0.1:8080/hello") gives the page's text; http_status()
-# then gives its status code (0 if it could not connect). Works with http://
-# and a number address or localhost (no https yet).
+# http_get("https://example.com/") gives the page's text; http_status() then
+# gives its status code (0 if it failed, with the reason in http_error()).
 fn http_get(url: string) -> string {
     return http_request("GET", url, "")
 }
@@ -441,12 +528,34 @@ fn http_status() -> int {
     return __web_status
 }
 
+fn http_error() -> string {
+    return __web_error
+}
+
+# for testing only: accept any https certificate
+fn https_insecure() {
+    __web_insecure = true
+}
+
+fn __web_fail(why: string) -> string {
+    __web_status = 0
+    __web_error = why
+    return ""
+}
+
 fn http_request(method: string, url: string, body: string) -> string {
     __web_status = 0
-    if not starts_with(url, "http://") {
-        return ""
+    __web_error = ""
+    secure = starts_with(url, "https://")
+    if not secure and not starts_with(url, "http://") {
+        return __web_fail("the address should start with http:// or https://")
     }
     rest = slice(url, 7, len(url))
+    port = 80
+    if secure {
+        rest = slice(url, 8, len(url))
+        port = 443
+    }
     slash = find(rest, "/")
     hostport = rest
     path = "/"
@@ -455,38 +564,101 @@ fn http_request(method: string, url: string, body: string) -> string {
         path = slice(rest, slash, len(rest))
     }
     host = hostport
-    port = 80
     colon = find(hostport, ":")
     if colon >= 0 {
         host = slice(hostport, 0, colon)
         port = to_int(slice(hostport, colon + 1, len(hostport)))
     }
-    fd = socket_connect(host, port)
-    if fd < 0 {
-        return ""
+    ip = host
+    if host == "localhost" {
+        ip = "127.0.0.1"
     }
-    msg = method + " " + path + " HTTP/1.1\r\nHost: " + hostport + "\r\nConnection: close\r\nUser-Agent: slop\r\n"
+    if len(split(ip, ".")) != 4 or find(ip, "-") >= 0 or lower(ip) != upper(ip) {
+        ip = __resolve(host)
+        if ip == "" {
+            return __web_fail("cannot find the address of " + host)
+        }
+    }
+    fd = socket_connect(ip, port)
+    if fd < 0 {
+        return __web_fail("cannot connect to " + host + ":" + str(port))
+    }
+    msg = method + " " + path + " HTTP/1.1\r\nHost: " + hostport + "\r\nConnection: close\r\nUser-Agent: slop\r\nAccept: */*\r\n"
     if body != "" or method == "POST" {
         msg = msg + "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " + str(len(body)) + "\r\n"
     }
-    socket_write(fd, msg + "\r\n" + body)
+    msg = msg + "\r\n" + body
     raw = ""
-    while true {
-        piece = socket_read(fd)
-        if piece == "" {
-            break
+    if secure {
+        t = tls_connect(fd, host, __web_insecure)
+        if not t.ok {
+            socket_close(fd)
+            return __web_fail("https: " + t.err)
         }
-        raw = raw + piece
+        t = tls_send(t, msg)
+        while true {
+            t = tls_recv(t)
+            if t.data == "" {
+                break
+            }
+            raw = raw + t.data
+        }
+        tls_close(t)
+    } else {
+        socket_write(fd, msg)
+        while true {
+            piece = socket_read(fd)
+            if piece == "" {
+                break
+            }
+            raw = raw + piece
+        }
+        socket_close(fd)
     }
-    socket_close(fd)
     he = find(raw, "\r\n\r\n")
     if he < 0 {
-        return ""
+        return __web_fail("no answer from " + host)
     }
-    status_line = split(slice(raw, 0, he), "\r\n")[0]
-    parts = split(status_line, " ")
+    head = slice(raw, 0, he)
+    out = slice(raw, he + 4, len(raw))
+    lines = split(head, "\r\n")
+    parts = split(lines[0], " ")
     if len(parts) > 1 {
         __web_status = to_int(parts[1])
     }
-    return slice(raw, he + 4, len(raw))
+    for line in lines {
+        c = find(line, ":")
+        if c > 0 and lower(trim(slice(line, 0, c))) == "transfer-encoding" and contains(lower(line), "chunked") {
+            out = __web_unchunk(out)
+        }
+    }
+    return out
+}
+
+# "Transfer-Encoding: chunked" bodies: size lines in hex, then the pieces
+fn __web_unchunk(s: string) -> string {
+    out = ""
+    i = 0
+    while i < len(s) {
+        e = find(slice(s, i, len(s)), "\r\n")
+        if e < 0 {
+            break
+        }
+        line = slice(s, i, i + e)
+        semi = find(line, ";")
+        if semi >= 0 {
+            line = slice(line, 0, semi)
+        }
+        n = 0
+        for k in 0..len(trim(line)) {
+            n = n * 16 + __web_hex(byte_at(trim(line), k))
+        }
+        if n <= 0 {
+            break
+        }
+        i = i + e + 2
+        out = out + slice(s, i, i + n)
+        i = i + n + 2
+    }
+    return out
 }
