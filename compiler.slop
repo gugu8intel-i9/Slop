@@ -4742,7 +4742,7 @@ fn gx_primary() -> string {
         if t == "af" {
             g_gx_type = "float"
         }
-        return "__rd(v_" + name + ", v_" + name + "_n, (long)(" + idx + "), __err)"
+        return "slop_rd(v_" + name + ", v_" + name + "_n, (long)(" + idx + "), slop_err)"
     }
     g_gx_type = t
     return "v_" + name
@@ -4882,7 +4882,7 @@ fn gx_stmt() -> string {
         if t == "ai" and g_gx_type == "float" {
             gx_err("cannot store a float in a list of whole numbers (use int())")
         }
-        return "{ long __i = (long)(" + idx + "); if (__ok(v_" + name + "_n, __i, __err)) { v_" + name + "[__i] " + op + " " + v + "; } }\n"
+        return "{ long slop_i = (long)(" + idx + "); if (slop_ok(v_" + name + "_n, slop_i, slop_err)) { v_" + name + "[slop_i] " + op + " " + v + "; } }\n"
     }
     if t == "af" or t == "ai" {
         gx_err("the loop cannot change '" + name + "' (only its items, like " + name + "[i] = ...)")
@@ -5018,7 +5018,7 @@ fn gen_gpu_for() {
     let k = int_to_string(g_par_count)
     let kname = "slop_gpu_" + k
     # the kernel in Metal's shading language
-    let params = "device atomic_int* __err [[buffer(0)]], constant long& __base [[buffer(1)]], constant long& __count [[buffer(2)]]"
+    let params = "device atomic_int* slop_err [[buffer(0)]], constant long& slop_base [[buffer(1)]], constant long& slop_count [[buffer(2)]]"
     let slot = 3
     for i in 0..len(g_gx_caps) {
         let n = g_gx_caps[i]
@@ -5060,7 +5060,7 @@ fn gen_gpu_for() {
     g_pos = body_start
     let body = gx_block()
     g_pos = saved_pos
-    let msl = "#include <metal_stdlib>\nusing namespace metal;\n" + "template<typename T> T __rd(device T* a, long n, long i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return T(0); } return a[i]; }\n" + "inline bool __ok(long n, long i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return false; } return true; }\n" + "kernel void " + kname + "(" + params + ", uint __gid [[thread_position_in_grid]]) {\n" + "if ((long)__gid >= __count) return;\n" + "long v_" + var + " = __base + (long)__gid;\n" + setup + body + "}\n"
+    let msl = "#include <metal_stdlib>\nusing namespace metal;\n" + "template<typename T> T slop_rd(device T* a, long n, long i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return T(0); } return a[i]; }\n" + "inline bool slop_ok(long n, long i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return false; } return true; }\n" + "kernel void " + kname + "(" + params + ", uint slop_gid [[thread_position_in_grid]]) {\n" + "if ((long)slop_gid >= slop_count) return;\n" + "long v_" + var + " = slop_base + (long)slop_gid;\n" + setup + body + "}\n"
     # the code that runs it: on the GPU if there is one, else on the CPU cores
     let saved_file = g_cur_file
     g_cur_file = file

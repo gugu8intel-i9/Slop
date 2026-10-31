@@ -410,7 +410,8 @@ fn __gpu_pipe(src: string, id: int) -> int {
     if p == 0 {
         msg = "unknown error"
         if __load64(e) != 0 {
-            d = __ccall("objc_msgSend", __load64(e), __objc("localizedDescription"))
+            # description includes the compiler's own messages
+            d = __ccall("objc_msgSend", __load64(e), __objc("description"))
             c = __ccall("objc_msgSend", d, __objc("UTF8String"))
             msg = __str(c, __strlen(c))
         }
