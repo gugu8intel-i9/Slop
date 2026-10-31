@@ -310,3 +310,255 @@ fn __socket_write(fd: int, s: string) {
 fn __socket_close(fd: int) {
     __ccall32("close", fd)
 }
+
+# ---------- gpu for: Apple GPUs through Metal ----------
+# Only on Apple Silicon (on Intel Macs gpu for runs on the CPU cores).
+__gpu_state = 0
+__gpu_dev = 0
+__gpu_queue = 0
+__gpu_pipes = 0
+__gpu_cmd = 0
+__gpu_enc = 0
+__gpu_slot = 0
+__gpu_bufs = 0
+__gpu_nbufs = 0
+__gpu_backs = 0
+__gpu_err = 0
+__gpu_count = 0
+__gpu_pool = 0
+__gpu_tmp = 0
+
+__gpu_sels = 0
+
+# the Objective-C selector for a method name (looked up once per name)
+fn __objc(s: string) -> int {
+    if __gpu_sels == 0 {
+        __gpu_sels = __alloc_bytes(16 * 64)
+        __memzero(__gpu_sels, 16 * 64)
+    }
+    k = __str_ptr(s)
+    for i in 0..64 {
+        e = __gpu_sels + i * 16
+        if __load64(e) == k {
+            return __load64(e + 8)
+        }
+        if __load64(e) == 0 {
+            sel = __ccall("sel_registerName", __cstr(s))
+            __store64(e, k)
+            __store64(e + 8, sel)
+            return sel
+        }
+    }
+    return __ccall("sel_registerName", __cstr(s))
+}
+
+fn __gpu_init() -> bool {
+    if __gpu_state != 0 {
+        return __gpu_state == 1
+    }
+    __gpu_state = -1
+    if __arch() != 2 {
+        return false
+    }
+    __gpu_dev = __ccall("MTLCreateSystemDefaultDevice")
+    if __gpu_dev == 0 {
+        return false
+    }
+    __gpu_queue = __ccall("objc_msgSend", __gpu_dev, __objc("newCommandQueue"))
+    if __gpu_queue == 0 {
+        return false
+    }
+    __gpu_pipes = __alloc_bytes(8 * 4096)
+    __memzero(__gpu_pipes, 8 * 4096)
+    __gpu_bufs = __alloc_bytes(8 * 32)
+    __gpu_tmp = __alloc_bytes(64)
+    __gpu_state = 1
+    return true
+}
+
+fn __gpu_nsstring(s: string) -> int {
+    return __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("NSString")), __objc("stringWithUTF8String:"), __cstr(s))
+}
+
+# the compiled kernel for this gpu for (made once); 0 if Metal refused it
+fn __gpu_pipe(src: string, id: int) -> int {
+    if id < 4096 {
+        p = __load64(__gpu_pipes + id * 8)
+        if p == -1 {
+            return 0
+        }
+        if p != 0 {
+            return p
+        }
+    }
+    e = __gpu_tmp
+    __store64(e, 0)
+    # exact math (no fast shortcuts), so results match the CPU as closely as 32-bit floats can
+    opts = __ccall("objc_msgSend", __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("MTLCompileOptions")), __objc("alloc")), __objc("init"))
+    if opts != 0 {
+        __ccall("objc_msgSend", opts, __objc("setFastMathEnabled:"), 0)
+    }
+    lib = __ccall("objc_msgSend", __gpu_dev, __objc("newLibraryWithSource:options:error:"), __gpu_nsstring(src), opts, e)
+    if lib == 0 and opts != 0 {
+        # some GPUs (like virtual ones) only take the default settings
+        __store64(e, 0)
+        lib = __ccall("objc_msgSend", __gpu_dev, __objc("newLibraryWithSource:options:error:"), __gpu_nsstring(src), 0, e)
+    }
+    p = 0
+    if lib != 0 {
+        f = __ccall("objc_msgSend", lib, __objc("newFunctionWithName:"), __gpu_nsstring("slop_gpu_" + __int_to_string(id)))
+        if f != 0 {
+            __store64(e, 0)
+            p = __ccall("objc_msgSend", __gpu_dev, __objc("newComputePipelineStateWithFunction:error:"), f, e)
+        }
+    }
+    if p == 0 {
+        msg = "unknown error"
+        if __load64(e) != 0 {
+            # description includes the compiler's own messages
+            d = __ccall("objc_msgSend", __load64(e), __objc("description"))
+            c = __ccall("objc_msgSend", d, __objc("UTF8String"))
+            msg = __str(c, __strlen(c))
+        }
+        __eprint("Slop: the GPU could not take this gpu for, so it runs on the CPU: " + msg)
+        if id < 4096 {
+            __store64(__gpu_pipes + id * 8, -1)
+        }
+        return 0
+    }
+    if id < 4096 {
+        __store64(__gpu_pipes + id * 8, p)
+    }
+    return p
+}
+
+fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
+    if not __gpu_init() {
+        return false
+    }
+    n = b - a
+    if n > 1073741824 or a < -2147483648 or b > 2147483647 {
+        return false
+    }
+    __gpu_pool = __ccall("objc_autoreleasePoolPush")
+    pipe = __gpu_pipe(src, id)
+    if pipe == 0 {
+        __ccall("objc_autoreleasePoolPop", __gpu_pool)
+        return false
+    }
+    __gpu_count = n
+    __gpu_cmd = __ccall("objc_msgSend", __gpu_queue, __objc("commandBuffer"))
+    __gpu_enc = __ccall("objc_msgSend", __gpu_cmd, __objc("computeCommandEncoder"))
+    __ccall("objc_msgSend", __gpu_enc, __objc("setComputePipelineState:"), pipe)
+    __gpu_nbufs = 0
+    __gpu_backs = 0
+    __gpu_slot = 0
+    # slot 0: set to 1 when the loop goes outside a list
+    __gpu_err = __gpu_new_buffer(4)
+    __store32(__ccall("objc_msgSend", __gpu_err, __objc("contents")), 0)
+    __gpu_bind(__gpu_err)
+    __gpu_bytes(a, 4)
+    __gpu_bytes(n, 4)
+    __store64(__gpu_tmp + 32, pipe)
+    return true
+}
+
+fn __gpu_new_buffer(bytes: int) -> int {
+    if bytes < 16 {
+        bytes = 16
+    }
+    # MTLResourceStorageModeShared: the CPU and GPU see the same memory
+    buf = __ccall("objc_msgSend", __gpu_dev, __objc("newBufferWithLength:options:"), bytes, 0)
+    if buf == 0 {
+        __eprint("Slop: the GPU is out of memory")
+        __os_exit(1)
+    }
+    if __gpu_nbufs < 32 {
+        __store64(__gpu_bufs + __gpu_nbufs * 8, buf)
+        __gpu_nbufs += 1
+    }
+    return buf
+}
+
+fn __gpu_bind(buf: int) {
+    __ccall("objc_msgSend", __gpu_enc, __objc("setBuffer:offset:atIndex:"), buf, 0, __gpu_slot)
+    __gpu_slot += 1
+}
+
+fn __gpu_buffer(bytes: int, n: int) -> int {
+    buf = __gpu_new_buffer(bytes)
+    __gpu_bind(buf)
+    __gpu_bytes(n, 4)
+    return __ccall("objc_msgSend", buf, __objc("contents"))
+}
+
+fn __gpu_bytes(v: int, size: int) {
+    __store64(__gpu_tmp, v)
+    __ccall("objc_msgSend", __gpu_enc, __objc("setBytes:length:atIndex:"), __gpu_tmp, size, __gpu_slot)
+    __gpu_slot += 1
+}
+
+fn __gpu_run() {
+    pipe = __load64(__gpu_tmp + 32)
+    if __gpu_count > 0 {
+        w = __ccall("objc_msgSend", pipe, __objc("maxTotalThreadsPerThreadgroup"))
+        if w < 1 {
+            w = 1
+        }
+        if w > 256 {
+            w = 256
+        }
+        # MTLSize structs (width, height, depth), passed by address
+        g = __gpu_tmp + 8
+        __store64(g, __gpu_count)
+        __store64(g + 8, 1)
+        __store64(g + 16, 1)
+        t = __gpu_tmp + 40
+        __store64(t, w)
+        __store64(t + 8, 1)
+        __store64(t + 16, 1)
+        __ccall("objc_msgSend", __gpu_enc, __objc("dispatchThreads:threadsPerThreadgroup:"), g, t)
+    }
+    __ccall("objc_msgSend", __gpu_enc, __objc("endEncoding"))
+    __ccall("objc_msgSend", __gpu_cmd, __objc("commit"))
+    __ccall("objc_msgSend", __gpu_cmd, __objc("waitUntilCompleted"))
+    if __ccall("objc_msgSend", __gpu_cmd, __objc("status")) == 5 {
+        __eprint("Slop: the GPU failed to run a gpu for")
+        __os_exit(1)
+    }
+    if __load32(__ccall("objc_msgSend", __gpu_err, __objc("contents"))) != 0 {
+        __eprint("Slop Secure Guard: Array index out of bounds in a gpu for! Terminating process to prevent memory exploit.")
+        __os_exit(139)
+    }
+    # list buffers come after the error buffer, in order
+    __gpu_backs = 1
+}
+
+fn __gpu_back() -> int {
+    buf = __load64(__gpu_bufs + __gpu_backs * 8)
+    __gpu_backs += 1
+    return __ccall("objc_msgSend", buf, __objc("contents"))
+}
+
+fn __gpu_end() {
+    for i in 0..__gpu_nbufs {
+        __ccall("objc_msgSend", __load64(__gpu_bufs + i * 8), __objc("release"))
+    }
+    __gpu_nbufs = 0
+    __ccall("objc_autoreleasePoolPop", __gpu_pool)
+}
+
+# the GPU's name, or "" when gpu for runs on the CPU
+fn __gpu_name() -> string {
+    if not __gpu_init() {
+        return ""
+    }
+    pool = __ccall("objc_autoreleasePoolPush")
+    c = __ccall("objc_msgSend", __ccall("objc_msgSend", __gpu_dev, __objc("name")), __objc("UTF8String"))
+    n = __strlen(c)
+    p = __alloc_bytes(n + 1)
+    __memcpy(p, c, n)
+    __ccall("objc_autoreleasePoolPop", pool)
+    s = __str(p, n)
+    return s
+}

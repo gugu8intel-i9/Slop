@@ -390,6 +390,30 @@ parallel for i in 0..1_000_000 {
 - Each `parallel for` starts its threads fresh, so use it for loops that do real work (thousands of steps or more).
 - On a 4-core machine, counting primes below 3 million takes 316 ms instead of 1047 ms.
 
+## Using the GPU
+
+`gpu for` runs each step of a loop on the graphics chip (GPU), all at once:
+
+```slop
+xs: array[float] = []
+for i in 0..1_000_000 {
+    push(xs, float(i))
+}
+scale = 2.5
+gpu for i in 0..1_000_000 {
+    xs[i] = sqrt(xs[i]) * scale
+}
+print(gpu_name())    # e.g. "Apple M2", or "" when there is no GPU
+```
+
+- Works on the GPU of Apple Silicon Macs (M1 and later). Everywhere else, and if the GPU is missing, the same loop runs as a `parallel for` on the CPU cores, so programs work the same on every machine.
+- The body can use numbers, lists of numbers (by index, like `xs[i]`), `if`/`else`, `for`, `while`, `continue`, and math: `sqrt`, `sin`, `cos`, `tan`, `atan`, `exp`, `log`, `pow`, `abs`, `floor`, `ceil`, `round`, `float()`, `int()`. It cannot print, use text, or call your own functions; the compiler says so if you try.
+- Like `parallel for`, it can read local numbers and write into lists, but not change outside variables.
+- GPUs work with 32-bit numbers: floats there have about 7 correct digits instead of about 16, and whole numbers must stay between about -2 billion and 2 billion (bigger ones wrap around).
+- Going past the end of a list stops the program, as everywhere else in Slop.
+- `slop --show-gpu check app.slop` prints the GPU code made for each `gpu for`.
+- Moving lists to and from the GPU takes time, so it pays off for loops with lots of work per step, or millions of steps. `examples/gpu.slop` draws the Mandelbrot set this way.
+
 ## Threads in short
 
 - `t = spawn f(a, b)` starts `f(a, b)` on a new thread. `f` must return `int`, `float`, `bool` or nothing.

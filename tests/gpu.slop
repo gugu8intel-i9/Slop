@@ -1,0 +1,83 @@
+# gpu for: runs on the GPU on Apple Silicon Macs, on the CPU cores elsewhere.
+# The numbers here are exact in 32-bit floats, so every machine prints the same.
+fn main() {
+    let n = 4096
+    let xs: array[float] = []
+    let ys: array[int] = []
+    for i in 0..n {
+        push(xs, float(i) * 0.25)
+        push(ys, 0)
+    }
+    let scale = 2.0
+    let add = 3
+    let flip = true
+    gpu for i in 0..n {
+        let v = xs[i] * scale
+        if i % 2 == 0 {
+            xs[i] = v + 1.0
+        } else if flip {
+            xs[i] = -v
+        } else {
+            xs[i] = v
+        }
+        let s = 0
+        for j in 0..i % 10 {
+            s += j
+        }
+        ys[i] = s + add + int(floor(v))
+    }
+    print(xs[0])
+    print(xs[3])
+    print(xs[4094])
+    let total = 0
+    for y in ys {
+        total += y
+    }
+    print(total)
+
+    # a grid: 64 x 64, one GPU thread per cell, with while and continue
+    let w = 64
+    let grid: array[int] = []
+    for i in 0..w * w {
+        push(grid, 0)
+    }
+    gpu for c in 0..w * w {
+        let x = c % w
+        let y = c / w
+        if x == y {
+            continue
+        }
+        let steps = 0
+        let k = x * y + 1
+        while k != 1 and steps < 500 {
+            if k % 2 == 0 {
+                k = k / 2
+            } else {
+                k = 3 * k + 1
+            }
+            steps += 1
+        }
+        grid[c] = steps
+    }
+    let sum = 0
+    for g in grid {
+        sum += g
+    }
+    print(sum)
+    print(grid[65])
+    print(grid[64 * 3 + 7])
+
+    # part of a list, math functions
+    let zs: array[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    gpu for i in 2..6 {
+        let t: float = float(i)
+        zs[i] = abs(t - 4.0) + sqrt(16.0) + floor(t / 2.0)
+    }
+    print(zs)
+
+    # an empty range does nothing
+    gpu for i in 5..5 {
+        zs[i] = 99.0
+    }
+    print(zs[5])
+}

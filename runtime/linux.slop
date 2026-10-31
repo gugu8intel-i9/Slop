@@ -568,3 +568,29 @@ fn __resolve(host: string) -> string {
 fn __socket_close(fd: int) {
     __os_close(fd)
 }
+
+# ---------- gpu for: no GPU support here yet, so it runs on the CPU cores ----------
+fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
+    return false
+}
+
+fn __gpu_buffer(bytes: int, n: int) -> int {
+    return 0
+}
+
+fn __gpu_bytes(v: int, size: int) {
+}
+
+fn __gpu_run() {
+}
+
+fn __gpu_back() -> int {
+    return 0
+}
+
+fn __gpu_end() {
+}
+
+fn __gpu_name() -> string {
+    return ""
+}
