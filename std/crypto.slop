@@ -1546,3 +1546,186 @@ fn p256_shared(d: array[int], point: array[int]) -> array[int] {
     }
     return sub_bytes(__pt_affine(P, C), 0, 32)
 }
+
+# ---------- RSA signing ----------
+# a * b (plain numbers, any lengths)
+fn bn_mul(a: array[int], b: array[int]) -> array[int] {
+    out: array[int] = []
+    for i in 0..len(a) + len(b) {
+        push(out, 0)
+    }
+    for i in 0..len(a) {
+        c = 0
+        ai = a[i]
+        for j in 0..len(b) {
+            v = out[i + j] + ai * b[j] + c
+            out[i + j] = v & 65535
+            c = v >> 16
+        }
+        k = i + len(b)
+        while c != 0 {
+            v = out[k] + c
+            out[k] = v & 65535
+            c = v >> 16
+            k += 1
+        }
+    }
+    return out
+}
+
+# a + b, with room for the carry
+fn bn_add(a: array[int], b: array[int]) -> array[int] {
+    n = len(a)
+    if len(b) > n {
+        n = len(b)
+    }
+    out: array[int] = []
+    c = 0
+    for i in 0..n + 1 {
+        v = c
+        if i < len(a) {
+            v += a[i]
+        }
+        if i < len(b) {
+            v += b[i]
+        }
+        push(out, v & 65535)
+        c = v >> 16
+    }
+    return out
+}
+
+# x mod M for any x up to twice M's length (x = hi * R + lo)
+fn bn_reduce(x: array[int], M: ModCtx) -> array[int] {
+    k = M.n
+    lo: array[int] = []
+    hi: array[int] = []
+    for i in 0..k {
+        if i < len(x) {
+            push(lo, x[i])
+        } else {
+            push(lo, 0)
+        }
+        if k + i < len(x) {
+            push(hi, x[k + i])
+        } else {
+            push(hi, 0)
+        }
+    }
+    a = mont_mul(hi, M.r2, M)
+    b = mont_out(mont_mul(lo, M.r2, M), M)
+    return mod_add(a, b, M)
+}
+
+# base^e with 4 bits of the exponent at a time (base in Montgomery form)
+fn mont_pow_fast(base: array[int], e: array[int], M: ModCtx) -> array[int] {
+    table: array[array[int]] = [M.one, base]
+    for i in 2..16 {
+        push(table, mont_mul(table[i - 1], base, M))
+    }
+    r = M.one
+    bits = bn_bitlen(e)
+    i = (bits + 3) / 4 * 4 - 4
+    while i >= 0 {
+        r = mont_mul(r, r, M)
+        r = mont_mul(r, r, M)
+        r = mont_mul(r, r, M)
+        r = mont_mul(r, r, M)
+        w = __bn_bit_safe(e, i) | (__bn_bit_safe(e, i + 1) << 1) | (__bn_bit_safe(e, i + 2) << 2) | (__bn_bit_safe(e, i + 3) << 3)
+        r = mont_mul(r, table[w], M)
+        i -= 4
+    }
+    return r
+}
+
+fn __bn_bit_safe(x: array[int], i: int) -> int {
+    if i / 16 >= len(x) {
+        return 0
+    }
+    return bn_bit(x, i)
+}
+
+# an RSA private key: modulus, exponents, primes and the CRT numbers (big-endian bytes)
+struct RsaKey {
+    n: array[int],
+    e: array[int],
+    d: array[int],
+    p: array[int],
+    q: array[int],
+    dp: array[int],
+    dq: array[int],
+    qinv: array[int]
+}
+
+fn rsa_size(k: RsaKey) -> int {
+    i = 0
+    while i < len(k.n) and k.n[i] == 0 {
+        i += 1
+    }
+    return len(k.n) - i
+}
+
+# m^d mod n (m as k-byte big-endian), using the two primes; checked before it is returned
+fn rsa_private(k: RsaKey, m: array[int]) -> array[int] {
+    size = rsa_size(k)
+    pl = (len(k.p) + 1) / 2 + 1
+    ql = (len(k.q) + 1) / 2 + 1
+    P = mont_new(bn_from(k.p, pl))
+    Q = mont_new(bn_from(k.q, ql))
+    x = bn_from(m, (size + 1) / 2 + 1)
+    s1 = mont_out(mont_pow_fast(mont_in(bn_reduce(x, P), P), bn_from(k.dp, pl), P), P)
+    s2 = mont_out(mont_pow_fast(mont_in(bn_reduce(x, Q), Q), bn_from(k.dq, ql), Q), Q)
+    # h = qinv * (s1 - s2) mod p ; s = s2 + h * q
+    s2p = bn_reduce(s2, P)
+    diff = mod_sub(s1, s2p, P)
+    h = mont_out(mont_mul(mont_in(bn_reduce(bn_from(k.qinv, pl), P), P), mont_in(diff, P), P), P)
+    s = bn_add(s2, bn_mul(h, bn_from(k.q, ql)))
+    out = bn_bytes(s, size)
+    # a fault here would give the key away: check the signature first
+    N = mont_new(bn_from(k.n, (size + 1) / 2))
+    back = mont_out(mont_pow(mont_in(bn_from(out, N.n), N), bn_from(k.e, (len(k.e) + 1) / 2), N), N)
+    if not same_bytes(bn_bytes(back, size), sub_bytes(join_bytes(__zeros_n(size), m), len(m), len(m) + size)) {
+        empty: array[int] = []
+        return empty
+    }
+    return out
+}
+
+fn __zeros_n(n: int) -> array[int] {
+    out: array[int] = []
+    for i in 0..n {
+        push(out, 0)
+    }
+    return out
+}
+
+# RSASSA-PKCS1-v1_5 signature of a hash
+fn rsa_sign_pkcs1(k: RsaKey, alg: string, h: array[int]) -> array[int] {
+    size = rsa_size(k)
+    t = join_bytes(__digest_info(alg), h)
+    em: array[int] = [0, 1]
+    for i in 0..size - len(t) - 3 {
+        push(em, 255)
+    }
+    push(em, 0)
+    return rsa_private(k, join_bytes(em, t))
+}
+
+# RSASSA-PSS signature of a hash (MGF1 with the same hash, salt as long as the hash)
+fn rsa_sign_pss(k: RsaKey, alg: string, h: array[int]) -> array[int] {
+    size = rsa_size(k)
+    modbits = bn_bitlen(bn_from(k.n, (len(k.n) + 1) / 2))
+    embits = modbits - 1
+    emlen = (embits + 7) / 8
+    hlen = len(h)
+    salt = random_bytes(hlen)
+    hh = hash_with(alg, join_bytes(join_bytes([0, 0, 0, 0, 0, 0, 0, 0], h), salt))
+    db = join_bytes(join_bytes(__zeros_n(emlen - 2 * hlen - 2), [1]), salt)
+    mask = __mgf1(alg, hh, len(db))
+    for i in 0..len(db) {
+        db[i] = db[i] ^ mask[i]
+    }
+    db[0] = db[0] & (255 >> (8 * emlen - embits))
+    em = join_bytes(join_bytes(db, hh), [188])
+    return rsa_private(k, join_bytes(__zeros_n(size - emlen), em))
+}
