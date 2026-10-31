@@ -1334,3 +1334,215 @@ fn rsa_verify_pss(n: array[int], e: array[int], alg: string, h: array[int], sig:
     mp = join_bytes(join_bytes([0, 0, 0, 0, 0, 0, 0, 0], h), salt)
     return same_bytes(hash_with(alg, mp), hh)
 }
+
+# ---------- AES-128 and GCM ----------
+# (table lookups: fine for talking to servers; the server side prefers ChaCha20)
+__aes_sbox = [99, 124, 119, 123, 242, 107, 111, 197, 48, 1, 103, 43, 254, 215, 171, 118, 202, 130, 201, 125, 250, 89, 71, 240, 173, 212, 162, 175, 156, 164, 114, 192, 183, 253, 147, 38, 54, 63, 247, 204, 52, 165, 229, 241, 113, 216, 49, 21, 4, 199, 35, 195, 24, 150, 5, 154, 7, 18, 128, 226, 235, 39, 178, 117, 9, 131, 44, 26, 27, 110, 90, 160, 82, 59, 214, 179, 41, 227, 47, 132, 83, 209, 0, 237, 32, 252, 177, 91, 106, 203, 190, 57, 74, 76, 88, 207, 208, 239, 170, 251, 67, 77, 51, 133, 69, 249, 2, 127, 80, 60, 159, 168, 81, 163, 64, 143, 146, 157, 56, 245, 188, 182, 218, 33, 16, 255, 243, 210, 205, 12, 19, 236, 95, 151, 68, 23, 196, 167, 126, 61, 100, 93, 25, 115, 96, 129, 79, 220, 34, 42, 144, 136, 70, 238, 184, 20, 222, 94, 11, 219, 224, 50, 58, 10, 73, 6, 36, 92, 194, 211, 172, 98, 145, 149, 228, 121, 231, 200, 55, 109, 141, 213, 78, 169, 108, 86, 244, 234, 101, 122, 174, 8, 186, 120, 37, 46, 28, 166, 180, 198, 232, 221, 116, 31, 75, 189, 139, 138, 112, 62, 181, 102, 72, 3, 246, 14, 97, 53, 87, 185, 134, 193, 29, 158, 225, 248, 152, 17, 105, 217, 142, 148, 155, 30, 135, 233, 206, 85, 40, 223, 140, 161, 137, 13, 191, 230, 66, 104, 65, 153, 45, 15, 176, 84, 187, 22]
+
+fn __xtime(b: int) -> int {
+    v = b << 1
+    if v >= 256 {
+        v = v ^ 283
+    }
+    return v
+}
+
+# the 11 round keys of AES-128, as 176 bytes
+fn aes128_keys(key: array[int]) -> array[int] {
+    w: array[int] = []
+    for x in key {
+        push(w, x)
+    }
+    rcon = 1
+    i = 16
+    while i < 176 {
+        t0 = w[i - 4]
+        t1 = w[i - 3]
+        t2 = w[i - 2]
+        t3 = w[i - 1]
+        if i % 16 == 0 {
+            s = __aes_sbox
+            u = t0
+            t0 = s[t1] ^ rcon
+            t1 = s[t2]
+            t2 = s[t3]
+            t3 = s[u]
+            rcon = __xtime(rcon)
+        }
+        push(w, w[i - 16] ^ t0)
+        push(w, w[i - 15] ^ t1)
+        push(w, w[i - 14] ^ t2)
+        push(w, w[i - 13] ^ t3)
+        i += 4
+    }
+    return w
+}
+
+# encrypts one 16-byte block with round keys from aes128_keys
+fn aes_block(rk: array[int], block: array[int]) -> array[int] {
+    s = __aes_sbox
+    st: array[int] = []
+    for i in 0..16 {
+        push(st, block[i] ^ rk[i])
+    }
+    for round in 1..11 {
+        b: array[int] = []
+        # SubBytes and ShiftRows
+        for c in 0..4 {
+            for r in 0..4 {
+                push(b, s[st[((c + r) % 4) * 4 + r]])
+            }
+        }
+        if round < 10 {
+            # MixColumns
+            for c in 0..4 {
+                a0 = b[c * 4]
+                a1 = b[c * 4 + 1]
+                a2 = b[c * 4 + 2]
+                a3 = b[c * 4 + 3]
+                all = a0 ^ a1 ^ a2 ^ a3
+                b[c * 4] = a0 ^ all ^ __xtime(a0 ^ a1)
+                b[c * 4 + 1] = a1 ^ all ^ __xtime(a1 ^ a2)
+                b[c * 4 + 2] = a2 ^ all ^ __xtime(a2 ^ a3)
+                b[c * 4 + 3] = a3 ^ all ^ __xtime(a3 ^ a0)
+            }
+        }
+        for i in 0..16 {
+            b[i] = b[i] ^ rk[round * 16 + i]
+        }
+        st = b
+    }
+    return st
+}
+
+# multiplication in GF(2^128) as GCM defines it; numbers are [high 64 bits, low 64 bits]
+fn __gf128_mul(x: array[int], y: array[int]) -> array[int] {
+    zh = 0
+    zl = 0
+    vh = y[0]
+    vl = y[1]
+    for i in 0..128 {
+        bit = 0
+        if i < 64 {
+            bit = (x[0] >> (63 - i)) & 1
+        } else {
+            bit = (x[1] >> (127 - i)) & 1
+        }
+        if bit == 1 {
+            zh = zh ^ vh
+            zl = zl ^ vl
+        }
+        lsb = vl & 1
+        vl = ((vl >> 1) & 9223372036854775807) | (vh << 63)
+        vh = (vh >> 1) & 9223372036854775807
+        if lsb == 1 {
+            vh = vh ^ -2233785415175766016
+        }
+    }
+    return [zh, zl]
+}
+
+fn __be_words(b: array[int], i: int) -> array[int] {
+    h = 0
+    l = 0
+    for k in 0..8 {
+        h = (h << 8) | b[i + k]
+        l = (l << 8) | b[i + 8 + k]
+    }
+    return [h, l]
+}
+
+fn __ghash(hk: array[int], aad: array[int], ct: array[int]) -> array[int] {
+    data: array[int] = []
+    for x in aad {
+        push(data, x)
+    }
+    while len(data) % 16 != 0 {
+        push(data, 0)
+    }
+    for x in ct {
+        push(data, x)
+    }
+    while len(data) % 16 != 0 {
+        push(data, 0)
+    }
+    data = join_bytes(data, join_bytes(__be64(len(aad) * 8), __be64(len(ct) * 8)))
+    y = [0, 0]
+    i = 0
+    while i < len(data) {
+        blk = __be_words(data, i)
+        y = __gf128_mul([y[0] ^ blk[0], y[1] ^ blk[1]], hk)
+        i += 16
+    }
+    return join_bytes(__be64(y[0]), __be64(y[1]))
+}
+
+fn __gcm_ctr(rk: array[int], iv: array[int], counter: int, data: array[int]) -> array[int] {
+    out: array[int] = []
+    i = 0
+    ctr = counter
+    while i < len(data) {
+        ks = aes_block(rk, join_bytes(iv, __be32(ctr)))
+        for j in 0..16 {
+            if i + j < len(data) {
+                push(out, data[i + j] ^ ks[j])
+            }
+        }
+        i += 16
+        ctr += 1
+    }
+    return out
+}
+
+fn __gcm_tag(rk: array[int], iv: array[int], aad: array[int], ct: array[int]) -> array[int] {
+    hk = __be_words(aes_block(rk, __zeros16()), 0)
+    s = __ghash(hk, aad, ct)
+    ek = aes_block(rk, join_bytes(iv, [0, 0, 0, 1]))
+    out: array[int] = []
+    for i in 0..16 {
+        push(out, s[i] ^ ek[i])
+    }
+    return out
+}
+
+fn __zeros16() -> array[int] {
+    return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+}
+
+# AES-128-GCM with a 12-byte nonce; the 16-byte tag goes at the end
+fn aes128_gcm_seal(key: array[int], nonce: array[int], plain: array[int], aad: array[int]) -> array[int] {
+    rk = aes128_keys(key)
+    ct = __gcm_ctr(rk, nonce, 2, plain)
+    return join_bytes(ct, __gcm_tag(rk, nonce, aad, ct))
+}
+
+fn aes128_gcm_open(key: array[int], nonce: array[int], sealed: array[int], aad: array[int]) -> array[int] {
+    __cr_open_ok = false
+    empty: array[int] = []
+    if len(sealed) < 16 {
+        return empty
+    }
+    rk = aes128_keys(key)
+    ct = sub_bytes(sealed, 0, len(sealed) - 16)
+    if not same_bytes(sub_bytes(sealed, len(sealed) - 16, len(sealed)), __gcm_tag(rk, nonce, aad, ct)) {
+        return empty
+    }
+    __cr_open_ok = true
+    return __gcm_ctr(rk, nonce, 2, ct)
+}
+
+# ---------- ECDH on P-256 (for servers without X25519) ----------
+# shared secret: the x coordinate of d * their point (empty if the point is bad)
+fn p256_shared(d: array[int], point: array[int]) -> array[int] {
+    C = p256()
+    Q = __pt_decode(point, C)
+    empty: array[int] = []
+    if bn_zero(Q.z) {
+        return empty
+    }
+    P = __pt_mul(bn_from(d, C.q.n), Q, C)
+    if bn_zero(P.z) {
+        return empty
+    }
+    return sub_bytes(__pt_affine(P, C), 0, 32)
+}

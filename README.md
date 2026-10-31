@@ -278,7 +278,7 @@ serve(8080)    # open http://localhost:8080
 
 ### https
 
-Slop speaks https itself (TLS 1.3, written in Slop like everything else):
+Slop speaks https itself (TLS 1.3 and 1.2, written in Slop like everything else):
 
 ```slop
 serve_https(443, "cert.pem", "key.pem")      # instead of serve(8080)
@@ -288,7 +288,8 @@ page = http_get("https://example.com/")      # checks the site's certificate
 - `slop cert` (or `make_cert("localhost", "cert.pem", "key.pem")`) makes a self-signed certificate for trying https on your computer. Browsers warn about self-signed certificates; `trust_cert("cert.pem")` makes `http_get` accept yours.
 - For a real site, use a certificate from a certificate authority such as Let's Encrypt, with an ECDSA key (P-256 or P-384), for example `certbot certonly --key-type ecdsa`. Pass the `fullchain.pem` and `privkey.pem` files.
 - `http_get` checks certificates against the ones your system trusts (ECDSA and RSA, with expiry dates and the host name) and refuses the connection if anything is wrong; `http_error()` says why.
-- Slop's TLS uses X25519 and ChaCha20-Poly1305, which every current browser and most servers support. It does not speak TLS 1.2 or older.
+- Slop uses TLS 1.3 whenever the other side can, and TLS 1.2 for older browsers and servers (with the extended master secret, and the check that stops an attacker from pushing a 1.3 connection down to 1.2). TLS 1.1 and older are not supported: they are no longer safe.
+- Ciphers: ChaCha20-Poly1305 (preferred) and AES-128-GCM. Key exchange: X25519 (preferred) and P-256.
 
 ## Bring code from other languages
 
@@ -323,7 +324,7 @@ Modules that come with Slop, built into `slop` itself (nothing to download). Put
 | Module | What it has |
 |---|---|
 | `web` | websites: `serve`, `serve_https`, `route`, `html`, `page`, `render`, `form`, `query`, `json_object`, `http_get` (see Websites) |
-| `crypto` | `sha256`, `sha384`, `sha512`, `hmac`, `hkdf_extract`/`hkdf_expand`, `chacha20_poly1305_seal`/`open`, `x25519`, `ecdsa_sign`/`ecdsa_verify` (P-256, P-384), `rsa_verify_pss`/`rsa_verify_pkcs1`, `random_bytes`, `to_hex`, `to_bytes` |
+| `crypto` | `sha256`, `sha384`, `sha512`, `hmac`, `hkdf_extract`/`hkdf_expand`, `chacha20_poly1305_seal`/`open`, `aes128_gcm_seal`/`open`, `x25519`, `p256_shared`, `ecdsa_sign`/`ecdsa_verify` (P-256, P-384), `rsa_verify_pss`/`rsa_verify_pkcs1`, `random_bytes`, `to_hex`, `to_bytes` |
 | `tls` | TLS 1.3 connections, certificates and keys (used by `web`): `tls_connect`, `tls_accept`, `parse_cert`, `pem_blocks`, `base64_encode`/`decode` |
 | `math` | `PI`, `E`, `gcd`, `lcm`, `is_prime`, `factorial`, `ipow`, `clamp`, `lerp`, `hypot`, `radians`, `min_int`/`max_float`, ... |
 | `lists` | `sum_ints`, `sort_ints`, `sort_floats`, `sort_strings`, `reverse_ints`, `unique_ints`, `index_of_int`, `range_list`, ... |

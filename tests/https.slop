@@ -39,6 +39,24 @@ print(http_status(), http_error())
 http_get(base + "/")
 join(server)
 join(other)
+
+# TLS 1.2 (for older software) and AES-128-GCM, both directions in Slop
+server2 = spawn serve_https_count(port + 2, "slop-test-cert.pem", "slop-test-key.pem", 3)
+trust_cert("slop-test-cert.pem")
+https_client_options(12, false)
+tries = 0
+got = http_get("https://localhost:" + str(port + 2) + "/")
+while tries < 300 and contains(http_error(), "cannot connect") {
+    got = http_get("https://localhost:" + str(port + 2) + "/")
+    tries += 1
+}
+print("tls 1.2 chacha", http_status(), contains(got, "secret page"), http_error())
+https_client_options(12, true)
+print("tls 1.2 aes", http_post("https://localhost:" + str(port + 2) + "/echo", "msg=" + repeat("a", 40000)) == "you sent " + repeat("a", 40000), http_status())
+https_client_options(13, true)
+print("tls 1.3 aes", contains(http_get("https://localhost:" + str(port + 2) + "/"), "secret page"), http_status())
+join(server2)
+
 remove_file("slop-test-cert.pem")
 remove_file("slop-test-key.pem")
 remove_file("slop-test-other.pem")

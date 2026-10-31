@@ -680,7 +680,9 @@ fn tls_make_cert(host: string, cert_path: string, key_path: string) {
     write_file(key_path, pem_encode("EC PRIVATE KEY", ec))
 }
 
-# ---------- TLS 1.3 connections ----------
+# ---------- TLS connections (1.3, and 1.2 for older software) ----------
+# Ciphers: ChaCha20-Poly1305 (preferred) and AES-128-GCM.
+# Key exchange: X25519 (preferred) and P-256.
 struct Tls {
     fd: int,
     ok: bool,
@@ -698,7 +700,11 @@ struct Tls {
     mtype: int,
     msg: string,
     data: string,
-    closed: bool
+    closed: bool,
+    ver: int,
+    aes: bool,
+    renc: bool,
+    wenc: bool
 }
 
 fn __is_ipv4(host: string) -> bool {
@@ -721,7 +727,7 @@ fn __is_ipv4(host: string) -> bool {
 
 fn __tls_new(fd: int) -> Tls {
     e: array[int] = []
-    return Tls(fd, true, "", "", e, e, 0, e, e, 0, 0, "", "", 0, "", "", false)
+    return Tls(fd, true, "", "", e, e, 0, e, e, 0, 0, "", "", 0, "", "", false, 13, false, false, false)
 }
 
 fn __tls_fail(c: Tls, why: string) -> Tls {
@@ -748,6 +754,25 @@ fn __num(s: string, i: int, n: int) -> int {
     return v
 }
 
+fn __tls_seal(c: Tls, nonce: array[int], plain: array[int], aad: array[int]) -> array[int] {
+    if c.aes {
+        return aes128_gcm_seal(c.wkey, nonce, plain, aad)
+    }
+    return chacha20_poly1305_seal(c.wkey, nonce, plain, aad)
+}
+
+fn __tls_open(c: Tls, nonce: array[int], sealed: array[int], aad: array[int]) -> array[int] {
+    if c.aes {
+        return aes128_gcm_open(c.rkey, nonce, sealed, aad)
+    }
+    return chacha20_poly1305_open(c.rkey, nonce, sealed, aad)
+}
+
+# TLS 1.2 additional data: sequence number, type, version, length
+fn __aad12(seq: int, rtype: int, n: int) -> array[int] {
+    return join_bytes(join_bytes(__be64(seq), [rtype, 3, 3]), [(n >> 8) & 255, n & 255])
+}
+
 # reads one record (header + body) into c.rtype and c.rbody
 fn __tls_read_record(c: Tls) -> Tls {
     while len(c.raw) < 5 {
@@ -758,7 +783,7 @@ fn __tls_read_record(c: Tls) -> Tls {
         c.raw = c.raw + more
     }
     n = __num(c.raw, 3, 2)
-    if n > 16640 {
+    if n > 18432 {
         return __tls_fail(c, "a record was too long")
     }
     while len(c.raw) < 5 + n {
@@ -772,9 +797,16 @@ fn __tls_read_record(c: Tls) -> Tls {
     c.rbody = slice(c.raw, 5, 5 + n)
     head = slice(c.raw, 0, 5)
     c.raw = slice(c.raw, 5 + n, len(c.raw))
-    if c.rtype == 23 and len(c.rkey) > 0 {
-        nonce = __tls_nonce(c.riv, c.rseq)
-        plain = chacha20_poly1305_open(c.rkey, nonce, to_bytes(c.rbody), to_bytes(head))
+    if c.rtype == 20 {
+        # ChangeCipherSpec: in TLS 1.2 what follows is encrypted
+        if c.ver == 12 and len(c.rkey) > 0 {
+            c.renc = true
+            c.rseq = 0
+        }
+        return c
+    }
+    if c.renc and c.ver == 13 and c.rtype == 23 {
+        plain = __tls_open(c, __tls_nonce(c.riv, c.rseq), to_bytes(c.rbody), to_bytes(head))
         if not open_ok() {
             return __tls_fail(c, "a record failed its integrity check")
         }
@@ -788,6 +820,30 @@ fn __tls_read_record(c: Tls) -> Tls {
         }
         c.rtype = plain[k]
         c.rbody = from_bytes(sub_bytes(plain, 0, k))
+    } else {
+        if c.renc and c.ver == 12 {
+            body = to_bytes(c.rbody)
+            nonce: array[int] = []
+            if not c.aes {
+                nonce = __tls_nonce(c.riv, c.rseq)
+            }
+            if c.aes {
+                if len(body) < 24 {
+                    return __tls_fail(c, "a record was too short")
+                }
+                nonce = join_bytes(c.riv, sub_bytes(body, 0, 8))
+                body = sub_bytes(body, 8, len(body))
+            }
+            if len(body) < 16 {
+                return __tls_fail(c, "a record was too short")
+            }
+            plain = __tls_open(c, nonce, body, __aad12(c.rseq, c.rtype, len(body) - 16))
+            if not open_ok() {
+                return __tls_fail(c, "a record failed its integrity check")
+            }
+            c.rseq += 1
+            c.rbody = from_bytes(plain)
+        }
     }
     if c.rtype == 21 {
         if len(c.rbody) >= 2 and byte_at(c.rbody, 1) == 0 {
@@ -838,22 +894,47 @@ fn __tls_next_msg(c: Tls) -> Tls {
 }
 
 fn __tls_write_plain(c: Tls, rtype: int, body: string) {
-    socket_write(c.fd, chr(rtype) + "\x03\x03" + __u16(len(body)) + body)
+    i = 0
+    while i < len(body) or i == 0 {
+        e = i + 16000
+        if e > len(body) {
+            e = len(body)
+        }
+        socket_write(c.fd, chr(rtype) + "\x03\x03" + __u16(e - i) + slice(body, i, e))
+        i = e
+        if len(body) == 0 {
+            break
+        }
+    }
 }
 
 # encrypts and sends body (split into records), as content type rtype
 fn __tls_write(c: Tls, rtype: int, body: string) -> Tls {
     i = 0
-    while i < len(body) or (i == 0 and len(body) == 0) {
+    while i < len(body) or i == 0 {
         e = i + 16000
         if e > len(body) {
             e = len(body)
         }
-        inner = to_bytes(slice(body, i, e) + chr(rtype))
-        head = "\x17\x03\x03" + __u16(len(inner) + 16)
-        sealed = chacha20_poly1305_seal(c.wkey, __tls_nonce(c.wiv, c.wseq), inner, to_bytes(head))
+        piece = slice(body, i, e)
+        if c.ver == 13 {
+            inner = to_bytes(piece + chr(rtype))
+            head = "\x17\x03\x03" + __u16(len(inner) + 16)
+            sealed = __tls_seal(c, __tls_nonce(c.wiv, c.wseq), inner, to_bytes(head))
+            socket_write(c.fd, head + from_bytes(sealed))
+        } else {
+            plain = to_bytes(piece)
+            aad = __aad12(c.wseq, rtype, len(plain))
+            out = ""
+            if c.aes {
+                explicit = __be64(c.wseq)
+                out = from_bytes(explicit) + from_bytes(__tls_seal(c, join_bytes(c.wiv, explicit), plain, aad))
+            } else {
+                out = from_bytes(__tls_seal(c, __tls_nonce(c.wiv, c.wseq), plain, aad))
+            }
+            socket_write(c.fd, chr(rtype) + "\x03\x03" + __u16(len(out)) + out)
+        }
         c.wseq += 1
-        socket_write(c.fd, head + from_bytes(sealed))
         i = e
         if len(body) == 0 {
             break
@@ -872,15 +953,74 @@ fn __tls_hash(transcript: string) -> array[int] {
     return sha256(to_bytes(transcript))
 }
 
+# TLS 1.3 traffic keys from the two secrets
 fn __tls_keys(c: Tls, read_secret: array[int], write_secret: array[int]) -> Tls {
     e: array[int] = []
-    c.rkey = __tls_label(read_secret, "key", e, 32)
+    klen = 32
+    if c.aes {
+        klen = 16
+    }
+    c.rkey = __tls_label(read_secret, "key", e, klen)
     c.riv = __tls_label(read_secret, "iv", e, 12)
-    c.wkey = __tls_label(write_secret, "key", e, 32)
+    c.wkey = __tls_label(write_secret, "key", e, klen)
     c.wiv = __tls_label(write_secret, "iv", e, 12)
     c.rseq = 0
     c.wseq = 0
+    c.renc = true
+    c.wenc = true
     return c
+}
+
+# the TLS 1.2 pseudo-random function (with SHA-256)
+fn __prf(secret: array[int], label: string, seed: array[int], n: int) -> array[int] {
+    s = join_bytes(to_bytes(label), seed)
+    out: array[int] = []
+    a = hmac("sha256", secret, s)
+    while len(out) < n {
+        for x in hmac("sha256", secret, join_bytes(a, s)) {
+            if len(out) < n {
+                push(out, x)
+            }
+        }
+        a = hmac("sha256", secret, a)
+    }
+    return out
+}
+
+# TLS 1.2 keys: is_client says which half is ours to write with
+fn __tls12_keys(c: Tls, master: array[int], cr: array[int], sr: array[int], is_client: bool) -> Tls {
+    klen = 32
+    ivlen = 12
+    if c.aes {
+        klen = 16
+        ivlen = 4
+    }
+    kb = __prf(master, "key expansion", join_bytes(sr, cr), 2 * klen + 2 * ivlen)
+    ck = sub_bytes(kb, 0, klen)
+    sk = sub_bytes(kb, klen, 2 * klen)
+    civ = sub_bytes(kb, 2 * klen, 2 * klen + ivlen)
+    siv = sub_bytes(kb, 2 * klen + ivlen, 2 * klen + 2 * ivlen)
+    if is_client {
+        c.wkey = ck
+        c.wiv = civ
+        c.rkey = sk
+        c.riv = siv
+    } else {
+        c.wkey = sk
+        c.wiv = siv
+        c.rkey = ck
+        c.riv = civ
+    }
+    c.rseq = 0
+    c.wseq = 0
+    return c
+}
+
+fn __tls12_master(pre: array[int], ems: bool, transcript: string, cr: array[int], sr: array[int]) -> array[int] {
+    if ems {
+        return __prf(pre, "extended master secret", __tls_hash(transcript), 48)
+    }
+    return __prf(pre, "master secret", join_bytes(cr, sr), 48)
 }
 
 # the extensions of a ClientHello/ServerHello: [type, start, length, ...]
@@ -906,7 +1046,115 @@ fn __zeros(n: int) -> array[int] {
     return out
 }
 
-# server side: the handshake on a new connection
+fn __curve_hash(curve: string) -> string {
+    if curve == "P-384" {
+        return "sha384"
+    }
+    return "sha256"
+}
+
+# a key pair for the key exchange: [private bytes..., then public]; group 29 X25519, 23 P-256
+fn __kx_private(group: int) -> array[int] {
+    if group == 23 {
+        return ecdsa_new_key(p256())
+    }
+    return random_bytes(32)
+}
+
+fn __kx_public(group: int, priv: array[int]) -> array[int] {
+    if group == 23 {
+        return ecdsa_public(p256(), priv)
+    }
+    return x25519_public(priv)
+}
+
+fn __kx_shared(group: int, priv: array[int], theirs: array[int]) -> array[int] {
+    if group == 23 {
+        return p256_shared(priv, theirs)
+    }
+    if len(theirs) != 32 {
+        empty: array[int] = []
+        return empty
+    }
+    out = x25519(priv, theirs)
+    if bn_zero(out) {
+        empty: array[int] = []
+        return empty
+    }
+    return out
+}
+
+# checks a signature from the server's certificate key (TLS 1.2 key exchange or 1.3 CertificateVerify)
+fn __check_sig(leaf: X509Cert, scheme: int, content: array[int], sig: array[int]) -> bool {
+    if (scheme == 1027 or scheme == 1283 or scheme == 1539) and leaf.key_type == "ec" and leaf.curve != "" {
+        C = curve_named(leaf.curve)
+        alg = "sha256"
+        if scheme == 1283 {
+            alg = "sha384"
+        }
+        if scheme == 1539 {
+            alg = "sha512"
+        }
+        rs = ecdsa_sig_raw(sig, C.size * 2)
+        return len(rs) > 0 and ecdsa_verify(C, leaf.pub, hash_with(alg, content), sub_bytes(rs, 0, C.size), sub_bytes(rs, C.size, len(rs)))
+    }
+    if leaf.key_type != "rsa" {
+        return false
+    }
+    alg = ""
+    pss = false
+    if scheme == 2052 {
+        alg = "sha256"
+        pss = true
+    }
+    if scheme == 2053 {
+        alg = "sha384"
+        pss = true
+    }
+    if scheme == 2054 {
+        alg = "sha512"
+        pss = true
+    }
+    if scheme == 1025 {
+        alg = "sha256"
+    }
+    if scheme == 1281 {
+        alg = "sha384"
+    }
+    if scheme == 1537 {
+        alg = "sha512"
+    }
+    if alg == "" {
+        return false
+    }
+    if pss {
+        return rsa_verify_pss(leaf.pub, leaf.rsa_e, alg, hash_with(alg, content), sig)
+    }
+    return rsa_verify_pkcs1(leaf.pub, leaf.rsa_e, alg, hash_with(alg, content), sig)
+}
+
+# reads a Certificate message's list of certificates (TLS 1.3 has a context and per-certificate extensions)
+fn __cert_list(m: string, v13: bool) -> array[X509Cert] {
+    chain: array[X509Cert] = []
+    q = 4
+    if v13 {
+        q = 4 + 1 + byte_at(m, 4)
+    }
+    end = q + 3 + __num(m, q, 3)
+    q += 3
+    while q < end {
+        n = __num(m, q, 3)
+        push(chain, parse_cert(to_bytes(slice(m, q + 3, q + 3 + n))))
+        q += 3 + n
+        if v13 {
+            q += 2 + __num(m, q, 2)
+        }
+    }
+    return chain
+}
+
+# ---------- server side ----------
+# the handshake on a new connection: TLS 1.3, or 1.2 for older software
 fn tls_accept(fd: int, key: TlsKey) -> Tls {
     c = __tls_new(fd)
     c = __tls_next_msg(c)
@@ -917,41 +1165,56 @@ fn tls_accept(fd: int, key: TlsKey) -> Tls {
         return __tls_fail(c, "expected a ClientHello")
     }
     ch = c.msg
+    cr = to_bytes(slice(ch, 6, 38))
     p = 4 + 2 + 32
     sid_len = byte_at(ch, p)
     sid = slice(ch, p + 1, p + 1 + sid_len)
     p += 1 + sid_len
     ncs = __num(ch, p, 2)
-    has_suite = false
+    suites: array[int] = []
     k = 0
     while k < ncs {
-        if __num(ch, p + 2 + k, 2) == 4867 {
-            has_suite = true
-        }
+        push(suites, __num(ch, p + 2 + k, 2))
         k += 2
     }
     p += 2 + ncs
     p += 1 + byte_at(ch, p)
     ext_end = p + 2 + __num(ch, p, 2)
-    exts = __tls_exts(ch, p + 2, ext_end)
+    exts: array[int] = []
+    if p + 2 <= len(ch) {
+        exts = __tls_exts(ch, p + 2, ext_end)
+    }
     tls13 = false
+    tls12 = __num(ch, 4, 2) >= 771
     share: array[int] = []
+    groups: array[int] = []
     scheme = 1027
     if key.curve == "P-384" {
         scheme = 1283
     }
     has_scheme = false
     alpn = false
+    ems = false
+    reneg = false
+    for su in suites {
+        if su == 255 {
+            reneg = true
+        }
+    }
     k = 0
     while k < len(exts) {
         t = exts[k]
         a = exts[k + 1]
         n = exts[k + 2]
         if t == 43 {
+            tls12 = false
             j = a + 1
             while j < a + n {
                 if __num(ch, j, 2) == 772 {
                     tls13 = true
+                }
+                if __num(ch, j, 2) == 771 {
+                    tls12 = true
                 }
                 j += 2
             }
@@ -967,6 +1230,13 @@ fn tls_accept(fd: int, key: TlsKey) -> Tls {
                 j += 4 + l
             }
         }
+        if t == 10 {
+            j = a + 2
+            while j < a + n {
+                push(groups, __num(ch, j, 2))
+                j += 2
+            }
+        }
         if t == 13 {
             j = a + 2
             while j < a + n {
@@ -979,17 +1249,145 @@ fn tls_accept(fd: int, key: TlsKey) -> Tls {
         if t == 16 and contains(slice(ch, a, a + n), "http/1.1") {
             alpn = true
         }
+        if t == 23 {
+            ems = true
+        }
+        if t == 65281 {
+            reneg = true
+        }
         k += 3
     }
-    if not tls13 or not has_suite or len(share) != 32 or not has_scheme {
+    # TLS 1.3 if the client can, ChaCha20 first
+    suite13 = 0
+    for su in suites {
+        if su == 4867 {
+            suite13 = 4867
+        }
+    }
+    if suite13 == 0 {
+        for su in suites {
+            if su == 4865 {
+                suite13 = 4865
+            }
+        }
+    }
+    if tls13 and suite13 != 0 and len(share) == 32 and has_scheme {
+        c.aes = suite13 == 4865
+        return __accept13(c, key, ch, sid, share, suite13, scheme, alpn)
+    }
+    # else TLS 1.2 with ECDHE and the certificate's ECDSA key
+    suite12 = 0
+    for su in suites {
+        if su == 52393 {
+            suite12 = 52393
+        }
+    }
+    if suite12 == 0 {
+        for su in suites {
+            if su == 49195 {
+                suite12 = 49195
+            }
+        }
+    }
+    group = 0
+    if len(groups) == 0 {
+        group = 23
+    }
+    for g in groups {
+        if g == 29 {
+            group = 29
+        }
+    }
+    if group == 0 {
+        for g in groups {
+            if g == 23 {
+                group = 23
+            }
+        }
+    }
+    # in TLS 1.2 the client's curve list also covers the certificate's curve
+    cert_group = 23
+    if key.curve == "P-384" {
+        cert_group = 24
+    }
+    cert_ok = len(groups) == 0
+    for g in groups {
+        if g == cert_group {
+            cert_ok = true
+        }
+    }
+    if not tls12 or suite12 == 0 or group == 0 or not has_scheme or not cert_ok {
         # handshake_failure
         __tls_write_plain(c, 21, "\x02\x28")
-        return __tls_fail(c, "the browser and server have no TLS 1.3 settings in common")
+        return __tls_fail(c, "the browser and server have no TLS settings in common")
     }
+    c.ver = 12
+    c.aes = suite12 == 49195
+    # the last 8 bytes of our random say we could have done TLS 1.3
+    sr = join_bytes(random_bytes(24), to_bytes("DOWNGRD\x01"))
+    sh_ext = "\x00\x0b\x00\x02\x01\x00"
+    if reneg {
+        sh_ext = sh_ext + "\xff\x01\x00\x01\x00"
+    }
+    if ems {
+        sh_ext = sh_ext + "\x00\x17\x00\x00"
+    }
+    if alpn {
+        sh_ext = sh_ext + "\x00\x10\x00\x0b\x00\x09\x08http/1.1"
+    }
+    sh_body = "\x03\x03" + from_bytes(sr) + "\x00" + __u16(suite12) + "\x00" + __u16(len(sh_ext)) + sh_ext
+    sh = "\x02" + __u24(len(sh_body)) + sh_body
+    certs = ""
+    for d in key.chain {
+        certs = certs + __u24(len(d)) + from_bytes(d)
+    }
+    cm = "\x0b" + __u24(len(certs) + 3) + __u24(len(certs)) + certs
+    priv = __kx_private(group)
+    pub = __kx_public(group, priv)
+    params = "\x03" + __u16(group) + chr(len(pub)) + from_bytes(pub)
+    C = curve_named(key.curve)
+    signed = join_bytes(join_bytes(cr, sr), to_bytes(params))
+    sig = ecdsa_sig_der(ecdsa_sign(C, key.d, hash_with(__curve_hash(key.curve), signed)))
+    ske_body = params + __u16(scheme) + __u16(len(sig)) + from_bytes(sig)
+    ske = "\x0c" + __u24(len(ske_body)) + ske_body
+    shd = "\x0e\x00\x00\x00"
+    __tls_write_plain(c, 22, sh + cm + ske + shd)
+    th = ch + sh + cm + ske + shd
+    c = __tls_next_msg(c)
+    if not c.ok {
+        return c
+    }
+    if c.mtype != 16 {
+        return __tls_fail(c, "expected the browser's key")
+    }
+    cke = c.msg
+    shared = __kx_shared(group, priv, to_bytes(slice(cke, 5, 5 + byte_at(cke, 4))))
+    if len(shared) == 0 {
+        return __tls_fail(c, "the browser's key was not valid")
+    }
+    th = th + cke
+    master = __tls12_master(shared, ems, th, cr, sr)
+    c = __tls12_keys(c, master, cr, sr, false)
+    c = __tls_next_msg(c)
+    if not c.ok {
+        return c
+    }
+    if not c.renc or c.mtype != 20 or not same_bytes(to_bytes(slice(c.msg, 4, len(c.msg))), __prf(master, "client finished", __tls_hash(th), 12)) {
+        return __tls_fail(c, "the browser's Finished message was wrong")
+    }
+    th = th + c.msg
+    __tls_write_plain(c, 20, "\x01")
+    c.wenc = true
+    c = __tls_write(c, 22, "\x14\x00\x00\x0c" + from_bytes(__prf(master, "server finished", __tls_hash(th), 12)))
+    return c
+}
+
+fn __accept13(c0: Tls, key: TlsKey, ch: string, sid: string, share: array[int], suite: int, scheme: int, alpn: bool) -> Tls {
+    c = c0
     priv = random_bytes(32)
     pub = x25519_public(priv)
     shared = x25519(priv, share)
-    sh_body = "\x03\x03" + from_bytes(random_bytes(32)) + chr(len(sid)) + sid + "\x13\x03\x00"
+    sh_body = "\x03\x03" + from_bytes(random_bytes(32)) + chr(len(sid)) + sid + __u16(suite) + "\x00"
     sh_ext = "\x00\x2b\x00\x02\x03\x04" + "\x00\x33\x00\x24\x00\x1d\x00\x20" + from_bytes(pub)
     sh_body = sh_body + __u16(len(sh_ext)) + sh_ext
     sh = "\x02" + __u24(len(sh_body)) + sh_body
@@ -1040,26 +1438,45 @@ fn tls_accept(fd: int, key: TlsKey) -> Tls {
     return __tls_keys(c, cap, sap)
 }
 
-fn __curve_hash(curve: string) -> string {
-    if curve == "P-384" {
-        return "sha384"
-    }
-    return "sha256"
+# ---------- client side ----------
+__tls_max = 13
+__tls_aes_only = false
+
+# for testing: the newest TLS version the client offers (12 or 13), and
+# whether it offers only AES-128-GCM
+fn tls_client_options(max_version: int, aes_only: bool) {
+    __tls_max = max_version
+    __tls_aes_only = aes_only
 }
 
-# client side: the handshake with a server; checks its certificate unless insecure
+# the handshake with a server (TLS 1.3, or 1.2 if that is all it speaks);
+# checks its certificate unless insecure
 fn tls_connect(fd: int, host: string, insecure: bool) -> Tls {
     c = __tls_new(fd)
     priv = random_bytes(32)
     pub = x25519_public(priv)
+    cr = random_bytes(32)
     sni = "\x00" + __u16(len(host)) + host
     ext = "\x00\x00" + __u16(len(sni) + 2) + __u16(len(sni)) + sni
-    ext = ext + "\x00\x0a\x00\x04\x00\x02\x00\x1d"
+    ext = ext + "\x00\x0a\x00\x06\x00\x04\x00\x1d\x00\x17"
+    ext = ext + "\x00\x0b\x00\x02\x01\x00"
     schemes = "\x04\x03\x05\x03\x08\x04\x08\x05\x08\x06\x04\x01\x05\x01\x06\x01"
     ext = ext + "\x00\x0d" + __u16(len(schemes) + 2) + __u16(len(schemes)) + schemes
-    ext = ext + "\x00\x2b\x00\x03\x02\x03\x04"
-    ext = ext + "\x00\x33\x00\x26\x00\x24\x00\x1d\x00\x20" + from_bytes(pub)
-    body = "\x03\x03" + from_bytes(random_bytes(32)) + "\x20" + from_bytes(random_bytes(32)) + "\x00\x02\x13\x03\x01\x00" + __u16(len(ext)) + ext
+    ext = ext + "\x00\x17\x00\x00" + "\xff\x01\x00\x01\x00"
+    suites = "\x13\x03\x13\x01\xcc\xa9\xcc\xa8\xc0\x2b\xc0\x2f"
+    if __tls_aes_only {
+        suites = "\x13\x01\xc0\x2b\xc0\x2f"
+    }
+    if __tls_max >= 13 {
+        ext = ext + "\x00\x2b\x00\x05\x04\x03\x04\x03\x03"
+        ext = ext + "\x00\x33\x00\x26\x00\x24\x00\x1d\x00\x20" + from_bytes(pub)
+    } else {
+        suites = slice(suites, 4, len(suites))
+        if __tls_aes_only {
+            suites = "\xc0\x2b\xc0\x2f"
+        }
+    }
+    body = "\x03\x03" + from_bytes(cr) + "\x20" + from_bytes(random_bytes(32)) + __u16(len(suites)) + suites + "\x01\x00" + __u16(len(ext)) + ext
     ch = "\x01" + __u24(len(body)) + body
     __tls_write_plain(c, 22, ch)
     c = __tls_next_msg(c)
@@ -1070,16 +1487,21 @@ fn tls_connect(fd: int, host: string, insecure: bool) -> Tls {
         return __tls_fail(c, "expected a ServerHello")
     }
     sh = c.msg
-    if to_hex(to_bytes(slice(sh, 6, 38))) == "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c" {
+    sr = to_bytes(slice(sh, 6, 38))
+    if to_hex(sr) == "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c" {
         return __tls_fail(c, "the server wants a key exchange Slop does not offer")
     }
     p = 4 + 2 + 32
     p += 1 + byte_at(sh, p)
     suite = __num(sh, p, 2)
     p += 3
-    exts = __tls_exts(sh, p + 2, p + 2 + __num(sh, p, 2))
+    exts: array[int] = []
+    if p + 2 <= len(sh) {
+        exts = __tls_exts(sh, p + 2, p + 2 + __num(sh, p, 2))
+    }
     share: array[int] = []
     tls13 = false
+    ems = false
     k = 0
     while k < len(exts) {
         if exts[k] == 43 and __num(sh, exts[k + 1], 2) == 772 {
@@ -1088,14 +1510,24 @@ fn tls_connect(fd: int, host: string, insecure: bool) -> Tls {
         if exts[k] == 51 and __num(sh, exts[k + 1], 2) == 29 {
             share = to_bytes(slice(sh, exts[k + 1] + 4, exts[k + 1] + 4 + 32))
         }
+        if exts[k] == 23 {
+            ems = true
+        }
         k += 3
     }
     if not tls13 {
-        return __tls_fail(c, "the server only speaks an older TLS (Slop needs TLS 1.3)")
+        if __num(sh, 4, 2) != 771 {
+            return __tls_fail(c, "the server only speaks TLS older than 1.2")
+        }
+        if from_bytes(sub_bytes(sr, 24, 32)) == "DOWNGRD\x01" and __tls_max >= 13 {
+            return __tls_fail(c, "the connection was pushed down from TLS 1.3 (someone may be in the middle)")
+        }
+        return __connect12(c, host, insecure, ch + sh, cr, sr, suite, ems)
     }
-    if suite != 4867 or len(share) != 32 {
+    if (suite != 4867 and suite != 4865) or len(share) != 32 {
         return __tls_fail(c, "the server picked settings Slop does not offer")
     }
+    c.aes = suite == 4865
     shared = x25519(priv, share)
     th = ch + sh
     e: array[int] = []
@@ -1120,15 +1552,7 @@ fn tls_connect(fd: int, host: string, insecure: bool) -> Tls {
             return __tls_fail(c, "the server asks for a client certificate (not supported)")
         }
         if c.mtype == 11 {
-            q = 4 + 1 + byte_at(m, 4)
-            end = q + 3 + __num(m, q, 3)
-            q += 3
-            while q < end {
-                n = __num(m, q, 3)
-                push(chain, parse_cert(to_bytes(slice(m, q + 3, q + 3 + n))))
-                q += 3 + n
-                q += 2 + __num(m, q, 2)
-            }
+            chain = __cert_list(m, true)
             th = th + m
             continue
         }
@@ -1139,28 +1563,7 @@ fn tls_connect(fd: int, host: string, insecure: bool) -> Tls {
             content = repeat(" ", 64) + "TLS 1.3, server CertificateVerify\x00" + from_bytes(__tls_hash(th))
             sch = __num(m, 4, 2)
             sig = to_bytes(slice(m, 8, 8 + __num(m, 6, 2)))
-            leaf = chain[0]
-            good = false
-            if (sch == 1027 or sch == 1283) and leaf.key_type == "ec" and leaf.curve != "" {
-                C = curve_named(leaf.curve)
-                hb = sha256(to_bytes(content))
-                if sch == 1283 {
-                    hb = sha384(to_bytes(content))
-                }
-                rs = ecdsa_sig_raw(sig, C.size * 2)
-                good = len(rs) > 0 and ecdsa_verify(C, leaf.pub, hb, sub_bytes(rs, 0, C.size), sub_bytes(rs, C.size, len(rs)))
-            }
-            if sch >= 2052 and sch <= 2054 and leaf.key_type == "rsa" {
-                alg = "sha256"
-                if sch == 2053 {
-                    alg = "sha384"
-                }
-                if sch == 2054 {
-                    alg = "sha512"
-                }
-                good = rsa_verify_pss(leaf.pub, leaf.rsa_e, alg, hash_with(alg, to_bytes(content)), sig)
-            }
-            if not good {
+            if sch == 1025 or sch == 1281 or sch == 1537 or not __check_sig(chain[0], sch, to_bytes(content), sig) {
                 return __tls_fail(c, "the server's signature did not check out")
             }
             th = th + m
@@ -1193,6 +1596,101 @@ fn tls_connect(fd: int, host: string, insecure: bool) -> Tls {
     return __tls_keys(c, sap, cap)
 }
 
+# the rest of a TLS 1.2 handshake, after the ServerHello
+fn __connect12(c0: Tls, host: string, insecure: bool, th0: string, cr: array[int], sr: array[int], suite: int, ems: bool) -> Tls {
+    c = c0
+    th = th0
+    if suite != 52393 and suite != 52392 and suite != 49195 and suite != 49199 {
+        return __tls_fail(c, "the server picked settings Slop does not offer")
+    }
+    c.ver = 12
+    c.aes = suite == 49195 or suite == 49199
+    chain: array[X509Cert] = []
+    group = 0
+    theirs: array[int] = []
+    while true {
+        c = __tls_next_msg(c)
+        if not c.ok {
+            return c
+        }
+        m = c.msg
+        if c.mtype == 11 {
+            chain = __cert_list(m, false)
+            th = th + m
+            continue
+        }
+        if c.mtype == 12 {
+            if len(chain) == 0 or byte_at(m, 4) != 3 {
+                return __tls_fail(c, "the server's key exchange was not readable")
+            }
+            group = __num(m, 5, 2)
+            pl = byte_at(m, 7)
+            theirs = to_bytes(slice(m, 8, 8 + pl))
+            params = to_bytes(slice(m, 4, 8 + pl))
+            q = 8 + pl
+            sch = __num(m, q, 2)
+            sig = to_bytes(slice(m, q + 4, q + 4 + __num(m, q + 2, 2)))
+            if group != 29 and group != 23 {
+                return __tls_fail(c, "the server picked a key exchange Slop does not offer")
+            }
+            if not __check_sig(chain[0], sch, join_bytes(join_bytes(cr, sr), params), sig) {
+                return __tls_fail(c, "the server's signature did not check out")
+            }
+            th = th + m
+            continue
+        }
+        if c.mtype == 13 {
+            return __tls_fail(c, "the server asks for a client certificate (not supported)")
+        }
+        if c.mtype == 14 {
+            th = th + m
+            break
+        }
+        return __tls_fail(c, "an unexpected handshake message")
+    }
+    if group == 0 {
+        return __tls_fail(c, "the server sent no key exchange")
+    }
+    if not insecure {
+        why = tls_check_chain(chain, host)
+        if why != "" {
+            __tls_write_plain(c, 21, "\x02\x2a")
+            return __tls_fail(c, why)
+        }
+    }
+    priv = __kx_private(group)
+    pub = __kx_public(group, priv)
+    shared = __kx_shared(group, priv, theirs)
+    if len(shared) == 0 {
+        return __tls_fail(c, "the server's key was not valid")
+    }
+    cke = "\x10" + __u24(len(pub) + 1) + chr(len(pub)) + from_bytes(pub)
+    th = th + cke
+    master = __tls12_master(shared, ems, th, cr, sr)
+    c = __tls12_keys(c, master, cr, sr, true)
+    __tls_write_plain(c, 22, cke)
+    __tls_write_plain(c, 20, "\x01")
+    c.wenc = true
+    fin = "\x14\x00\x00\x0c" + from_bytes(__prf(master, "client finished", __tls_hash(th), 12))
+    c = __tls_write(c, 22, fin)
+    th = th + fin
+    c = __tls_next_msg(c)
+    if not c.ok {
+        return c
+    }
+    if c.mtype == 4 {
+        # a session ticket (not used): the Finished comes next
+        c = __tls_next_msg(c)
+        if not c.ok {
+            return c
+        }
+    }
+    if not c.renc or c.mtype != 20 or not same_bytes(to_bytes(slice(c.msg, 4, len(c.msg))), __prf(master, "server finished", __tls_hash(th), 12)) {
+        return __tls_fail(c, "the server's Finished message was wrong")
+    }
+    return c
+}
+
 # sends text over the connection
 fn tls_send(c: Tls, s: string) -> Tls {
     return __tls_write(c, 23, s)
@@ -1215,8 +1713,16 @@ fn tls_recv(c: Tls) -> Tls {
     return c
 }
 
+# which TLS version the connection uses: "1.3" or "1.2"
+fn tls_version(c: Tls) -> string {
+    if c.ver == 12 {
+        return "1.2"
+    }
+    return "1.3"
+}
+
 fn tls_close(c: Tls) {
-    if c.ok and len(c.wkey) > 0 {
+    if c.ok and c.wenc {
         __tls_write(c, 21, "\x01\x00")
     }
     socket_close(c.fd)
