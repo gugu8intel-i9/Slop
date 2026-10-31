@@ -86,9 +86,12 @@ fn __ort_status(st: int) -> string {
         return ""
     }
     c = __ccall_ptr(__ort_fn(2), st)
-    msg = __str(c, __strlen(c))
+    # copy it: the text goes away with the status
+    n = __strlen(c)
+    p = __alloc_bytes(n + 1)
+    __memcpy(p, c, n)
     __ccall_ptr(__ort_fn(93), st)
-    return msg
+    return __str(p, n)
 }
 
 fn __ort_init() -> bool {
