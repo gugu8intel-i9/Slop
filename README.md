@@ -163,7 +163,8 @@ Types: `int`, `float`, `bool`, `string`, `array[T]`, `thread[T]` and your struct
 | Lists | `len`, `push`, `pop`, `a[i]`, `for x in a` |
 | Threads | `spawn f(args)`, `join(t)`, `lock()`, `unlock()`, `cpu_count()` |
 | Async | `async f(args)`, `await t`, `done(t)`, `task[T]` |
-| NPU (`use "npu"`) | `matmul`, `dense`, `npu_name` |
+| NPU (`use "npu"`) | `npu_matmul`, `dense`, `npu_name` |
+| Matrices (`use "matrix"`) | `matmul`, `matmul_library` |
 | Files | `read_file`, `write_file`, `remove_file`, `make_dir`, `make_executable` |
 | Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()`, `env(name)`, `program_path()`, `input_ended()` |
 | Network | `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close` (or `use "web"`) |
@@ -419,6 +420,20 @@ print(gpu_name())    # e.g. "Apple M2", or "" when there is no GPU
 - `slop --show-gpu check app.slop` prints the GPU code made for each `gpu for` (Metal for `--target macos-arm64`, OpenCL otherwise) and writes the Vulkan SPIR-V next to it as `slop_gpu_N.spv`.
 - Moving lists to and from the GPU takes time, so it pays off for loops with lots of work per step, or millions of steps. `examples/gpu.slop` draws the Mandelbrot set this way.
 
+## Fast matrix math
+
+```slop
+use "matrix"
+
+c = matmul(a, b, m, k, n)    # a: m rows of k numbers, b: k rows of n; c: m rows of n
+print(matmul_library())      # "Accelerate", "OpenBLAS", "MKL", or "" for Slop's own
+```
+
+- Uses the computer's tuned matrix library when there is one: Accelerate on macOS (always there; it uses Apple's matrix units), and OpenBLAS, MKL or BLIS on Linux and Windows if installed. `SLOP_BLAS` can name another library file, or `none`.
+- Otherwise Slop's own: the work is cut into blocks that stay in the CPU caches, shared over all cores, and multiplied two numbers per instruction (SSE2 / NEON). It gives exactly the same answers as plain loops.
+- Full 64-bit precision either way. On a 4-core test machine, 1024 x 1024: plain loops on all cores 2.5 s, Slop's own 91 ms (about 28 times faster), OpenBLAS 32 ms.
+- `examples/matmul.slop` shows the speed on your computer.
+
 ## Using the NPU
 
 NPUs are the chips for AI in newer computers. They don't run any code, only neural-network math, so Slop offers that math in the `npu` module:
@@ -430,11 +445,11 @@ use "npu"
 x = [0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.5, 0.5]
 w = [0.2, -0.4, 1.0, 0.7, 0.1, -1.0]
 y = dense(x, w, [0.1, 0.0, -0.1], 4, 2, 3, "relu")
-z = matmul(x, w, 4, 2, 3)
+z = npu_matmul(x, w, 4, 2, 3)
 print(npu_name())    # "Apple Neural Engine", "Intel NPU", "Qualcomm NPU", "AMD NPU", or ""
 ```
 
-- `matmul(a, b, m, k, n)` multiplies `a` (m rows of k) by `b` (k rows of n). `dense(x, w, bias, m, k, n, activation)` is one network layer: the same, plus `bias` (n numbers, or `[]`), then `"relu"`, `"sigmoid"`, `"tanh"` or `""`. Lists hold their numbers row after row.
+- `npu_matmul(a, b, m, k, n)` multiplies `a` (m rows of k) by `b` (k rows of n) on the NPU; for full precision use `matmul` from the `matrix` module. `dense(x, w, bias, m, k, n, activation)` is one network layer: the same, plus `bias` (n numbers, or `[]`), then `"relu"`, `"sigmoid"`, `"tanh"` or `""`. Lists hold their numbers row after row.
 - Uses the Apple Neural Engine on Macs (through Core ML, macOS 14 and later). On Windows and Linux:
   - Intel NPUs (Core Ultra) through OpenVINO (`SLOP_OPENVINO` can name its `openvino_c` library file).
   - Qualcomm NPUs (Snapdragon X) through ONNX Runtime with its QNN provider, and AMD NPUs (Ryzen AI) through ONNX Runtime with its VitisAI provider (`SLOP_ONNXRUNTIME` can name the `onnxruntime` library file; `SLOP_VITISAI_CONFIG` passes AMD's config file if your setup needs one).

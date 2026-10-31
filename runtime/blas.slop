@@ -1,0 +1,89 @@
+# matmul through the system's BLAS (tuned matrix math), loaded when first
+# used: Accelerate on macOS; OpenBLAS, MKL or BLIS on Linux and Windows
+# (SLOP_BLAS names another library file; SLOP_BLAS=none turns it off).
+# Everything goes by address (dgemm_, the Fortran form), which every BLAS has.
+__blas_state = 0
+__blas_fn = 0
+__blas_lib = 0
+__blas_tmp = 0
+
+fn __blas_try(file: string, name: string) -> bool {
+    lib = __dl_load(file)
+    if lib == 0 {
+        return false
+    }
+    f = __dl_sym(lib, "dgemm_")
+    if f == 0 {
+        f = __dl_sym(lib, "dgemm")
+    }
+    if f == 0 {
+        return false
+    }
+    __blas_fn = f
+    __blas_lib = __alloc_bytes_in(2, len(name) + 1)
+    __memcpy(__blas_lib, __str_ptr(name), len(name))
+    __store8(__blas_lib + len(name), 0)
+    return true
+}
+
+fn __blas_init() -> bool {
+    if __blas_state != 0 {
+        return __blas_state == 1
+    }
+    __blas_state = -1
+    forced = __env("SLOP_BLAS")
+    if forced == "none" {
+        return false
+    }
+    found = false
+    if forced != "" {
+        found = __blas_try(forced, forced)
+    }
+    if not found {
+        os = __os_name()
+        if os == "macos" {
+            found = __blas_try("/System/Library/Frameworks/Accelerate.framework/Accelerate", "Accelerate")
+        } else if os == "windows" {
+            found = __blas_try("mkl_rt.2.dll", "MKL") or __blas_try("libopenblas.dll", "OpenBLAS") or __blas_try("openblas.dll", "OpenBLAS")
+        } else {
+            found = __blas_try("libmkl_rt.so.2", "MKL") or __blas_try("libopenblas.so.0", "OpenBLAS") or __blas_try("libopenblas.so", "OpenBLAS") or __blas_try("libblis.so.4", "BLIS")
+        }
+    }
+    if not found {
+        return false
+    }
+    # 'N', the sizes, 1.0, 0.0 (all passed by address)
+    __blas_tmp = __alloc_bytes_in(2, 128)
+    __blas_state = 1
+    return true
+}
+
+# c = a * b (row after row, all m x k, k x n, m x n); false: no BLAS here
+fn __blas_dgemm(a: int, b: int, c: int, m: int, k: int, n: int) -> bool {
+    if not __gpu_thread_ok() or not __blas_init() {
+        return false
+    }
+    # BLAS counts in columns: c (as n x m) = b (n x k) * a (k x m)
+    t = __alloc_bytes(96)
+    __store8(t, 78)
+    __store64(t + 8, n)
+    __store64(t + 16, m)
+    __store64(t + 24, k)
+    __store64(t + 32, float_bits(1.0))
+    __store64(t + 40, float_bits(0.0))
+    __store64(t + 48, n)
+    __store64(t + 56, k)
+    __store64(t + 64, n)
+    # 32-bit sizes for the usual BLAS: n, m, k are read as 4-byte ints, which
+    # the low half of each 8-byte slot gives (little endian)
+    __ccall_ptr(__blas_fn, t, t, t + 8, t + 16, t + 24, t + 32, b, t + 48, a, t + 56, t + 40, c, t + 64, 1, 1)
+    return true
+}
+
+# the BLAS in use, or "" for Slop's own matmul
+fn __blas_name() -> string {
+    if not __gpu_thread_ok() or not __blas_init() {
+        return ""
+    }
+    return __str(__blas_lib, __strlen(__blas_lib))
+}

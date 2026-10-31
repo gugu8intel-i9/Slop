@@ -112,5 +112,17 @@ jobs:
             ${{ matrix.slop }} run examples/npu.slop | tail -n 1 | tee npu-ort-name.txt
             grep "ONNX Runtime CPU" npu-ort-name.txt
           fi
+      - name: matmul speed (Accelerate on macOS, OpenBLAS on Linux x86-64, else Slop's own)
+        run: |
+          if [ "${{ matrix.slop }}" = "bin/slop" ]; then
+            sudo apt-get install -y -q libopenblas0-pthread > /dev/null
+          fi
+          ${{ matrix.slop }} run examples/matmul.slop 1024 | tee matmul.txt
+          grep -q "same answers" matmul.txt
+          case "${{ matrix.slop }}" in
+            bin/slop-macos-arm64|bin/slop-macos) grep -q "Accelerate" matmul.txt ;;
+            bin/slop) grep -q "OpenBLAS" matmul.txt ;;
+          esac
+          SLOP_BLAS=none ${{ matrix.slop }} run examples/matmul.slop 1024 | head -n 1
       - name: https to a real site (system certificates and name lookup)
         run: ${{ matrix.slop }} run examples/fetch.slop https://github.com/
