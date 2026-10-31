@@ -371,6 +371,25 @@ slop run app.slop
 - To share a package, put it on GitHub. To list it in `slop search`, add a line to [packages/index.txt](packages/index.txt).
 - Downloads use `curl` and `tar`, which come with Linux, macOS and Windows 10 and later.
 
+## Using every CPU core
+
+`parallel for` shares a loop out over all the CPU cores:
+
+```slop
+results: array[float] = []
+for i in 0..1_000_000 {
+    push(results, 0.0)
+}
+parallel for i in 0..1_000_000 {
+    results[i] = sqrt(float(i)) * 2.5
+}
+```
+
+- The range is cut into small blocks that are dealt out to one thread per core, so loops whose steps take different times stay balanced. The loop ends when every block is done.
+- The body can read local variables (it gets copies), write into lists (`results[i] = ...`), and change globals inside `lock()` / `unlock()`. Changing a local variable is an error, since the change would be lost; so are `break` and `return`.
+- Each `parallel for` starts its threads fresh, so use it for loops that do real work (thousands of steps or more).
+- On a 4-core machine, counting primes below 3 million takes 316 ms instead of 1047 ms.
+
 ## Threads in short
 
 - `t = spawn f(a, b)` starts `f(a, b)` on a new thread. `f` must return `int`, `float`, `bool` or nothing.

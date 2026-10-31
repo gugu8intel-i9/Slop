@@ -1,0 +1,75 @@
+# parallel for: the range is shared out over every CPU core
+fn is_prime(n: int) -> bool {
+    if n < 2 {
+        return false
+    }
+    d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 1
+    }
+    return true
+}
+
+flags: array[int] = []
+for i in 0..200000 {
+    push(flags, 0)
+}
+parallel for i in 0..200000 {
+    if is_prime(i) {
+        flags[i] = 1
+    }
+}
+count = 0
+for f in flags {
+    count += f
+}
+print("primes below 200000:", count)
+
+# every index exactly once, for odd sizes, with a local copied in
+fn check(n: int, add: int) -> bool {
+    seen: array[int] = []
+    for i in 0..n {
+        push(seen, 0)
+    }
+    parallel for i in 3..n + 3 {
+        seen[i - 3] = seen[i - 3] + 1 + add
+    }
+    for v in seen {
+        if v != 1 + add {
+            return false
+        }
+    }
+    return true
+}
+print(check(0, 5), check(1, 5), check(7, 2), check(1001, 0), check(99999, 3))
+
+# floats, and one parallel loop inside another
+grid: array[float] = []
+for i in 0..400 {
+    push(grid, 0.0)
+}
+scale = 0.5
+parallel for r in 10..30 {
+    parallel for c in 0..20 {
+        grid[(r - 10) * 20 + c] = float(r * c) * scale
+    }
+}
+grid_total = 0.0
+for g in grid {
+    grid_total += g
+}
+print(grid_total)
+
+# results gathered with a lock
+hits = 0
+parallel for i in 0..1000 {
+    if i % 7 == 0 {
+        lock()
+        hits += 1
+        unlock()
+    }
+}
+print("multiples of 7:", hits)
