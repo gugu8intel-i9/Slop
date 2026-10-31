@@ -532,6 +532,11 @@ fn http_error() -> string {
     return __web_error
 }
 
+# for testing: the newest TLS version to offer (12 or 13) and AES only
+fn https_client_options(max_version: int, aes_only: bool) {
+    tls_client_options(max_version, aes_only)
+}
+
 # for testing only: accept any https certificate
 fn https_insecure() {
     __web_insecure = true

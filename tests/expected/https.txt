@@ -2,3 +2,6 @@
 you sent hello tls 200
 true 404
 0 https: the certificate is not signed by anyone this computer trusts
+tls 1.2 chacha 200 true 
+tls 1.2 aes true 200
+tls 1.3 aes true 200
