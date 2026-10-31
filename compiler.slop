@@ -921,6 +921,15 @@ fn e_call(l: int) {
     emit32(0)
 }
 
+# jmp rax / br x0
+fn e_jmp_rax() {
+    if arm() {
+        a32(3592355840)
+        return
+    }
+    emit2(255, 224)
+}
+
 fn e_jz_rax(l: int) {
     if arm() {
         fixup(11, l)
@@ -4152,8 +4161,21 @@ fn gen_spawn() -> string {
     let l_over = new_label()
     e_jmp(l_over)
     place(l_thread)
+    # threads are kept in a pool: when a task is done, its thread waits for
+    # the next one, which may come from any spawn or async (each starts at
+    # its own l_run, with the same empty stack)
+    let l_run = new_label()
+    let l_leave = new_label()
     e_thread_enter()
     call_named("__thread_init")
+    place(l_run)
+    # a fresh start: call depth 0, memory buckets 0 and 1 empty
+    e_mov_imm(0, 0)
+    e_store(15, 8, 0)
+    e_load(0, 15, 7224)
+    e_store(15, 16, 0)
+    e_load(0, 15, 7232)
+    e_store(15, 24, 0)
     let i = argbytes / 8 - 1
     while i >= 0 {
         e_push_mem(15, 4096 + i * 8)
@@ -4164,20 +4186,25 @@ fn gen_spawn() -> string {
     if rt == "void" {
         e_mov_imm(0, 0)
     }
-    e_store(15, 7192, 0)
     # results of more than one word stay in this thread's return buffer
-    e_mov_imm(0, 1)
-    e_store(15, 7248, 0)
+    e_store(15, 7192, 0)
+    # marks the task done, then waits for the next one (0: end the thread)
+    call_named("__task_done_next")
+    e_jz_rax(l_leave)
+    e_jmp_rax()
+    place(l_leave)
     e_thread_leave()
     place(l_over)
-    # __thread_spawn(entry, arguments, size)
+    # __thread_spawn(entry, run, arguments, size)
     e_mov_rr(1, 4)
     e_lea_label(0, l_thread)
+    e_push(0)
+    e_lea_label(0, l_run)
     e_push(0)
     e_push(1)
     e_push_imm(argbytes)
     call_named("__thread_spawn")
-    e_add_rsp(24 + argbytes)
+    e_add_rsp(32 + argbytes)
     if is_async {
         return "task[" + rt + "]"
     }
@@ -6805,7 +6832,7 @@ fn o_code_signature(code_limit: int, text_size: int) {
     }
 }
 
-# which Windows library a function comes from: 0 kernel32, 1 ws2_32, 2 bcrypt, 3 crypt32
+# which Windows library a function comes from: 0 kernel32, 1 ws2_32, 2 bcrypt, 3 crypt32, 4 kernelbase
 fn dll_of(name: string) -> int {
     if is_winsock(name) {
         return 1
@@ -6815,6 +6842,9 @@ fn dll_of(name: string) -> int {
     }
     if starts_with_s(name, "Cert") {
         return 3
+    }
+    if name == "WaitOnAddress" or name == "WakeByAddressAll" {
+        return 4
     }
     return 0
 }
@@ -6851,7 +6881,7 @@ fn build_pe() {
     let text_raw = align_up(text_size, 512)
     let idata_va = align_up(text_va + text_size, 4096)
     # imports grouped by DLL
-    let dll_names = ["KERNEL32.dll", "WS2_32.dll", "bcrypt.dll", "CRYPT32.dll"]
+    let dll_names = ["KERNEL32.dll", "WS2_32.dll", "bcrypt.dll", "CRYPT32.dll", "KERNELBASE.dll"]
     let dll_funcs: array[array[int]] = []
     for d in 0..len(dll_names) {
         push(dll_funcs, no_ints())
