@@ -744,13 +744,17 @@ fn __out_unlock() {
 # starts a thread at entry; its arguments are copied from args
 fn __thread_spawn(entry: int, args: int, argbytes: int) -> int {
     __threads_on = true
-    block = __os_alloc(8192)
+    block = __task_reuse()
+    if block == 0 {
+        block = __os_alloc(8192)
+    }
     if block == 0 {
         __eprint("Slop: cannot start a thread (out of memory)")
         __os_exit(1)
     }
     __memcpy(block, __data(), 128)
     __store64(block + 8, 0)
+    __store64(block + 7248, 0)
     __memcpy(block + 4096, args, argbytes)
     __store64(block + 7168, entry)
     if not __os_thread_start(block, entry) {
@@ -762,9 +766,19 @@ fn __thread_spawn(entry: int, args: int, argbytes: int) -> int {
 
 # runs first on a new thread: its own memory buckets
 fn __thread_init() {
+    d = __data()
+    if __load64(d + 7376) != 0 {
+        # a reused block: its memory is still there, empty again
+        for b in 0..3 {
+            __store64(d + 16 + b * 8, __load64(d + 7224 + b * 8))
+            __store64(d + 40 + b * 8, __load64(d + 7328 + b * 8))
+            __store64(d + 64 + b * 8, __load64(d + 7352 + b * 8))
+        }
+        return
+    }
     __init_buckets(4294967296, 1073741824)
     for b in 0..3 {
-        __store64(__data() + 7224 + b * 8, __load64(__data() + 16 + b * 8))
+        __store64(d + 7224 + b * 8, __load64(d + 16 + b * 8))
     }
 }
 
@@ -773,12 +787,74 @@ fn __thread_init() {
 fn __thread_join(block: int) -> int {
     __os_thread_join(block)
     r = __load64(block + 7192)
+    __task_free(block)
+    return r
+}
+
+# async tasks are threads whose result is copied out before their memory goes
+fn __task_wait(block: int) {
+    __os_thread_join(block)
+}
+
+# finished threads' blocks (with their memory and stack) are kept for reuse,
+# since getting them from the system is the slow part of starting a thread
+__task_cache = 0
+__task_cached = 0
+__task_word = 0
+
+fn __task_reuse() -> int {
+    if __task_cached == 0 {
+        return 0
+    }
+    block = 0
+    __spin_lock(addr_of(__task_word))
+    if __task_cached > 0 {
+        __task_cached -= 1
+        block = __load64(__task_cache + __task_cached * 8)
+    }
+    __spin_unlock(addr_of(__task_word))
+    return block
+}
+
+fn __task_keep(block: int) -> bool {
+    kept = false
+    __spin_lock(addr_of(__task_word))
+    if __task_cache == 0 {
+        __task_cache = __os_alloc(8192)
+    }
+    if __task_cache != 0 and __task_cached < 256 {
+        for b in 0..3 {
+            __store64(block + 7328 + b * 8, __load64(block + 40 + b * 8))
+            __store64(block + 7352 + b * 8, __load64(block + 64 + b * 8))
+        }
+        __store64(block + 7376, 1)
+        __store64(__task_cache + __task_cached * 8, block)
+        __task_cached += 1
+        kept = true
+    }
+    __spin_unlock(addr_of(__task_word))
+    return kept
+}
+
+fn __task_free(block: int) {
+    if __load64(block + 32) == __load64(block + 7240) and __task_keep(block) {
+        return
+    }
+    __os_thread_release(block)
     for b in 0..2 {
         start = __load64(block + 7224 + b * 8)
         __os_release(start, __load64(block + 64 + b * 8) - start)
     }
+    # its memory for global variables is kept, unless it never used it
+    start = __load64(block + 7240)
+    if __load64(block + 32) == start {
+        __os_release(start, __load64(block + 80) - start)
+    }
     __os_release(block, 8192)
-    return r
+}
+
+fn __task_done(block: int) -> bool {
+    return __load64(block + 7248) != 0
 }
 
 # a name -> its IPv4 address through the system library's getaddrinfo (macOS, Windows)

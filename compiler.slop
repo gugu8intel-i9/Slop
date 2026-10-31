@@ -469,7 +469,7 @@ fn struct_index(name: string) -> int {
 }
 
 fn words(t: string) -> int {
-    if t == "int" or t == "bool" or t == "float" or starts_with_s(t, "thread[") {
+    if t == "int" or t == "bool" or t == "float" or starts_with_s(t, "thread[") or starts_with_s(t, "task[") {
         return 1
     }
     if t == "string" {
@@ -559,11 +559,11 @@ fn parse_type() -> string {
         expect("]")
         return "array[" + inner + "]"
     }
-    if name == "thread" {
+    if name == "thread" or name == "task" {
         expect("[")
         let inner = parse_type()
         expect("]")
-        return "thread[" + inner + "]"
+        return name + "[" + inner + "]"
     }
     if name == "int" or name == "bool" or name == "string" or name == "void" or name == "float" {
         return name
@@ -2472,7 +2472,7 @@ fn ensure_clone_fn(t: string) {
     }
 }
 
-# value of type t on the stack -> deep copy into bucket: 0 parent, 2 permanent
+# value of type t on the stack -> deep copy into bucket: 0 parent, 1 current, 2 permanent
 fn e_clone(t: string, target: int) {
     if not has_heap(t) {
         return
@@ -2482,6 +2482,9 @@ fn e_clone(t: string, target: int) {
     e_push(0)
     if target == 2 {
         e_push_imm(2)
+    } else if target == 1 {
+        e_cur_bucket_rcx()
+        e_push(1)
     } else {
         e_parent_bucket_rax()
         e_push(0)
@@ -3037,6 +3040,15 @@ fn gen_postfix() -> string {
     let addr = false
     if kind() == 1 and tk() == "spawn" and kind_at(g_pos + 1) == 1 and find_local("spawn") < 0 and find_global("spawn") < 0 {
         return gen_spawn()
+    }
+    if kind() == 1 and tk() == "async" and kind_at(g_pos + 1) == 1 and find_local("async") < 0 and find_global("async") < 0 {
+        return gen_spawn()
+    }
+    if kind() == 1 and tk() == "await" and kind_at(g_pos + 1) != 5 and find_local("await") < 0 and find_global("await") < 0 {
+        return gen_await()
+    }
+    if kind() == 1 and tk() == "await" and is_sym_at(g_pos + 1, "(") and find_fn("await") < 0 and find_local("await") < 0 and find_global("await") < 0 {
+        return gen_await()
     }
     if kind() == 1 {
         let name = tk()
@@ -4099,12 +4111,16 @@ fn gen_num_builtin(name: string, pre: string) -> string {
 }
 
 # spawn f(args): runs f on a new thread; the value is the thread
+# spawn f(...) starts f on a new thread; async f(...) does the same, but f
+# may return anything (text, lists, structs): await copies the result back
 fn gen_spawn() -> string {
+    let is_async = tk() == "async"
+    let word = tk()
     g_pos += 1
     let name = expect_name()
     let f = find_fn(name)
     if f < 0 or not is_sym("(") {
-        err("spawn needs a call to one of your functions, like spawn work(1)")
+        err(word + " needs a call to one of your functions, like " + word + " work(1)")
     }
     let ptypes: array[string] = []
     if g_fn_ptypes[f] != "" {
@@ -4122,11 +4138,14 @@ fn gen_spawn() -> string {
         argbytes += words(types[i]) * 8
     }
     if argbytes > 3072 {
-        err("spawn: too many arguments for " + name)
+        err(word + ": too many arguments for " + name)
     }
     let rt = g_fn_ret[f]
-    if rt != "void" and rt != "int" and rt != "bool" and rt != "float" {
-        err("spawn: " + name + " must return int, float, bool or nothing")
+    if not is_async and rt != "void" and rt != "int" and rt != "bool" and rt != "float" {
+        err("spawn: " + name + " must return int, float, bool or nothing (or use async, which can return anything)")
+    }
+    if words(rt) * 8 > 2048 {
+        err(word + ": " + name + " returns a value too big to pass back")
     }
     # the code the new thread runs (skipped here)
     let l_thread = new_label()
@@ -4146,6 +4165,9 @@ fn gen_spawn() -> string {
         e_mov_imm(0, 0)
     }
     e_store(15, 7192, 0)
+    # results of more than one word stay in this thread's return buffer
+    e_mov_imm(0, 1)
+    e_store(15, 7248, 0)
     e_thread_leave()
     place(l_over)
     # __thread_spawn(entry, arguments, size)
@@ -4156,7 +4178,65 @@ fn gen_spawn() -> string {
     e_push_imm(argbytes)
     call_named("__thread_spawn")
     e_add_rsp(24 + argbytes)
+    if is_async {
+        return "task[" + rt + "]"
+    }
     return "thread[" + rt + "]"
+}
+
+# await t waits for the task and gives its result, copied into this
+# function's memory (the task's own memory is then given back)
+fn gen_await() -> string {
+    g_pos += 1
+    let t = gen_postfix()
+    if not starts_with_s(t, "task[") {
+        err("await needs a task (from async f(...)), not " + t)
+    }
+    let rt = slice(t, 5, len(t) - 1)
+    let w = words(rt)
+    e_push(0)
+    call_named("__task_wait")
+    if w == 0 {
+        call_named("__task_free")
+        e_add_rsp(8)
+        return rt
+    }
+    if w == 1 {
+        e_load(1, 4, 0)
+        e_load(0, 1, 7192)
+        e_push(0)
+        e_load(0, 4, 8)
+        e_push(0)
+        call_named("__task_free")
+        e_add_rsp(8)
+        e_pop(0)
+        e_add_rsp(8)
+        return rt
+    }
+    # the words of the result, word 0 on top, above the task
+    let i = w - 1
+    let k = 0
+    while i >= 0 {
+        e_load(1, 4, k * 8)
+        e_load(0, 1, a_retbuf() + i * 8)
+        e_push(0)
+        i -= 1
+        k += 1
+    }
+    e_clone(rt, 1)
+    e_load(0, 4, w * 8)
+    e_push(0)
+    call_named("__task_free")
+    e_add_rsp(8)
+    # drop the task from under the result
+    i = w - 1
+    while i >= 0 {
+        e_load(0, 4, i * 8)
+        e_store(4, i * 8 + 8, 0)
+        i -= 1
+    }
+    e_add_rsp(8)
+    return rt
 }
 
 # join(thread) waits for it and gives its result; join(list, sep) joins text
@@ -4218,6 +4298,19 @@ fn gen_call(name: string, pre: string) -> string {
     }
     if name == "join" and find_fn(name) < 0 {
         return gen_join(pre)
+    }
+    if name == "done" and find_fn(name) < 0 and pre == "" {
+        # done(task): has it finished? (never waits)
+        expect("(")
+        let t = gen_expr()
+        if not starts_with_s(t, "task[") {
+            err("done needs a task (from async f(...)), not " + t)
+        }
+        expect(")")
+        e_push(0)
+        call_named("__task_done")
+        e_add_rsp(8)
+        return "bool"
     }
     if (name == "__ccall" or name == "__ccall32") and pre == "" {
         expect("(")

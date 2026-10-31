@@ -115,14 +115,18 @@ fn __os_exit(code: int) {
 # CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|PARENT_SETTID|CHILD_CLEARTID: the
 # kernel clears the id word when the thread ends, which join waits for
 fn __os_thread_start(block: int, entry: int) -> bool {
-    size = 67108864
-    stack = __os_reserve(size)
-    if stack == 0 {
-        return false
+    # a reused block keeps its stack
+    if __load64(block + 7208) == 0 {
+        size = 67108864
+        stack = __os_reserve(size)
+        if stack == 0 {
+            return false
+        }
+        __store64(block + 7208, stack)
+        __store64(block + 7216, size)
     }
-    __store64(block + 7208, stack)
-    __store64(block + 7216, size)
-    return __clone(3477248, stack + size, block + 7176, block) > 0
+    stack = __load64(block + 7208)
+    return __clone(3477248, stack + __load64(block + 7216), block + 7176, block) > 0
 }
 
 fn __os_thread_join(block: int) {
@@ -139,6 +143,9 @@ fn __os_thread_join(block: int) {
             __syscall(202, p, 0, id, 0)
         }
     }
+}
+
+fn __os_thread_release(block: int) {
     __os_release(__load64(block + 7208), __load64(block + 7216))
 }
 

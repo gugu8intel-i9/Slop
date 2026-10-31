@@ -1,0 +1,95 @@
+# async f(...) runs f at the same time as the rest of the program;
+# await gives back its result (numbers, text, lists or structs)
+use "time"
+
+struct Report {
+    name: string,
+    scores: array[int]
+}
+
+fn word_list(n: int) -> array[string] {
+    let out: array[string] = []
+    for i in 0..n {
+        push(out, "item" + str(i))
+    }
+    return out
+}
+
+fn report(name: string, n: int) -> Report {
+    let s: array[int] = []
+    for i in 0..n {
+        push(s, i * i)
+    }
+    return Report(name, s)
+}
+
+fn slow_square(x: int) -> int {
+    sleep(300)
+    return x * x
+}
+
+fn greet(name: string) -> string {
+    return "hello " + name
+}
+
+fn average(xs: array[float]) -> float {
+    let t = 0.0
+    for x in xs {
+        t += x
+    }
+    return t / float(len(xs))
+}
+
+fn log_line(s: string) {
+    print(s)
+}
+
+fn main() {
+    # every kind of result
+    let a = async greet("slop")
+    let b = async word_list(3)
+    let c = async report("alice", 4)
+    let d = async average([1.0, 2.0, 4.5])
+    print(await a)
+    print(await b)
+    let r = await c
+    print(r.name)
+    print(r.scores)
+    print(await d)
+    let e = async log_line("from a task")
+    await e
+
+    # ten tasks that each wait 300 ms finish together, not one after another
+    let start = now_ms()
+    let tasks: array[task[int]] = []
+    for i in 0..10 {
+        push(tasks, async slow_square(i))
+    }
+    let total = 0
+    for t in tasks {
+        total += await t
+    }
+    print(total)
+    let took = now_ms() - start
+    if took < 1500 {
+        print("ran together")
+    } else {
+        print("too slow: " + str(took) + " ms")
+    }
+
+    # done() checks without waiting
+    let f = async slow_square(7)
+    print(done(f))
+    print(await f)
+
+    # many small tasks
+    let many: array[task[string]] = []
+    for i in 0..300 {
+        push(many, async greet(str(i)))
+    }
+    let chars = 0
+    for t in many {
+        chars += len(await t)
+    }
+    print(chars)
+}

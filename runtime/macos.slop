@@ -43,6 +43,9 @@ fn __os_thread_join(block: int) {
     __ccall("pthread_join", __load64(block + 7184), 0)
 }
 
+fn __os_thread_release(block: int) {
+}
+
 fn __cpu_count() -> int {
     # sysconf(_SC_NPROCESSORS_ONLN)
     n = __ccall("sysconf", 58)

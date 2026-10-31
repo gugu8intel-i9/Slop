@@ -162,6 +162,7 @@ Types: `int`, `float`, `bool`, `string`, `array[T]`, `thread[T]` and your struct
 | Numbers | `float(x)`, `int(x)` (cuts off the fraction), `abs`, `sqrt`, `floor`, `ceil`, `round`, `pow`, `exp`, `log`, `sin`, `cos`, `tan`, `atan`, `float_bits`, `float_from_bits` |
 | Lists | `len`, `push`, `pop`, `a[i]`, `for x in a` |
 | Threads | `spawn f(args)`, `join(t)`, `lock()`, `unlock()`, `cpu_count()` |
+| Async | `async f(args)`, `await t`, `done(t)`, `task[T]` |
 | Files | `read_file`, `write_file`, `remove_file`, `make_dir`, `make_executable` |
 | Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()`, `env(name)`, `program_path()`, `input_ended()` |
 | Network | `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close` (or `use "web"`) |
@@ -413,6 +414,34 @@ print(gpu_name())    # e.g. "Apple M2", or "" when there is no GPU
 - Going past the end of a list stops the program, as everywhere else in Slop.
 - `slop --show-gpu check app.slop` prints the GPU code made for each `gpu for`.
 - Moving lists to and from the GPU takes time, so it pays off for loops with lots of work per step, or millions of steps. `examples/gpu.slop` draws the Mandelbrot set this way.
+
+## Doing things at the same time (async)
+
+`async` starts a function call in the background; `await` waits for its result:
+
+```slop
+use "web"
+
+fn size_of(url: string) -> int {
+    return len(http_get(url))
+}
+
+pages = ["https://example.com", "https://github.com", "https://slop.dev"]
+tasks: array[task[int]] = []
+for url in pages {
+    push(tasks, async size_of(url))     # all three downloads run at once
+}
+for t in tasks {
+    print(await t)
+}
+```
+
+- `async f(a, b)` returns a `task[T]` right away, where `T` is what `f` returns. The call runs on its own thread, so waiting (for the network, files, `sleep`) and heavy work both happen in parallel.
+- `await t` waits for the task and gives its result. Results can be anything: numbers, text, lists or structs. Await each task once.
+- `done(t)` tells whether a task has finished, without waiting.
+- `async http_get(url)` works directly, since `http_get` is a function too.
+- Tasks can read globals; change shared globals inside `lock()` / `unlock()`. If you pass a task text or lists, await it before the function that started it returns.
+- Web servers (`serve`, `serve_https`) answer every visitor in its own task, so a slow visitor never holds up the others. Your `handle` function still runs for one visitor at a time, so it can use globals safely.
 
 ## Threads in short
 
