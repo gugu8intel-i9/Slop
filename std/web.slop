@@ -36,6 +36,7 @@ __web_quiet = false
 __web_status = 0
 __web_error = ""
 __web_insecure = false
+__web_word = 0
 
 # ---------- answers ----------
 fn html(body: string) -> Response {
@@ -359,14 +360,41 @@ fn serve_count(port: int, count: int) {
         print("Serving on http://localhost:" + str(port) + "  (stop with Ctrl+C)")
     }
     served = 0
+    live: array[task[void]] = []
     while count < 0 or served < count {
         c = socket_accept(fd)
         if c >= 0 {
-            __web_answer(c)
+            # each visitor gets its own task, so slow ones don't hold up the rest
+            push(live, async __web_answer(c))
             served += 1
+            live = __web_reap(live)
         }
     }
+    for t in live {
+        await t
+    }
     socket_close(fd)
+}
+
+# the tasks still running (waits for the oldest when there are too many)
+fn __web_reap(live: array[task[void]]) -> array[task[void]] {
+    keep: array[task[void]] = []
+    for t in live {
+        if done(t) {
+            await t
+        } else {
+            push(keep, t)
+        }
+    }
+    if len(keep) >= 512 {
+        await keep[0]
+        rest: array[task[void]] = []
+        for i in 1..len(keep) {
+            push(rest, keep[i])
+        }
+        return rest
+    }
+    return keep
 }
 
 # has a whole request (head and body) arrived?
@@ -386,7 +414,16 @@ fn __web_complete(raw: string) -> bool {
 }
 
 # the answer (as bytes to send) for a whole raw request, from handle()
+# handle() runs for one visitor at a time, so it can use globals freely;
+# reading and sending (the slow parts) happen for many visitors at once
 fn __web_reply(raw: string, scheme: string) -> string {
+    __spin_lock(addr_of(__web_word))
+    out = __web_reply_one(raw, scheme)
+    __spin_unlock(addr_of(__web_word))
+    return out
+}
+
+fn __web_reply_one(raw: string, scheme: string) -> string {
     he = find(raw, "\r\n\r\n")
     if he < 0 {
         return ""
@@ -492,12 +529,17 @@ fn serve_https_count(port: int, cert_file: string, key_file: string, count: int)
         print("Serving on https://localhost:" + str(port) + "  (stop with Ctrl+C)")
     }
     served = 0
+    live: array[task[void]] = []
     while count < 0 or served < count {
         c = socket_accept(fd)
         if c >= 0 {
-            __web_answer_tls(c, key)
+            push(live, async __web_answer_tls(c, key))
             served += 1
+            live = __web_reap(live)
         }
+    }
+    for t in live {
+        await t
     }
     socket_close(fd)
 }

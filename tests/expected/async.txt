@@ -1,0 +1,11 @@
+hello slop
+["item0", "item1", "item2"]
+alice
+[0, 1, 4, 9]
+2.5
+from a task
+285
+ran together
+false
+49
+2590

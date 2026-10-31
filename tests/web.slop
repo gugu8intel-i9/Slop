@@ -31,7 +31,7 @@ fn handle(req: Request) -> Response {
 
 quiet()
 port = 18000 + clock_ns() / 1000 % 2000
-server = spawn serve_count(port, 8)
+server = spawn serve_count(port, 9)
 base = "http://127.0.0.1:" + str(port)
 sleep_until_up = 0
 first = ""
@@ -40,6 +40,8 @@ while sleep_until_up < 200 and http_status() == 0 {
     sleep_until_up += 1
 }
 print(http_status(), contains(first, "<h1>Hi &lt;Ada&gt;</h1>"), contains(first, "<!doctype html>"))
+# a visitor that connects and sends nothing must not hold up the others
+slow = socket_connect("127.0.0.1", port)
 print(http_get(base + "/hello/Grace%20H?x=a+b%21"), http_status())
 print(http_post(base + "/form", "name=Ada+L&note=1%2B1%3D2"))
 print(http_get(base + "/api"))
@@ -49,6 +51,7 @@ missing = http_get(base + "/nope")
 print("missing", http_status(), contains(missing, "Not found"))
 print(contains(http_get(base + "/files/web.slop"), "use \"web\""), http_status())
 print(http_get(base + "/agent"))
+socket_close(slow)
 join(server)
 print("visits", visits)
 print(url_encode("a b&c/é"), url_decode("a+b%26c"), escape_html("<a href='x'>"))

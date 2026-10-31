@@ -61,6 +61,9 @@ fn __os_thread_join(block: int) {
     __ccall("CloseHandle", h)
 }
 
+fn __os_thread_release(block: int) {
+}
+
 fn __cpu_count() -> int {
     # SYSTEM_INFO.dwNumberOfProcessors
     info = __scratch()
