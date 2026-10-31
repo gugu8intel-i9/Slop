@@ -801,3 +801,39 @@ fn __getaddrinfo(host: string) -> string {
     __ccall("freeaddrinfo", ai)
     return ip
 }
+
+# ---------- parallel for ----------
+__par_cores = 0
+
+# how many pieces to cut the range a..b into: one per core (at most 256)
+fn __par_pieces(a: int, b: int) -> int {
+    n = b - a
+    if n <= 0 {
+        return 0
+    }
+    if __par_cores == 0 {
+        __par_cores = __cpu_count()
+        if __par_cores < 1 {
+            __par_cores = 1
+        }
+        if __par_cores > 256 {
+            __par_cores = 256
+        }
+    }
+    if n < __par_cores {
+        return n
+    }
+    return __par_cores
+}
+
+# where piece c of t starts in a..b
+fn __par_cut(a: int, b: int, t: int, c: int) -> int {
+    return a + (b - a) / t * c + __min_int((b - a) % t, c)
+}
+
+fn __min_int(x: int, y: int) -> int {
+    if x < y {
+        return x
+    }
+    return y
+}

@@ -4348,6 +4348,146 @@ fn gen_call(name: string, pre: string) -> string {
 # statements
 # ============================================================================
 # jumps to l_false when the condition is false
+# ---------- parallel for ----------
+# parallel for i in a..b { body } runs the body on every CPU core: the range
+# is split into one piece per core, each piece runs in its own thread (the
+# last on this one), and the loop ends when all pieces are done.
+# The body becomes a hidden function __par_N(lo, hi, the locals it uses):
+# it reads copies of local numbers and text, and shares lists (so out[i] = ...
+# works). Changing a local variable in the body is an error, because the
+# change would be lost.
+let g_par_count = 0
+
+# copies tokens a..b-1 to the end of the token list
+fn copy_tokens(a: int, b: int) {
+    for i in a..b {
+        push(g_tk_kind, g_tk_kind[i])
+        push(g_tk_text, g_tk_text[i])
+        push(g_tk_line, g_tk_line[i])
+        push(g_tk_num, g_tk_num[i])
+        push(g_tk_file, g_tk_file[i])
+    }
+}
+
+# adds the tokens of a piece of generated code (with this line number)
+fn add_code(text: string, line: int) {
+    let start = len(g_tk_kind)
+    tokenize(text, false)
+    for i in start..len(g_tk_kind) {
+        g_tk_line[i] = line
+    }
+}
+
+# the token index where the expression starting at i ends (at one of the stop symbols, outside brackets)
+fn expr_end(i: int, stop1: string, stop2: string) -> int {
+    let depth = 0
+    let j = i
+    while g_tk_kind[j] != 6 {
+        let t = g_tk_text[j]
+        if g_tk_kind[j] == 5 {
+            if depth == 0 and (t == stop1 or t == stop2) {
+                return j
+            }
+            if t == "(" or t == "[" or t == "{" {
+                depth += 1
+            }
+            if t == ")" or t == "]" or t == "}" {
+                depth -= 1
+            }
+        }
+        j += 1
+    }
+    return j
+}
+
+fn gen_parallel_for() {
+    let line = g_tk_line[g_pos]
+    let file = g_tk_file[g_pos]
+    g_pos += 2
+    let var = expect_name()
+    expect("in")
+    let a_start = g_pos
+    let a_end = expr_end(g_pos, "..", "")
+    if not is_sym_at(a_end, "..") {
+        err("parallel for needs a range of numbers: parallel for i in 0..n")
+    }
+    let b_start = a_end + 1
+    let b_end = expr_end(b_start, "{", "")
+    let body_start = b_end
+    g_pos = body_start
+    skip_block()
+    let body_end = g_pos
+    # the locals the body uses, and checks
+    let caps: array[string] = []
+    let cap_types: array[string] = []
+    for i in body_start..body_end {
+        if g_tk_kind[i] == 2 and (g_tk_text[i] == "return" or g_tk_text[i] == "break") {
+            g_pos = i
+            err("a parallel for body cannot use " + g_tk_text[i] + " (each piece of the range runs on its own)")
+        }
+        if g_tk_kind[i] == 1 and g_tk_text[i] != var {
+            let name = g_tk_text[i]
+            let li = find_local(name)
+            let seen = false
+            for c in caps {
+                if c == name {
+                    seen = true
+                }
+            }
+            if li >= 0 and not seen and name != "" and not starts_with_s(name, "#") {
+                let next = g_tk_text[i + 1]
+                let prev_dot = i > 0 and g_tk_text[i - 1] == "."
+                if g_tk_kind[i + 1] == 5 and is_assign_op(next) and not prev_dot {
+                    g_pos = i
+                    err("a parallel for body cannot change the local variable '" + name + "' (use a list, like results[i] = ..., or a global with lock())")
+                }
+                push(caps, name)
+                push(cap_types, g_lc_type[li])
+            }
+        }
+    }
+    g_par_count += 1
+    let k = int_to_string(g_par_count)
+    let fname = "_par_" + k
+    # the hidden function
+    let params = "__c: int, __t: int, __a: int, __b: int"
+    for i in 0..len(caps) {
+        params = params + ", " + caps[i] + ": " + cap_types[i]
+    }
+    let saved_file = g_cur_file
+    g_cur_file = file
+    let fn_at = len(g_tk_kind)
+    # piece __c of __t takes every __t-th block of the range, so slow and fast
+    # parts of the range are shared out evenly
+    add_code("fn " + fname + "(" + params + ") { let __blk = (__b - __a + __t * 16 - 1) / (__t * 16) let __s = __a + __c * __blk while __s < __b { let __e = __min_int(__s + __blk, __b) for " + var + " in __s..__e", line)
+    copy_tokens(body_start, body_end)
+    add_code(" __s += __t * __blk } }", line)
+    let after_fn = len(g_tk_kind)
+    let resume = g_pos
+    g_pos = fn_at
+    collect_fn("")
+    # the code that runs it
+    let args = ""
+    for c in caps {
+        args = args + ", " + c
+    }
+    let a = "__par_a" + k
+    let b = "__par_b" + k
+    let n = "__par_n" + k
+    let h = "__par_h" + k
+    let code_at = len(g_tk_kind)
+    add_code("{ let " + a + " = ", line)
+    copy_tokens(a_start, a_end)
+    add_code(" let " + b + " = ", line)
+    copy_tokens(b_start, b_end)
+    add_code(" let " + n + " = __par_pieces(" + a + ", " + b + ") let " + h + ": array[thread[void]] = [] for __par_c" + k + " in 0.." + n + " - 1 { push(" + h + ", spawn " + fname + "(__par_c" + k + ", " + n + ", " + a + ", " + b + args + ")) } if " + n + " > 0 { " + fname + "(" + n + " - 1, " + n + ", " + a + ", " + b + args + ") } for __par_t" + k + " in " + h + " { join(__par_t" + k + ") } }", line)
+    add_code(" ", line)
+    g_cur_file = saved_file
+    g_pos = code_at
+    gen_block()
+    g_pos = resume
+}
+
 fn gen_cond(l_false: int) {
     g_cmp_end = -1
     let t = gen_expr()
@@ -4787,6 +4927,10 @@ fn gen_return() {
 
 fn gen_stmt() {
     let k = kind()
+    if k == 1 and tk() == "parallel" and kind_at(g_pos + 1) == 2 and tk_at(g_pos + 1) == "for" and find_local("parallel") < 0 and find_global("parallel") < 0 {
+        gen_parallel_for()
+        return
+    }
     if k == 2 {
         let w = tk()
         if w == "let" {
