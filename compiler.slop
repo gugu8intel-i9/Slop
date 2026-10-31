@@ -3511,7 +3511,7 @@ fn builtin_alias(name: string) -> string {
     if name == "exec" or name == "clock_ns" or name == "eprint" or name == "input" or name == "upper" or name == "lower" {
         return "__" + name
     }
-    if name == "socket_listen" or name == "socket_accept" or name == "socket_read" or name == "socket_write" or name == "socket_close" {
+    if name == "socket_listen" or name == "socket_accept" or name == "socket_read" or name == "socket_write" or name == "socket_close" or name == "socket_connect" {
         return "__" + name
     }
     if name == "str" {
@@ -3570,30 +3570,57 @@ fn gen_args(expected: array[string]) -> array[string] {
     return types
 }
 
+# Every value is worked out first and kept in a hidden local; only then is
+# the output locked and the line written, so a print that waits (on the
+# network, say) never keeps other threads from printing.
 fn gen_print(pre: string) {
-    let first = true
-    call_named("__out_lock")
+    let types: array[string] = []
+    let offs: array[int] = []
     if pre != "" {
-        print_value(pre)
-        first = false
+        if words(pre) == 1 {
+            e_pop(0)
+        }
+        let off = add_local("", pre)
+        store_local(off, pre)
+        push(types, pre)
+        push(offs, off)
     }
     expect("(")
     while not is_sym(")") {
-        if not first {
-            e_mov_imm(0, 32)
-            e_push(0)
-            call_named("__out_byte")
-            e_add_rsp(8)
-        }
         let t = gen_expr()
-        to_stack(t)
-        print_value(t)
-        first = false
+        if words(t) < 1 {
+            err("cannot print a value of type " + t)
+        }
+        let off = add_local("", t)
+        store_local(off, t)
+        push(types, t)
+        push(offs, off)
         if is_sym(",") {
             g_pos += 1
         }
     }
     g_pos += 1
+    call_named("__out_lock")
+    for i in 0..len(types) {
+        if i > 0 {
+            e_push_imm(32)
+            call_named("__out_byte")
+            e_add_rsp(8)
+        }
+        let t = types[i]
+        let w = words(t)
+        if w == 1 {
+            loc_load(0, offs[i])
+            e_push(0)
+        } else {
+            let k = w - 1
+            while k >= 0 {
+                e_push_mem(5, offs[i] + k * 8)
+                k -= 1
+            }
+        }
+        print_value(t)
+    }
     e_push_imm(10)
     call_named("__out_byte")
     e_add_rsp(8)
@@ -5178,7 +5205,7 @@ fn use_lines(src: string) -> array[string] {
 
 # the standard library: modules built into slop itself
 fn std_modules() -> array[string] {
-    return ["csv", "files", "lists", "math", "random", "strings", "testing", "time"]
+    return ["csv", "files", "lists", "math", "random", "strings", "testing", "time", "web"]
 }
 
 fn std_source(name: string) -> string {
@@ -5205,6 +5232,9 @@ fn std_source(name: string) -> string {
     }
     if name == "time" {
         return embed("std/time.slop")
+    }
+    if name == "web" {
+        return embed("std/web.slop")
     }
     return ""
 }
@@ -5834,7 +5864,7 @@ fn o_code_signature(code_limit: int, text_size: int) {
 }
 
 fn is_winsock(name: string) -> bool {
-    let names = ["WSAStartup", "socket", "setsockopt", "bind", "listen", "accept", "recv", "send", "closesocket"]
+    let names = ["WSAStartup", "socket", "setsockopt", "bind", "listen", "accept", "recv", "send", "closesocket", "connect"]
     for n in names {
         if n == name {
             return true
@@ -6521,6 +6551,7 @@ fn help() {
     print("  slop build app.slop        build ./app (app.exe on Windows)")
     print("  slop check app.slop        look for mistakes without building")
     print("  slop new hello             start a new program in hello.slop")
+    print("  slop new site --web        start a website in site.slop")
     print("  slop repl                  type Slop code and see results right away")
     print("  slop install               copy slop to a folder for programs on this computer")
     print("  slop convert hello.rs      turn Rust, C, C++, Java, C#, JavaScript, TypeScript,")
@@ -6535,7 +6566,7 @@ fn help() {
     print("  slop update [NAME]         get the newest version of packages")
     print("  slop search [WORD]         find packages")
     print("  slop std [NAME]            the standard library: math, lists, strings, random,")
-    print("                             time, files, csv, testing (no download needed)")
+    print("                             time, files, csv, testing, web (no download needed)")
     print("  slop version               show the version and system")
     print("  slop help                  show this help")
     print("")
@@ -6577,6 +6608,21 @@ fn new_program(name: string) {
     write_file(file, "# " + file + "\nname = \"World\"\nprint(\"Hello \" + name + \"!\")\n")
     print("created " + file)
     print("run it with: slop run " + file)
+}
+
+# slop new NAME --web: a small website to start from
+fn new_website(name: string) {
+    let file = name
+    if not ends_with(file, ".slop") {
+        file = file + ".slop"
+    }
+    if len(read_file(file)) > 0 {
+        usage_error(file + " already exists")
+    }
+    let code = "# " + file + ": a website. Run it with: slop run " + file + "\n# then open http://localhost:8080\nuse \"web\"\n\nvisits = 0\n\nfn handle(req: Request) -> Response {\n    if route(req, \"GET\", \"/\") {\n        visits += 1\n        body = render(\"<h1>Hello from Slop!</h1><p>This page was opened {{n}} times.</p><form method=\\\"post\\\" action=\\\"/hello\\\"><input name=\\\"who\\\" placeholder=\\\"Your name\\\"> <button>Say hi</button></form>\", [\"n\", str(visits)])\n        return html(page(\"Home\", body))\n    }\n    if route(req, \"POST\", \"/hello\") {\n        return html(page(\"Hi\", render(\"<h1>Hi {{who}}!</h1><p><a href=\\\"/\\\">Back</a></p>\", [\"who\", form(req, \"who\")])))\n    }\n    if route(req, \"GET\", \"/api/time\") {\n        return json(json_object([\"ms\", str(clock_ns() / 1000000)]))\n    }\n    return not_found()\n}\n\nserve(8080)\n"
+    write_file(file, code)
+    print("created " + file)
+    print("run it with: slop run " + file + "   then open http://localhost:8080")
 }
 
 fn install() {
@@ -6877,7 +6923,17 @@ fn main(args: array[string]) {
         if len(words) < 2 {
             usage_error("give the new program a name, like: slop new hello")
         }
-        new_program(words[1])
+        let web = false
+        for w in words {
+            if w == "--web" {
+                web = true
+            }
+        }
+        if web {
+            new_website(words[1])
+        } else {
+            new_program(words[1])
+        }
         return
     }
     let file = ""

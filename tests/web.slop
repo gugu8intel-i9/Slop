@@ -1,0 +1,54 @@
+# the web module: a site answers requests made by http_get, in one program
+use "web"
+
+visits = 0
+
+fn handle(req: Request) -> Response {
+    if route(req, "GET", "/") {
+        visits += 1
+        return html(page("Home", render("<h1>Hi {{who}}</h1>", ["who", "<Ada>"])))
+    }
+    if route(req, "GET", "/hello/:name") {
+        return text("hello " + param("name") + " " + query(req, "x"))
+    }
+    if route(req, "POST", "/form") {
+        return text("got " + form(req, "name") + " / " + form(req, "note"))
+    }
+    if route(req, "GET", "/api") {
+        return json(json_object(["name", json_string("Slop \"web\""), "list", json_list(["1", "2"])]))
+    }
+    if route(req, "GET", "/go") {
+        return redirect("/")
+    }
+    if route(req, "GET", "/files/*") {
+        return send_dir(req, "/files/", "tests")
+    }
+    if route(req, "GET", "/agent") {
+        return set_cookie(text(header(req, "user-agent")), "seen", "yes please")
+    }
+    return not_found()
+}
+
+quiet()
+port = 18000 + clock_ns() / 1000 % 2000
+server = spawn serve_count(port, 8)
+base = "http://127.0.0.1:" + str(port)
+sleep_until_up = 0
+first = ""
+while sleep_until_up < 200 and http_status() == 0 {
+    first = http_get(base + "/")
+    sleep_until_up += 1
+}
+print(http_status(), contains(first, "<h1>Hi &lt;Ada&gt;</h1>"), contains(first, "<!doctype html>"))
+print(http_get(base + "/hello/Grace%20H?x=a+b%21"), http_status())
+print(http_post(base + "/form", "name=Ada+L&note=1%2B1%3D2"))
+print(http_get(base + "/api"))
+http_get(base + "/go")
+print("redirect", http_status())
+missing = http_get(base + "/nope")
+print("missing", http_status(), contains(missing, "Not found"))
+print(contains(http_get(base + "/files/web.slop"), "use \"web\""), http_status())
+print(http_get(base + "/agent"))
+join(server)
+print("visits", visits)
+print(url_encode("a b&c/é"), url_decode("a+b%26c"), escape_html("<a href='x'>"))

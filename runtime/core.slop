@@ -455,6 +455,23 @@ fn __remove_file(path: string) {
 
 
 
+# fills a 16-byte IPv4 socket address (family set by the caller); false if ip is not like 1.2.3.4
+fn __ipv4_fill(a: int, ip: string, port: int) -> bool {
+    if ip == "localhost" {
+        ip = "127.0.0.1"
+    }
+    parts = __split(ip, ".")
+    if len(parts) != 4 {
+        return false
+    }
+    __store8(a + 2, port / 256)
+    __store8(a + 3, port % 256)
+    for i in 0..4 {
+        __store8(a + 4 + i, __to_int(parts[i]))
+    }
+    return true
+}
+
 fn __file_exists(path: string) -> bool {
     fd = __os_open_read(__cstr(path))
     if fd < 0 {

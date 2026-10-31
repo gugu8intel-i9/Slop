@@ -364,6 +364,23 @@ fn __socket_listen(port: int) -> int {
     return fd
 }
 
+# connects to ip:port (like "127.0.0.1"); -1 if it can't
+fn __socket_connect(ip: string, port: int) -> int {
+    __socket_init()
+    fd = __ccall("socket", 2, 1, 6)
+    if fd == -1 {
+        return -1
+    }
+    a = __scratch() + 16
+    __memzero(a, 16)
+    __store8(a, 2)
+    if not __ipv4_fill(a, ip, port) or __ccall32("connect", fd, a, 16) != 0 {
+        __ccall32("closesocket", fd)
+        return -1
+    }
+    return fd
+}
+
 fn __socket_accept(fd: int) -> int {
     __flush()
     return __ccall("accept", fd, 0, 0)

@@ -163,7 +163,7 @@ Types: `int`, `float`, `bool`, `string`, `array[T]`, `thread[T]` and your struct
 | Threads | `spawn f(args)`, `join(t)`, `lock()`, `unlock()`, `cpu_count()` |
 | Files | `read_file`, `write_file`, `remove_file`, `make_dir`, `make_executable` |
 | Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()`, `env(name)`, `program_path()`, `input_ended()` |
-| Network | `socket_listen`, `socket_accept`, `socket_read`, `socket_write`, `socket_close` |
+| Network | `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close` (or `use "web"`) |
 | Packing | `slop_pack(list)`, `slop_unpack(packed)` |
 | Low level | see [LOW_LEVEL.md](LOW_LEVEL.md) |
 
@@ -240,6 +240,41 @@ bin/slop run tests/run.slop
 
 The tests check that the compiler reproduces itself byte for byte and that all six compilers in `bin/` match the source. GitHub Actions runs them on Linux, macOS and Windows, on both Intel/AMD and ARM64, for every push.
 
+## Websites
+
+`use "web"` turns a program into a website. Write a `handle` function that answers each request, then call `serve`:
+
+```slop
+use "web"
+
+fn handle(req: Request) -> Response {
+    if route(req, "GET", "/") {
+        return html(page("Home", "<h1>Hello!</h1>"))
+    }
+    if route(req, "GET", "/hello/:name") {
+        return text("Hi " + param("name"))
+    }
+    if route(req, "POST", "/signup") {
+        return html(page("Thanks", render("<p>Welcome, {{who}}!</p>", ["who", form(req, "name")])))
+    }
+    return not_found()
+}
+
+serve(8080)    # open http://localhost:8080
+```
+
+| To | Use |
+|---|---|
+| answer | `html(text)`, `text(text)`, `json(text)`, `redirect(url)`, `not_found()`, `send_file(path)`, `send_dir(req, "/static/", "public")`, `with_status(r, 201)`, `with_header(r, name, value)`, `set_cookie(r, name, value)` |
+| read the request | `route(req, method, "/path/:part")`, `param(name)`, `query(req, key)`, `form(req, key)`, `header(req, name)`, `cookie(req, name)`, `req.method`, `req.path`, `req.body` |
+| make pages | `page(title, body)` (a full page with a clean look), `render(template, ["key", value, ...])` (`{{key}}` is made safe for HTML, `{{{key}}}` is put in as is), `render_file(path, pairs)`, `escape_html` |
+| JSON | `json_string(s)`, `json_object(["key", json_text, ...])`, `json_list(items)` |
+| ask other servers | `http_get(url)`, `http_post(url, form_data)`, `http_status()` (http:// with a number address or localhost) |
+
+- `slop new mysite --web` starts a website you can build on; `examples/web_server.slop` is a small notes app.
+- Requests are answered one at a time; `serve_count(port, n)` stops after `n` requests, and `quiet()` turns off the request log.
+- There is no https yet: put Slop behind a proxy such as Caddy or nginx to serve https.
+
 ## Bring code from other languages
 
 `slop convert` reads a program written in Rust, C, C++, Java, C#, JavaScript, TypeScript, Go, Kotlin, Swift or Python and writes the Slop version next to it:
@@ -272,6 +307,7 @@ Modules that come with Slop, built into `slop` itself (nothing to download). Put
 
 | Module | What it has |
 |---|---|
+| `web` | websites: `serve`, `route`, `html`, `page`, `render`, `form`, `query`, `json_object`, `http_get` (see Websites) |
 | `math` | `PI`, `E`, `gcd`, `lcm`, `is_prime`, `factorial`, `ipow`, `clamp`, `lerp`, `hypot`, `radians`, `min_int`/`max_float`, ... |
 | `lists` | `sum_ints`, `sort_ints`, `sort_floats`, `sort_strings`, `reverse_ints`, `unique_ints`, `index_of_int`, `range_list`, ... |
 | `strings` | `pad_left`, `center`, `title_case`, `capitalize`, `words`, `lines`, `count`, `is_digit`, `trim_left`, `strip_suffix`, ... |
