@@ -5914,7 +5914,8 @@ fn build_pe() {
     }
     let desc_size = (len(dlls) + 1) * 20
     let ilt_off: array[int] = []
-    let at = desc_size
+    # 8-byte aligned: ARM64 loads the address slots with scaled offsets
+    let at = align_up(desc_size, 8)
     for d in dlls {
         push(ilt_off, at)
         at += (len(dll_funcs[d]) + 1) * 8
@@ -6057,6 +6058,7 @@ fn build_pe() {
     for k in 0..5 {
         o32(0)
     }
+    o_pad_to(idata_at + align_up(desc_size, 8))
     # lookup tables, then address tables (filled in by Windows at load)
     for pass in 0..2 {
         for i in 0..len(dlls) {
