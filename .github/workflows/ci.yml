@@ -36,6 +36,12 @@ jobs:
         run: /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
       - name: Test suite
         run: ${{ matrix.slop }} run tests/run.slop
+      - name: GPU probe (temporary)
+        if: matrix.slop == 'bin/slop-macos-arm64'
+        continue-on-error: true
+        run: |
+          bin/slop-macos-arm64 --show-gpu check tests/gpu.slop | awk '/^--- /{n++; f="k" n ".metal"; next} /^ok:/{next} {print > f}'
+          swiftc -O .github/debug/probe.swift -o probe && ./probe k*.metal
       - name: gpu for (shows whether the GPU was used)
         run: ${{ matrix.slop }} run examples/gpu.slop | tail -n 1
       - name: https to a real site (system certificates and name lookup)
