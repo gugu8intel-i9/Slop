@@ -420,7 +420,9 @@ fn __gpu_pipe(src: string, id: int) -> int {
             c = __ccall("objc_msgSend", d, __objc("UTF8String"))
             msg = __str(c, __strlen(c))
         }
-        __eprint("Slop: the GPU could not take this gpu for, so it runs on the CPU: " + msg)
+        ns = __gpu_nsstring(src)
+        info = " (source " + __int_to_string(len(src)) + " bytes, as text " + __int_to_string(ns) + "/" + __int_to_string(__ccall("objc_msgSend", ns, __objc("length"))) + ", lib " + __int_to_string(lib) + ", opts " + __int_to_string(opts) + ")"
+        __eprint("Slop: the GPU could not take this gpu for, so it runs on the CPU: " + msg + info)
         if id < 4096 {
             __store64(__gpu_pipes + id * 8, -1)
         }
