@@ -5232,6 +5232,11 @@ fn gen_gpu_for() {
         let e = "__global int* e"
         msl = "float slop_rdf(__global float* a, int n, int i, " + e + ") { if (i < 0 || i >= n) { *e = 1; return 0.0f; } return a[i]; }\n" + "int slop_rdi(__global int* a, int n, int i, " + e + ") { if (i < 0 || i >= n) { *e = 1; return 0; } return a[i]; }\n" + "bool slop_ok(int n, int i, " + e + ") { if (i < 0 || i >= n) { *e = 1; return false; } return true; }\n" + "__kernel void " + kname + "(" + params + ") {\n" + "if ((int)get_global_id(0) >= slop_count) return;\n" + "int v_" + var + " = slop_base + (int)get_global_id(0);\n" + setup + body + "}\n"
     }
+    # Vulkan takes SPIR-V (Windows and Linux)
+    let spv = ""
+    if not metal {
+        spv = sx_kernel(var, body_start)
+    }
     # the code that runs it: on the GPU if there is one, else on the CPU cores
     let saved_file = g_cur_file
     g_cur_file = file
@@ -5245,6 +5250,12 @@ fn gen_gpu_for() {
     add_code(" if __gpu_begin(", line)
     push(g_tk_kind, 4)
     push(g_tk_text, msl)
+    push(g_tk_line, line)
+    push(g_tk_num, 0)
+    push(g_tk_file, file)
+    add_code(", ", line)
+    push(g_tk_kind, 4)
+    push(g_tk_text, spv)
     push(g_tk_line, line)
     push(g_tk_num, 0)
     push(g_tk_file, file)
@@ -5287,11 +5298,945 @@ fn gen_gpu_for() {
     if g_show_gpu {
         print("--- " + kname + " ---")
         print(msl)
+        if spv != "" {
+            # the SPIR-V goes to a file (it is binary)
+            write_file(kname + ".spv", spv)
+            print("(SPIR-V for Vulkan in " + kname + ".spv)")
+        }
     }
     let resume = body_end
     g_pos = code_at
     gen_block()
     g_pos = resume
+}
+
+# ---------- gpu for: SPIR-V (for Vulkan) ----------
+# The same loop body again, as SPIR-V: the binary form Vulkan takes. The body
+# was already checked by the pass above, so this one only emits. Values are
+# word ids; g_sx_type holds the type tag ("long" int32, "float", "bool").
+# Data: binding 0 holds numbers (start, count, then each list's length and
+# each number the body reads), binding 1 the error flag, 2 on the lists.
+let g_sv_types: array[int] = []
+let g_sv_dec: array[int] = []
+let g_sv_fvars: array[int] = []
+let g_sv_body: array[int] = []
+let g_sv_next = 1
+let g_sv_cache_key: array[string] = []
+let g_sv_cache_id: array[int] = []
+let g_sx_type = ""
+let g_sx_names: array[string] = []
+let g_sx_vars: array[int] = []
+let g_sx_vtypes: array[string] = []
+let g_sx_cont: array[int] = []
+let g_sx_ext = 0
+let g_sx_pbuf = 0
+let g_sx_ebuf = 0
+let g_sx_cap_var: array[int] = []
+let g_sx_cap_p: array[int] = []
+
+fn sv_id() -> int {
+    g_sv_next += 1
+    return g_sv_next - 1
+}
+
+fn sv_emit(to: string, op: int, args: array[int]) {
+    let w = (len(args) + 1) * 65536 + op
+    if to == "t" {
+        push(g_sv_types, w)
+        for a in args {
+            push(g_sv_types, a)
+        }
+    } else if to == "d" {
+        push(g_sv_dec, w)
+        for a in args {
+            push(g_sv_dec, a)
+        }
+    } else if to == "v" {
+        push(g_sv_fvars, w)
+        for a in args {
+            push(g_sv_fvars, a)
+        }
+    } else {
+        push(g_sv_body, w)
+        for a in args {
+            push(g_sv_body, a)
+        }
+    }
+}
+
+# a string as SPIR-V words (nul ended, padded)
+fn sv_str(s: string) -> array[int] {
+    let out: array[int] = []
+    let i = 0
+    while i <= len(s) {
+        let w = 0
+        for b in 0..4 {
+            let c = 0
+            if i + b < len(s) {
+                c = byte_at(s, i + b)
+            }
+            w += c * pow_int(256, b)
+        }
+        push(out, w)
+        i += 4
+    }
+    return out
+}
+
+fn pow_int(b: int, e: int) -> int {
+    let r = 1
+    for i in 0..e {
+        r = r * b
+    }
+    return r
+}
+
+# a type or constant, made once: key names it, args are its operands after the id
+fn sv_cached(key: string, op: int, args: array[int]) -> int {
+    for i in 0..len(g_sv_cache_key) {
+        if g_sv_cache_key[i] == key {
+            return g_sv_cache_id[i]
+        }
+    }
+    let id = sv_id()
+    let all = [id]
+    if op == 41 or op == 42 or op == 43 {
+        # constants: result type first, then the id
+        all = [args[0], id]
+        for i in 1..len(args) {
+            push(all, args[i])
+        }
+    } else {
+        for a in args {
+            push(all, a)
+        }
+    }
+    sv_emit("t", op, all)
+    push(g_sv_cache_key, key)
+    push(g_sv_cache_id, id)
+    return id
+}
+
+fn sv_void() -> int {
+    let none: array[int] = []
+    return sv_cached("void", 19, none)
+}
+
+fn sv_bool() -> int {
+    let none: array[int] = []
+    return sv_cached("bool", 20, none)
+}
+
+fn sv_int() -> int {
+    return sv_cached("int", 21, [32, 1])
+}
+
+fn sv_uint() -> int {
+    return sv_cached("uint", 21, [32, 0])
+}
+
+fn sv_float() -> int {
+    return sv_cached("float", 22, [32])
+}
+
+fn sv_of(t: string) -> int {
+    if t == "float" {
+        return sv_float()
+    }
+    if t == "bool" {
+        return sv_bool()
+    }
+    return sv_int()
+}
+
+fn sv_ptr(class: int, ty: int) -> int {
+    return sv_cached("ptr" + int_to_string(class) + "_" + int_to_string(ty), 32, [class, ty])
+}
+
+fn sv_const_int(v: int) -> int {
+    let w = (v % 4294967296 + 4294967296) % 4294967296
+    return sv_cached("ci" + int_to_string(v), 43, [sv_int(), w])
+}
+
+fn sv_const_uint(v: int) -> int {
+    return sv_cached("cu" + int_to_string(v), 43, [sv_uint(), v])
+}
+
+fn sv_const_float_bits(bits: int) -> int {
+    return sv_cached("cf" + int_to_string(bits), 43, [sv_float(), bits])
+}
+
+fn sv_true() -> int {
+    let none: array[int] = []
+    return sv_cached("true", 41, [sv_bool()])
+}
+
+fn sv_false() -> int {
+    return sv_cached("false", 42, [sv_bool()])
+}
+
+# a buffer of 32-bit values: struct { elem data[]; } in Uniform storage
+fn sv_buffer(elem: int, binding: int) -> int {
+    let key = "rt" + int_to_string(elem)
+    let found = false
+    for k in g_sv_cache_key {
+        if k == key {
+            found = true
+        }
+    }
+    let arr = sv_cached(key, 29, [elem])
+    let st = sv_cached("st" + int_to_string(elem), 30, [arr])
+    if not found {
+        sv_emit("d", 71, [arr, 6, 4])
+        sv_emit("d", 71, [st, 3])
+        sv_emit("d", 72, [st, 0, 35, 0])
+    }
+    let v = sv_id()
+    sv_emit("t", 59, [sv_ptr(2, st), v, 2])
+    sv_emit("d", 71, [v, 34, 0])
+    sv_emit("d", 71, [v, 33, binding])
+    return v
+}
+
+fn sv_op(op: int, ty: int, args: array[int]) -> int {
+    let id = sv_id()
+    let all = [ty, id]
+    for a in args {
+        push(all, a)
+    }
+    sv_emit("b", op, all)
+    return id
+}
+
+fn sv_load(ty: int, ptr: int) -> int {
+    return sv_op(61, ty, [ptr])
+}
+
+fn sv_store(ptr: int, v: int) {
+    sv_emit("b", 62, [ptr, v])
+}
+
+fn sv_label(id: int) {
+    sv_emit("b", 248, [id])
+}
+
+fn sv_branch(to: int) {
+    sv_emit("b", 249, [to])
+}
+
+# a variable in the function (they all go at its start)
+fn sv_fvar(ty: int) -> int {
+    let v = sv_id()
+    sv_emit("v", 59, [sv_ptr(7, ty), v, 7])
+    return v
+}
+
+# element i of a buffer (uint, int or float elements)
+fn sv_elem(buf: int, elem: int, i: int) -> int {
+    return sv_op(65, sv_ptr(2, elem), [buf, sv_const_int(0), i])
+}
+
+# number k of binding 0, as type t
+fn sv_param(k: int, t: string) -> int {
+    let u = sv_load(sv_uint(), sv_elem(g_sx_pbuf, sv_uint(), sv_const_int(k)))
+    if t == "bool" {
+        return sv_op(171, sv_bool(), [u, sv_const_uint(0)])
+    }
+    return sv_op(124, sv_of(t), [u])
+}
+
+fn sv_to_float(v: int, t: string) -> int {
+    if t == "float" {
+        return v
+    }
+    return sv_op(111, sv_float(), [v])
+}
+
+fn sx_conv(v: int, from: string, to: string) -> int {
+    if from == to {
+        return v
+    }
+    if to == "float" {
+        return sv_op(111, sv_float(), [v])
+    }
+    if to == "long" and from == "float" {
+        return sv_op(110, sv_int(), [v])
+    }
+    return v
+}
+
+fn sx_lookup(name: string) -> int {
+    let i = len(g_sx_names) - 1
+    while i >= 0 {
+        if g_sx_names[i] == name {
+            return i
+        }
+        i -= 1
+    }
+    return -1
+}
+
+fn sx_cap_index(name: string) -> int {
+    for i in 0..len(g_gx_caps) {
+        if g_gx_caps[i] == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn sx_expr() -> int {
+    let a = sx_and()
+    while is_kw("or") or is_sym("||") {
+        g_pos += 1
+        # b only runs when a is false
+        let r = sv_fvar(sv_bool())
+        sv_store(r, a)
+        let lb = sv_id()
+        let lend = sv_id()
+        sv_emit("b", 247, [lend, 0])
+        sv_emit("b", 250, [a, lend, lb])
+        sv_label(lb)
+        let b = sx_and()
+        sv_store(r, b)
+        sv_branch(lend)
+        sv_label(lend)
+        a = sv_load(sv_bool(), r)
+        g_sx_type = "bool"
+    }
+    return a
+}
+
+fn sx_and() -> int {
+    let a = sx_cmp()
+    while is_kw("and") or is_sym("&&") {
+        g_pos += 1
+        # b only runs when a is true
+        let r = sv_fvar(sv_bool())
+        sv_store(r, a)
+        let lb = sv_id()
+        let lend = sv_id()
+        sv_emit("b", 247, [lend, 0])
+        sv_emit("b", 250, [a, lb, lend])
+        sv_label(lb)
+        let b = sx_cmp()
+        sv_store(r, b)
+        sv_branch(lend)
+        sv_label(lend)
+        a = sv_load(sv_bool(), r)
+        g_sx_type = "bool"
+    }
+    return a
+}
+
+fn sx_cmp() -> int {
+    let a = sx_bits()
+    let ta = g_sx_type
+    let ops = ["==", "!=", "<", ">", "<=", ">="]
+    let iops = [170, 171, 177, 173, 179, 175]
+    let fops = [180, 182, 184, 186, 188, 190]
+    for k in 0..6 {
+        if is_sym(ops[k]) {
+            g_pos += 1
+            let b = sx_bits()
+            let tb = g_sx_type
+            g_sx_type = "bool"
+            if ta == "bool" {
+                let lop = 164
+                if k == 1 {
+                    lop = 165
+                }
+                return sv_op(lop, sv_bool(), [a, b])
+            }
+            if ta == "float" or tb == "float" {
+                return sv_op(fops[k], sv_bool(), [sv_to_float(a, ta), sv_to_float(b, tb)])
+            }
+            return sv_op(iops[k], sv_bool(), [a, b])
+        }
+    }
+    g_sx_type = ta
+    return a
+}
+
+fn sx_bits() -> int {
+    let a = sx_add()
+    let ta = g_sx_type
+    let ops = ["&", "|", "^", "<<", ">>"]
+    let codes = [199, 197, 198, 196, 195]
+    let going = true
+    while going {
+        going = false
+        for k in 0..5 {
+            if not going and is_sym(ops[k]) {
+                g_pos += 1
+                let b = sx_add()
+                a = sv_op(codes[k], sv_int(), [a, b])
+                going = true
+            }
+        }
+    }
+    g_sx_type = ta
+    return a
+}
+
+fn sx_arith(op: string, a: int, ta: string, b: int, tb: string) -> int {
+    if ta == "float" or tb == "float" {
+        let fa = sv_to_float(a, ta)
+        let fb = sv_to_float(b, tb)
+        g_sx_type = "float"
+        let code = 129
+        if op == "-" {
+            code = 131
+        }
+        if op == "*" {
+            code = 133
+        }
+        if op == "/" {
+            code = 136
+        }
+        return sv_op(code, sv_float(), [fa, fb])
+    }
+    g_sx_type = "long"
+    let code = 128
+    if op == "-" {
+        code = 130
+    }
+    if op == "*" {
+        code = 132
+    }
+    if op == "/" {
+        code = 135
+    }
+    if op == "%" {
+        code = 138
+    }
+    return sv_op(code, sv_int(), [a, b])
+}
+
+fn sx_add() -> int {
+    let a = sx_mul()
+    let ta = g_sx_type
+    while is_sym("+") or is_sym("-") {
+        let op = tk()
+        g_pos += 1
+        let b = sx_mul()
+        a = sx_arith(op, a, ta, b, g_sx_type)
+        ta = g_sx_type
+    }
+    g_sx_type = ta
+    return a
+}
+
+fn sx_mul() -> int {
+    let a = sx_unary()
+    let ta = g_sx_type
+    while is_sym("*") or is_sym("/") or is_sym("%") {
+        let op = tk()
+        g_pos += 1
+        let b = sx_unary()
+        a = sx_arith(op, a, ta, b, g_sx_type)
+        ta = g_sx_type
+    }
+    g_sx_type = ta
+    return a
+}
+
+fn sx_unary() -> int {
+    if is_sym("-") {
+        g_pos += 1
+        let a = sx_unary()
+        if g_sx_type == "float" {
+            return sv_op(127, sv_float(), [a])
+        }
+        return sv_op(126, sv_int(), [a])
+    }
+    if is_kw("not") or is_sym("!") {
+        g_pos += 1
+        let a = sx_unary()
+        g_sx_type = "bool"
+        return sv_op(168, sv_bool(), [a])
+    }
+    return sx_primary()
+}
+
+# reads list number c at index idx (int), with the bounds check
+fn sx_read(c: int, idx: int) -> int {
+    let et = sv_float()
+    let t = "float"
+    if g_gx_kinds[c] == "ai" {
+        et = sv_int()
+        t = "long"
+    }
+    let n = sv_param(g_sx_cap_p[c], "long")
+    let inside = sv_op(176, sv_bool(), [sv_op(124, sv_uint(), [idx]), sv_op(124, sv_uint(), [n])])
+    let r = sv_fvar(et)
+    let lin = sv_id()
+    let lout = sv_id()
+    let lend = sv_id()
+    sv_emit("b", 247, [lend, 0])
+    sv_emit("b", 250, [inside, lin, lout])
+    sv_label(lin)
+    sv_store(r, sv_load(et, sv_elem(g_sx_cap_var[c], et, idx)))
+    sv_branch(lend)
+    sv_label(lout)
+    sx_fail()
+    if t == "float" {
+        sv_store(r, sv_const_float_bits(0))
+    } else {
+        sv_store(r, sv_const_int(0))
+    }
+    sv_branch(lend)
+    sv_label(lend)
+    g_sx_type = t
+    return sv_load(et, r)
+}
+
+# the loop went outside a list: set the error flag
+fn sx_fail() {
+    sv_store(sv_elem(g_sx_ebuf, sv_uint(), sv_const_int(0)), sv_const_uint(1))
+}
+
+fn sx_primary() -> int {
+    let k = kind()
+    if k == 3 {
+        let v = g_tk_num[g_pos]
+        g_pos += 1
+        g_sx_type = "long"
+        return sv_const_int(v)
+    }
+    if k == 7 {
+        let bits = __f64_to_f32(g_tk_num[g_pos])
+        g_pos += 1
+        g_sx_type = "float"
+        return sv_const_float_bits(bits)
+    }
+    if is_kw("true") {
+        g_pos += 1
+        g_sx_type = "bool"
+        return sv_true()
+    }
+    if is_kw("false") {
+        g_pos += 1
+        g_sx_type = "bool"
+        return sv_false()
+    }
+    if is_sym("(") {
+        g_pos += 1
+        let a = sx_expr()
+        expect(")")
+        return a
+    }
+    let name = tk()
+    g_pos += 1
+    if is_sym("(") {
+        return sx_call(name)
+    }
+    let li = sx_lookup(name)
+    if li >= 0 {
+        g_sx_type = g_sx_vtypes[li]
+        return sv_load(sv_of(g_sx_type), g_sx_vars[li])
+    }
+    let c = sx_cap_index(name)
+    let kd = g_gx_kinds[c]
+    if kd == "af" or kd == "ai" {
+        g_pos += 1
+        let idx = sx_expr()
+        expect("]")
+        return sx_read(c, idx)
+    }
+    let t = "long"
+    if kd == "f" {
+        t = "float"
+    }
+    if kd == "b" {
+        t = "bool"
+    }
+    g_sx_type = t
+    return sv_param(g_sx_cap_p[c], t)
+}
+
+fn sx_call(name: string) -> int {
+    expect("(")
+    let args: array[int] = []
+    let types: array[string] = []
+    while not is_sym(")") {
+        push(args, sx_expr())
+        push(types, g_sx_type)
+        if is_sym(",") {
+            g_pos += 1
+        }
+    }
+    expect(")")
+    # GLSL.std.450 instruction numbers
+    let names = ["sqrt", "sin", "cos", "tan", "exp", "log", "floor", "ceil", "round", "atan"]
+    let codes = [31, 13, 14, 15, 27, 28, 8, 9, 1, 18]
+    for i in 0..len(names) {
+        if name == names[i] {
+            g_sx_type = "float"
+            return sv_op(12, sv_float(), [g_sx_ext, codes[i], sv_to_float(args[0], types[0])])
+        }
+    }
+    if name == "pow" {
+        g_sx_type = "float"
+        return sv_op(12, sv_float(), [g_sx_ext, 26, sv_to_float(args[0], types[0]), sv_to_float(args[1], types[1])])
+    }
+    if name == "abs" {
+        g_sx_type = types[0]
+        if types[0] == "float" {
+            return sv_op(12, sv_float(), [g_sx_ext, 4, args[0]])
+        }
+        return sv_op(12, sv_int(), [g_sx_ext, 5, args[0]])
+    }
+    if name == "float" {
+        g_sx_type = "float"
+        return sv_to_float(args[0], types[0])
+    }
+    # int()
+    g_sx_type = "long"
+    if types[0] == "float" {
+        return sv_op(110, sv_int(), [args[0]])
+    }
+    return args[0]
+}
+
+# a block of statements; false when it ended with a jump (continue)
+fn sx_block() -> bool {
+    expect("{")
+    let open = true
+    let marks = len(g_sx_names)
+    while not is_sym("}") {
+        if not open {
+            # code after continue: unreachable, but it needs a block
+            let dead = sv_id()
+            sv_label(dead)
+            open = true
+        }
+        open = sx_stmt()
+    }
+    g_pos += 1
+    while len(g_sx_names) > marks {
+        pop(g_sx_names)
+        pop(g_sx_vars)
+        pop(g_sx_vtypes)
+    }
+    return open
+}
+
+fn sx_stmt() -> bool {
+    if is_kw("if") {
+        g_pos += 1
+        let c = sx_expr()
+        let lend = sv_id()
+        let lthen = sv_id()
+        let lelse = sv_id()
+        sv_emit("b", 247, [lend, 0])
+        sv_emit("b", 250, [c, lthen, lelse])
+        sv_label(lthen)
+        if sx_block() {
+            sv_branch(lend)
+        }
+        sv_label(lelse)
+        if is_kw("else") {
+            g_pos += 1
+            let open = true
+            if is_kw("if") {
+                open = sx_stmt()
+            } else {
+                open = sx_block()
+            }
+            if open {
+                sv_branch(lend)
+            }
+        } else {
+            sv_branch(lend)
+        }
+        sv_label(lend)
+        return true
+    }
+    if is_kw("while") {
+        g_pos += 1
+        let lhead = sv_id()
+        let lcond = sv_id()
+        let lbody = sv_id()
+        let lcont = sv_id()
+        let lend = sv_id()
+        sv_branch(lhead)
+        sv_label(lhead)
+        sv_emit("b", 246, [lend, lcont, 0])
+        sv_branch(lcond)
+        sv_label(lcond)
+        let c = sx_expr()
+        sv_emit("b", 250, [c, lbody, lend])
+        sv_label(lbody)
+        push(g_sx_cont, lcont)
+        if sx_block() {
+            sv_branch(lcont)
+        }
+        pop(g_sx_cont)
+        sv_label(lcont)
+        sv_branch(lhead)
+        sv_label(lend)
+        return true
+    }
+    if is_kw("for") {
+        g_pos += 1
+        let v = expect_name()
+        expect("in")
+        let a = sx_conv(sx_expr(), g_sx_type, "long")
+        expect("..")
+        let b = sx_conv(sx_expr(), g_sx_type, "long")
+        let var = sv_fvar(sv_int())
+        let last = sv_fvar(sv_int())
+        sv_store(var, a)
+        sv_store(last, b)
+        push(g_sx_names, v)
+        push(g_sx_vars, var)
+        push(g_sx_vtypes, "long")
+        let lhead = sv_id()
+        let lcond = sv_id()
+        let lbody = sv_id()
+        let lcont = sv_id()
+        let lend = sv_id()
+        sv_branch(lhead)
+        sv_label(lhead)
+        sv_emit("b", 246, [lend, lcont, 0])
+        sv_branch(lcond)
+        sv_label(lcond)
+        let c = sv_op(177, sv_bool(), [sv_load(sv_int(), var), sv_load(sv_int(), last)])
+        sv_emit("b", 250, [c, lbody, lend])
+        sv_label(lbody)
+        push(g_sx_cont, lcont)
+        if sx_block() {
+            sv_branch(lcont)
+        }
+        pop(g_sx_cont)
+        sv_label(lcont)
+        sv_store(var, sv_op(128, sv_int(), [sv_load(sv_int(), var), sv_const_int(1)]))
+        sv_branch(lhead)
+        sv_label(lend)
+        pop(g_sx_names)
+        pop(g_sx_vars)
+        pop(g_sx_vtypes)
+        return true
+    }
+    if is_kw("continue") {
+        g_pos += 1
+        if len(g_sx_cont) == 0 {
+            sv_emit("b", 253, no_ints())
+        } else {
+            sv_branch(g_sx_cont[len(g_sx_cont) - 1])
+        }
+        return false
+    }
+    let had_let = false
+    if is_kw("let") {
+        g_pos += 1
+        had_let = true
+    }
+    let name = tk()
+    g_pos += 1
+    let c = sx_cap_index(name)
+    let li = sx_lookup(name)
+    if is_sym("[") {
+        # list[i] = value, with the bounds check
+        g_pos += 1
+        let idx = sx_expr()
+        expect("]")
+        let op = tk()
+        g_pos += 1
+        let v = sx_expr()
+        let vt = g_sx_type
+        let et = sv_float()
+        let t = "float"
+        if g_gx_kinds[c] == "ai" {
+            et = sv_int()
+            t = "long"
+        }
+        let n = sv_param(g_sx_cap_p[c], "long")
+        let inside = sv_op(176, sv_bool(), [sv_op(124, sv_uint(), [idx]), sv_op(124, sv_uint(), [n])])
+        let lin = sv_id()
+        let lout = sv_id()
+        let lend = sv_id()
+        sv_emit("b", 247, [lend, 0])
+        sv_emit("b", 250, [inside, lin, lout])
+        sv_label(lin)
+        let p = sv_elem(g_sx_cap_var[c], et, idx)
+        let nv = sx_conv(v, vt, t)
+        if op != "=" {
+            let old = sv_load(et, p)
+            nv = sx_arith(slice(op, 0, 1), old, t, nv, t)
+            nv = sx_conv(nv, g_sx_type, t)
+        }
+        sv_store(p, nv)
+        sv_branch(lend)
+        sv_label(lout)
+        sx_fail()
+        sv_branch(lend)
+        sv_label(lend)
+        return true
+    }
+    let declared = ""
+    if is_sym(":") {
+        g_pos += 1
+        declared = parse_type()
+    }
+    let op = tk()
+    g_pos += 1
+    let v = sx_expr()
+    let vt = g_sx_type
+    if had_let or li < 0 {
+        let mt = vt
+        if declared == "float" {
+            mt = "float"
+        }
+        if declared == "int" {
+            mt = "long"
+        }
+        let var = sv_fvar(sv_of(mt))
+        sv_store(var, sx_conv(v, vt, mt))
+        push(g_sx_names, name)
+        push(g_sx_vars, var)
+        push(g_sx_vtypes, mt)
+        return true
+    }
+    let t = g_sx_vtypes[li]
+    let nv = sx_conv(v, vt, t)
+    if op != "=" {
+        let old = sv_load(sv_of(t), g_sx_vars[li])
+        nv = sx_arith(slice(op, 0, 1), old, t, v, vt)
+        nv = sx_conv(nv, g_sx_type, t)
+    }
+    sv_store(g_sx_vars[li], nv)
+    return true
+}
+
+# the whole SPIR-V module for this loop, as bytes; the body starts at body_start
+fn sx_kernel(var: string, body_start: int) -> string {
+    g_sv_types = []
+    g_sv_dec = []
+    g_sv_fvars = []
+    g_sv_body = []
+    g_sv_next = 1
+    g_sv_cache_key = []
+    g_sv_cache_id = []
+    g_sx_names = []
+    g_sx_vars = []
+    g_sx_vtypes = []
+    g_sx_cont = []
+    g_sx_cap_var = []
+    g_sx_cap_p = []
+    g_sx_ext = sv_id()
+    let main = sv_id()
+    let gid = sv_id()
+    let v3 = sv_cached("v3", 23, [sv_uint(), 3])
+    sv_emit("t", 59, [sv_ptr(1, v3), gid, 1])
+    sv_emit("d", 71, [gid, 11, 28])
+    g_sx_pbuf = sv_buffer(sv_uint(), 0)
+    g_sx_ebuf = sv_buffer(sv_uint(), 1)
+    # where each captured value lives
+    let p = 2
+    let binding = 2
+    for i in 0..len(g_gx_caps) {
+        let kd = g_gx_kinds[i]
+        if kd == "af" {
+            push(g_sx_cap_var, sv_buffer(sv_float(), binding))
+            binding += 1
+        } else if kd == "ai" {
+            push(g_sx_cap_var, sv_buffer(sv_int(), binding))
+            binding += 1
+        } else {
+            push(g_sx_cap_var, 0)
+        }
+        push(g_sx_cap_p, p)
+        p += 1
+    }
+    let fnty = sv_cached("fn", 33, [sv_void()])
+    # thread number = x + y * 65536; past the count: nothing to do
+    let g = sv_load(v3, gid)
+    let gx = sv_op(81, sv_uint(), [g, 0])
+    let gy = sv_op(81, sv_uint(), [g, 1])
+    let lin = sv_op(128, sv_uint(), [gx, sv_op(132, sv_uint(), [gy, sv_const_uint(65536)])])
+    let count = sv_load(sv_uint(), sv_elem(g_sx_pbuf, sv_uint(), sv_const_int(1)))
+    let lwork = sv_id()
+    let lskip = sv_id()
+    let lend = sv_id()
+    let inside = sv_op(176, sv_bool(), [lin, count])
+    sv_emit("b", 247, [lend, 0])
+    sv_emit("b", 250, [inside, lwork, lskip])
+    sv_label(lwork)
+    let iv = sv_fvar(sv_int())
+    let base = sv_param(0, "long")
+    sv_store(iv, sv_op(128, sv_int(), [sv_op(124, sv_int(), [lin]), base]))
+    push(g_sx_names, var)
+    push(g_sx_vars, iv)
+    push(g_sx_vtypes, "long")
+    let saved = g_pos
+    g_pos = body_start
+    if sx_block() {
+        sv_branch(lend)
+    }
+    g_pos = saved
+    sv_label(lskip)
+    sv_branch(lend)
+    sv_label(lend)
+    sv_emit("b", 253, no_ints())
+    # the module: header, then each section in the order SPIR-V wants
+    let words: array[int] = [119734787, 65536, 0, g_sv_next, 0]
+    let w = [17, 1]
+    let out = words
+    push(out, 2 * 65536 + 17)
+    push(out, 1)
+    let ext = sv_str("GLSL.std.450")
+    push(out, (len(ext) + 2) * 65536 + 11)
+    push(out, g_sx_ext)
+    for x in ext {
+        push(out, x)
+    }
+    push(out, 3 * 65536 + 14)
+    push(out, 0)
+    push(out, 1)
+    let nm = sv_str("main")
+    push(out, (len(nm) + 4) * 65536 + 15)
+    push(out, 5)
+    push(out, main)
+    for x in nm {
+        push(out, x)
+    }
+    push(out, gid)
+    push(out, 6 * 65536 + 16)
+    push(out, main)
+    push(out, 17)
+    push(out, 64)
+    push(out, 1)
+    push(out, 1)
+    for x in g_sv_dec {
+        push(out, x)
+    }
+    for x in g_sv_types {
+        push(out, x)
+    }
+    push(out, 5 * 65536 + 54)
+    push(out, sv_void())
+    push(out, main)
+    push(out, 0)
+    push(out, fnty)
+    push(out, 2 * 65536 + 248)
+    push(out, sv_id())
+    for x in g_sv_fvars {
+        push(out, x)
+    }
+    for x in g_sv_body {
+        push(out, x)
+    }
+    push(out, 1 * 65536 + 56)
+    # the id bound (one past the last id) goes in the header
+    out[3] = g_sv_next
+    let bytes = ""
+    let parts: array[string] = []
+    for x in out {
+        push(parts, chr(x % 256) + chr(x / 256 % 256) + chr(x / 65536 % 256) + chr(x / 16777216 % 256))
+    }
+    return join(parts, "")
 }
 
 let g_show_gpu = false
@@ -6059,7 +7004,7 @@ fn runtime_source() -> string {
         os = embed("runtime/windows.slop")
     }
     if g_target != 2 {
-        os = os + embed("runtime/opencl.slop") + embed("runtime/npu_openvino.slop") + embed("runtime/npu_onnx.slop")
+        os = os + embed("runtime/vulkan.slop") + embed("runtime/opencl.slop") + embed("runtime/npu_openvino.slop") + embed("runtime/npu_onnx.slop")
     }
     return embed("runtime/core.slop") + embed("runtime/numbers.slop") + embed("runtime/math.slop") + os
 }

@@ -408,14 +408,15 @@ gpu for i in 0..1_000_000 {
 print(gpu_name())    # e.g. "Apple M2", or "" when there is no GPU
 ```
 
-- Works on the GPU of Apple Silicon Macs (M1 and later, through Metal), and on Windows and Linux through OpenCL, which comes with the graphics drivers of NVIDIA, AMD and Intel. Without a GPU or its driver, the same loop runs as a `parallel for` on the CPU cores, so programs work the same on every machine.
+- Works on the GPU of Apple Silicon Macs (M1 and later, through Metal). On Windows and Linux it uses Vulkan, which every current GPU driver offers (NVIDIA, AMD, Intel, and Mesa on Linux), and else OpenCL. Without a GPU or its driver, the same loop runs as a `parallel for` on the CPU cores, so programs work the same on every machine.
+- For Vulkan, the compiler turns the loop body into SPIR-V (Vulkan's own binary form) itself; nothing else is needed. `SLOP_GPU=vulkan` or `SLOP_GPU=opencl` picks one.
 - On Linux, programs that use `gpu for` load the system's C library (glibc) to reach the driver, and use the GPU from the main thread only (elsewhere the loop runs on the CPU). Other programs stay fully standalone.
-- `SLOP_OPENCL_CPU=1` lets `gpu for` use an OpenCL driver for the CPU (such as POCL), for testing without a GPU.
+- `SLOP_VULKAN_CPU=1` and `SLOP_OPENCL_CPU=1` let `gpu for` use a Vulkan or OpenCL driver for the CPU (such as lavapipe or POCL), for testing without a GPU.
 - The body can use numbers, lists of numbers (by index, like `xs[i]`), `if`/`else`, `for`, `while`, `continue`, and math: `sqrt`, `sin`, `cos`, `tan`, `atan`, `exp`, `log`, `pow`, `abs`, `floor`, `ceil`, `round`, `float()`, `int()`. It cannot print, use text, or call your own functions; the compiler says so if you try.
 - Like `parallel for`, it can read local numbers and write into lists, but not change outside variables.
 - GPUs work with 32-bit numbers: floats there have about 7 correct digits instead of about 16, and whole numbers must stay between about -2 billion and 2 billion (bigger ones wrap around).
 - Going past the end of a list stops the program, as everywhere else in Slop.
-- `slop --show-gpu check app.slop` prints the GPU code made for each `gpu for` (Metal for `--target macos-arm64`, OpenCL otherwise).
+- `slop --show-gpu check app.slop` prints the GPU code made for each `gpu for` (Metal for `--target macos-arm64`, OpenCL otherwise) and writes the Vulkan SPIR-V next to it as `slop_gpu_N.spv`.
 - Moving lists to and from the GPU takes time, so it pays off for loops with lots of work per step, or millions of steps. `examples/gpu.slop` draws the Mandelbrot set this way.
 
 ## Using the NPU

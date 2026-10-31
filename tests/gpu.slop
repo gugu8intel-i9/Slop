@@ -80,4 +80,51 @@ fn main() {
         zs[i] = 99.0
     }
     print(zs[5])
+    more()
+}
+
+# more: 200,000 threads, guards that must not read past a list, continue,
+# compound updates, bit operations, negative numbers
+fn more() {
+    let n = 200000
+    let big: array[int] = []
+    for i in 0..n {
+        push(big, 0)
+    }
+    let small = [5, -3, 8]
+    let limit = 3
+    gpu for i in 0..n {
+        let v = i % 1000
+        if i < limit and small[i] > 0 {
+            v += 100000
+        }
+        let s = 0
+        for j in 0..8 {
+            if j % 3 == 1 {
+                continue
+            }
+            s += j
+        }
+        let b = (i & 7) | ((i >> 3) ^ 1) * 16
+        big[i] = v + s - b % 5 + int(-2.5)
+        big[i] += -1
+    }
+    let total = 0
+    for x in big {
+        total += x
+    }
+    print(total)
+    print(big[0])
+    print(big[1])
+    print(big[2])
+    print(big[199999])
+    let fs: array[float] = [1.0, 2.0, 3.0, 4.0]
+    gpu for i in 0..4 {
+        fs[i] *= 2.0
+        fs[i] -= float(i)
+        if fs[i] >= 5.0 and fs[i] < 6.0 or i == 0 {
+            fs[i] = -fs[i]
+        }
+    }
+    print(fs)
 }

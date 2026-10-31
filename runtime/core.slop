@@ -1044,3 +1044,16 @@ fn __gpu_bool(v: bool) {
 fn __gpu_float(v: float) {
     __gpu_bytes(__f64_to_f32(float_bits(v)), 4)
 }
+
+# the 32-bit int a C function returned (status codes): the upper half of the
+# register is not part of it
+fn __i32(v: int) -> int {
+    v = v % 4294967296
+    if v < 0 {
+        v += 4294967296
+    }
+    if v >= 2147483648 {
+        v -= 4294967296
+    }
+    return v
+}

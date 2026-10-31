@@ -615,7 +615,8 @@ fn __dl_sym(lib: int, name: string) -> int {
     return __ccall("dlsym", lib, __cstr(name))
 }
 
-# the C library only works on the main thread here (others have no C setup)
+# the C library (and so OpenCL, Vulkan and the NPU libraries) only works on
+# the main thread here: other threads have no C setup
 fn __gpu_thread_ok() -> bool {
     # globals sit just after the main thread's state; other threads' state is elsewhere
     d = addr_of(__main_word) - __data()

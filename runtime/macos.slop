@@ -449,7 +449,7 @@ fn __gpu_pipe(src: string, id: int) -> int {
     return p
 }
 
-fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
+fn __gpu_begin(src: string, spv: string, id: int, a: int, b: int) -> bool {
     if not __gpu_init() {
         return false
     }

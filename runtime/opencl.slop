@@ -1,6 +1,5 @@
-# gpu for on Linux and Windows: the GPU through OpenCL, which the graphics
-# drivers of NVIDIA, AMD and Intel provide. The library is loaded when the
-# first gpu for runs; without it (or without a GPU) gpu for runs on the CPU.
+# gpu for on Linux and Windows, second choice: the GPU through OpenCL, which
+# the graphics drivers of NVIDIA, AMD and Intel provide (Vulkan comes first).
 __cl_state = 0
 __cl_fns = 0
 __cl_dev = 0
@@ -42,7 +41,7 @@ fn __cl_init() -> bool {
     __memzero(__cl_tmp, 256)
     t = __cl_tmp
     plats = __alloc_bytes(8 * 16)
-    if __ccall_ptr(__cl_fn(0), 16, plats, t) != 0 {
+    if __i32(__ccall_ptr(__cl_fn(0), 16, plats, t)) != 0 {
         return false
     }
     np = __load32(t)
@@ -58,7 +57,7 @@ fn __cl_init() -> bool {
         for p in 0..np {
             if __cl_dev == 0 {
                 __store32(t, 0)
-                if __ccall_ptr(__cl_fn(1), __load64(plats + p * 8), kind, 1, t + 8, t) == 0 and __load32(t) > 0 {
+                if __i32(__ccall_ptr(__cl_fn(1), __load64(plats + p * 8), kind, 1, t + 8, t)) == 0 and __load32(t) > 0 {
                     __cl_dev = __load64(t + 8)
                 }
             }
@@ -102,7 +101,7 @@ fn __cl_kernel_for(src: string, id: int) -> int {
     prog = __ccall_ptr(__cl_fn(4), __cl_ctx, 1, t + 16, t + 24, t)
     if prog != 0 {
         # -w: no warnings (the code is generated)
-        if __ccall_ptr(__cl_fn(5), prog, 1, t + 32, __cstr("-w"), 0, 0) == 0 {
+        if __i32(__ccall_ptr(__cl_fn(5), prog, 1, t + 32, __cstr("-w"), 0, 0)) == 0 {
             k = __ccall_ptr(__cl_fn(7), prog, __cstr("slop_gpu_" + __int_to_string(id)), t)
         } else {
             # CL_PROGRAM_BUILD_LOG
@@ -128,7 +127,7 @@ fn __cl_kernel_for(src: string, id: int) -> int {
     return k
 }
 
-fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
+fn __cl_begin(src: string, id: int, a: int, b: int) -> bool {
     if not __gpu_thread_ok() {
         return false
     }
@@ -150,8 +149,8 @@ fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
     __cl_count = n
     # slot 0: set to 1 when the loop goes outside a list
     __cl_add_buffer(4)
-    __gpu_bytes(a, 4)
-    __gpu_bytes(n, 4)
+    __cl_bytes(a, 4)
+    __cl_bytes(n, 4)
     return true
 }
 
@@ -175,19 +174,19 @@ fn __cl_add_buffer(bytes: int) -> int {
     return p
 }
 
-fn __gpu_buffer(bytes: int, n: int) -> int {
+fn __cl_buffer(bytes: int, n: int) -> int {
     p = __cl_add_buffer(bytes)
-    __gpu_bytes(n, 4)
+    __cl_bytes(n, 4)
     return p
 }
 
-fn __gpu_bytes(v: int, size: int) {
+fn __cl_bytes(v: int, size: int) {
     __store64(__cl_tmp + 48, v)
     __ccall_ptr(__cl_fn(8), __cl_kernel, __cl_slot, size, __cl_tmp + 48)
     __cl_slot += 1
 }
 
-fn __gpu_run() {
+fn __cl_run() {
     t = __cl_tmp
     for i in 0..__cl_nbufs {
         e = __cl_bufs + i * 32
@@ -202,7 +201,7 @@ fn __gpu_run() {
     }
     if __cl_count > 0 {
         __store64(t + 56, __cl_count)
-        if __ccall_ptr(__cl_fn(10), __cl_queue, __cl_kernel, 1, 0, t + 56, 0, 0, 0, 0) != 0 {
+        if __i32(__ccall_ptr(__cl_fn(10), __cl_queue, __cl_kernel, 1, 0, t + 56, 0, 0, 0, 0)) != 0 {
             __eprint("Slop: the GPU failed to run a gpu for")
             __os_exit(1)
         }
@@ -220,13 +219,13 @@ fn __gpu_run() {
     __cl_backs = 1
 }
 
-fn __gpu_back() -> int {
+fn __cl_back() -> int {
     p = __load64(__cl_bufs + __cl_backs * 32)
     __cl_backs += 1
     return p
 }
 
-fn __gpu_end() {
+fn __cl_end() {
     for i in 0..__cl_nbufs {
         e = __cl_bufs + i * 32
         __ccall_ptr(__cl_fn(13), __load64(e + 24))
@@ -236,8 +235,8 @@ fn __gpu_end() {
 }
 
 # the GPU's name, or "" when gpu for runs on the CPU
-fn __gpu_name() -> string {
-    if not __gpu_thread_ok() or not __cl_init() {
+fn __cl_name() -> string {
+    if not __cl_init() {
         return ""
     }
     buf = __alloc_bytes(256)

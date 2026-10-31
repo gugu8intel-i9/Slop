@@ -1,0 +1,551 @@
+# gpu for on Linux and Windows, first choice: the GPU through Vulkan, which
+# every current GPU driver offers. The loop body comes as SPIR-V, made by the
+# compiler. SLOP_VULKAN_CPU=1 also takes a CPU Vulkan driver (for testing),
+# and SLOP_GPU=vulkan or opencl picks one of the two.
+__vk_state = 0
+__vk_fns = 0
+__vk_gipa = 0
+__vk_inst = 0
+__vk_pd = 0
+__vk_dev = 0
+__vk_queue = 0
+__vk_family = 0
+__vk_memtype = 0
+__vk_cmdpool = 0
+__vk_cmd = 0
+__vk_name = 0
+__vk_kernels = 0
+__vk_tmp = 0
+__vk_cur = 0
+__vk_count = 0
+__vk_params = 0
+__vk_np = 0
+__vk_bufs = 0
+__vk_nbufs = 0
+__vk_backs = 0
+
+fn __vk_fn(i: int) -> int {
+    return __load64(__vk_fns + i * 8)
+}
+
+# a zeroed block of memory for a Vulkan struct
+fn __vk_struct(size: int) -> int {
+    p = __alloc_bytes(size + 8)
+    __memzero(p, size + 8)
+    return p
+}
+
+fn __vk_init() -> bool {
+    if __vk_state != 0 {
+        return __vk_state == 1
+    }
+    __vk_state = -1
+    lib = 0
+    if __os_name() == "windows" {
+        lib = __dl_load("vulkan-1.dll")
+    } else {
+        lib = __dl_open("vulkan")
+    }
+    if lib == 0 {
+        return false
+    }
+    __vk_gipa = __dl_sym(lib, "vkGetInstanceProcAddr")
+    if __vk_gipa == 0 {
+        return false
+    }
+    __vk_tmp = __alloc_bytes_in(2, 4096)
+    t = __vk_tmp
+    app = __vk_struct(48)
+    __store32(app, 0)
+    __store64(app + 16, __cstr("slop"))
+    # Vulkan 1.0
+    __store32(app + 44, 4194304)
+    ci = __vk_struct(64)
+    __store32(ci, 1)
+    __store64(ci + 24, app)
+    create = __ccall_ptr(__vk_gipa, 0, __cstr("vkCreateInstance"))
+    if create == 0 or __i32(__ccall_ptr(create, ci, 0, t)) != 0 {
+        return false
+    }
+    __vk_inst = __load64(t)
+    inames = ["vkEnumeratePhysicalDevices", "vkGetPhysicalDeviceProperties", "vkGetPhysicalDeviceQueueFamilyProperties", "vkGetPhysicalDeviceMemoryProperties", "vkCreateDevice"]
+    dnames = ["vkGetDeviceQueue", "vkCreateBuffer", "vkGetBufferMemoryRequirements", "vkAllocateMemory", "vkBindBufferMemory", "vkMapMemory", "vkDestroyBuffer", "vkFreeMemory", "vkCreateShaderModule", "vkCreateDescriptorSetLayout", "vkCreatePipelineLayout", "vkCreateComputePipelines", "vkCreateDescriptorPool", "vkAllocateDescriptorSets", "vkUpdateDescriptorSets", "vkDestroyDescriptorPool", "vkCreateCommandPool", "vkAllocateCommandBuffers", "vkBeginCommandBuffer", "vkCmdBindPipeline", "vkCmdBindDescriptorSets", "vkCmdDispatch", "vkEndCommandBuffer", "vkQueueSubmit", "vkQueueWaitIdle", "vkResetCommandPool"]
+    __vk_fns = __alloc_bytes_in(2, 8 * 40)
+    i = 0
+    for nm in inames {
+        f = __ccall_ptr(__vk_gipa, __vk_inst, __cstr(nm))
+        if f == 0 {
+            return false
+        }
+        __store64(__vk_fns + i * 8, f)
+        i += 1
+    }
+    for nm in dnames {
+        f = __ccall_ptr(__vk_gipa, __vk_inst, __cstr(nm))
+        if f == 0 {
+            return false
+        }
+        __store64(__vk_fns + i * 8, f)
+        i += 1
+    }
+    # the best device: a separate GPU, then one built in, then a virtual one
+    __store32(t, 16)
+    devs = __alloc_bytes(8 * 16)
+    r = __i32(__ccall_ptr(__vk_fn(0), __vk_inst, t, devs))
+    if r != 0 and r != 5 {
+        return false
+    }
+    nd = __load32(t)
+    allow_cpu = __env("SLOP_VULKAN_CPU") == "1"
+    props = __vk_struct(1024)
+    best = -1
+    best_rank = 0
+    for d in 0..nd {
+        __ccall_ptr(__vk_fn(1), __load64(devs + d * 8), props)
+        kind = __load32(props + 16)
+        rank = 0
+        if kind == 2 {
+            rank = 4
+        } else if kind == 1 {
+            rank = 3
+        } else if kind == 3 {
+            rank = 2
+        } else if kind == 4 and allow_cpu {
+            rank = 1
+        }
+        if rank > best_rank {
+            best_rank = rank
+            best = d
+        }
+    }
+    if best < 0 {
+        return false
+    }
+    __vk_pd = __load64(devs + best * 8)
+    __ccall_ptr(__vk_fn(1), __vk_pd, props)
+    __vk_name = __alloc_bytes_in(2, 260)
+    __memcpy(__vk_name, props + 20, 256)
+    __store8(__vk_name + 256, 0)
+    # a queue family that can compute
+    __store32(t, 0)
+    __ccall_ptr(__vk_fn(2), __vk_pd, t, 0)
+    nf = __load32(t)
+    if nf > 64 {
+        nf = 64
+    }
+    fams = __vk_struct(24 * 64)
+    __store32(t, nf)
+    __ccall_ptr(__vk_fn(2), __vk_pd, t, fams)
+    __vk_family = -1
+    for f in 0..nf {
+        if __vk_family < 0 and __load32(fams + f * 24) % 4 >= 2 {
+            __vk_family = f
+        }
+    }
+    if __vk_family < 0 {
+        return false
+    }
+    # memory both sides can use: host visible and coherent
+    mp = __vk_struct(600)
+    __ccall_ptr(__vk_fn(3), __vk_pd, mp)
+    __vk_memtype = -1
+    for m in 0..__load32(mp) {
+        flags = __load32(mp + 4 + m * 8)
+        if __vk_memtype < 0 and flags % 8 >= 6 {
+            __vk_memtype = m
+        }
+    }
+    if __vk_memtype < 0 {
+        return false
+    }
+    prio = __vk_struct(8)
+    # 1.0f
+    __store32(prio, 1065353216)
+    qci = __vk_struct(40)
+    __store32(qci, 2)
+    __store32(qci + 20, __vk_family)
+    __store32(qci + 24, 1)
+    __store64(qci + 32, prio)
+    dci = __vk_struct(72)
+    __store32(dci, 3)
+    __store32(dci + 20, 1)
+    __store64(dci + 24, qci)
+    if __i32(__ccall_ptr(__vk_fn(4), __vk_pd, dci, 0, t)) != 0 {
+        return false
+    }
+    __vk_dev = __load64(t)
+    __ccall_ptr(__vk_fn(5), __vk_dev, __vk_family, 0, t)
+    __vk_queue = __load64(t)
+    # one command buffer, reused for every run
+    cpi = __vk_struct(24)
+    __store32(cpi, 39)
+    __store32(cpi + 16, 2)
+    __store32(cpi + 20, __vk_family)
+    if __i32(__ccall_ptr(__vk_fn(21), __vk_dev, cpi, 0, t)) != 0 {
+        return false
+    }
+    __vk_cmdpool = __load64(t)
+    cai = __vk_struct(32)
+    __store32(cai, 40)
+    __store64(cai + 16, __vk_cmdpool)
+    __store32(cai + 28, 1)
+    if __i32(__ccall_ptr(__vk_fn(22), __vk_dev, cai, t)) != 0 {
+        return false
+    }
+    __vk_cmd = __load64(t)
+    # kernels: (pipeline, layout, set layout, bindings) for each gpu for
+    __vk_kernels = __alloc_bytes_in(2, 32 * 4096)
+    __memzero(__vk_kernels, 32 * 4096)
+    __vk_params = __alloc_bytes_in(2, 4 * 64)
+    __vk_bufs = __alloc_bytes_in(2, 40 * 40)
+    __vk_state = 1
+    return true
+}
+
+fn __vk_begin(spv: string, id: int, a: int, b: int) -> bool {
+    if spv == "" or id >= 4096 or not __vk_init() {
+        return false
+    }
+    n = b - a
+    if n > 1073741824 or a < -2147483648 or b > 2147483647 {
+        return false
+    }
+    k = __vk_kernels + id * 32
+    if __load64(k) == -1 {
+        return false
+    }
+    __vk_cur = id
+    __vk_count = n
+    __vk_np = 0
+    __vk_nbufs = 0
+    __vk_backs = 0
+    # binding 1, the error flag (binding 0, the numbers, is made at the run)
+    __vk_add_buffer(4)
+    __vk_bytes(a, 4)
+    __vk_bytes(n, 4)
+    __store64(__vk_tmp + 2048, __str_ptr(spv))
+    __store64(__vk_tmp + 2056, len(spv))
+    return true
+}
+
+# a list's memory: filled here, copied to the GPU when the loop starts
+fn __vk_add_buffer(bytes: int) -> int {
+    if bytes < 16 {
+        bytes = 16
+    }
+    p = __os_alloc(bytes)
+    if p == 0 or __vk_nbufs >= 32 {
+        __eprint("Slop: out of memory for the GPU")
+        __os_exit(1)
+    }
+    e = __vk_bufs + __vk_nbufs * 40
+    __store64(e, p)
+    __store64(e + 8, bytes)
+    __vk_nbufs += 1
+    return p
+}
+
+fn __vk_buffer(bytes: int, n: int) -> int {
+    p = __vk_add_buffer(bytes)
+    __vk_bytes(n, 4)
+    return p
+}
+
+fn __vk_bytes(v: int, size: int) {
+    if __vk_np < 64 {
+        __store32(__vk_params + __vk_np * 4, v)
+        __vk_np += 1
+    }
+}
+
+# a buffer with host-visible memory of this size: (buffer, memory, mapped address)
+fn __vk_make(size: int, e: int) -> bool {
+    t = __vk_tmp
+    bci = __vk_struct(56)
+    __store32(bci, 12)
+    __store64(bci + 24, size)
+    # STORAGE_BUFFER
+    __store32(bci + 32, 32)
+    if __i32(__ccall_ptr(__vk_fn(6), __vk_dev, bci, 0, t)) != 0 {
+        return false
+    }
+    buf = __load64(t)
+    req = __vk_struct(24)
+    __ccall_ptr(__vk_fn(7), __vk_dev, buf, req)
+    mai = __vk_struct(32)
+    __store32(mai, 5)
+    __store64(mai + 16, __load64(req))
+    __store32(mai + 24, __vk_memtype)
+    if __i32(__ccall_ptr(__vk_fn(8), __vk_dev, mai, 0, t)) != 0 {
+        return false
+    }
+    mem = __load64(t)
+    __ccall_ptr(__vk_fn(9), __vk_dev, buf, mem, 0)
+    if __i32(__ccall_ptr(__vk_fn(10), __vk_dev, mem, 0, -1, 0, t)) != 0 {
+        return false
+    }
+    __store64(e + 16, buf)
+    __store64(e + 24, mem)
+    __store64(e + 32, __load64(t))
+    return true
+}
+
+# the pipeline for the current loop (made once, when its buffers are known)
+fn __vk_pipeline(nb: int) -> bool {
+    k = __vk_kernels + __vk_cur * 32
+    if __load64(k) != 0 {
+        return __load64(k) != -1
+    }
+    __store64(k, -1)
+    t = __vk_tmp
+    smi = __vk_struct(40)
+    __store32(smi, 16)
+    __store64(smi + 24, __load64(t + 2056))
+    __store64(smi + 32, __load64(t + 2048))
+    if __i32(__ccall_ptr(__vk_fn(13), __vk_dev, smi, 0, t)) != 0 {
+        __eprint("Slop: the GPU could not take this gpu for (its Vulkan driver refused the code), so it runs elsewhere")
+        return false
+    }
+    module = __load64(t)
+    binds = __vk_struct(24 * nb)
+    for i in 0..nb {
+        __store32(binds + i * 24, i)
+        __store32(binds + i * 24 + 4, 7)
+        __store32(binds + i * 24 + 8, 1)
+        __store32(binds + i * 24 + 12, 32)
+    }
+    dli = __vk_struct(32)
+    __store32(dli, 32)
+    __store32(dli + 20, nb)
+    __store64(dli + 24, binds)
+    if __i32(__ccall_ptr(__vk_fn(14), __vk_dev, dli, 0, t)) != 0 {
+        return false
+    }
+    setlayout = __load64(t)
+    __store64(t + 8, setlayout)
+    pli = __vk_struct(48)
+    __store32(pli, 30)
+    __store32(pli + 20, 1)
+    __store64(pli + 24, t + 8)
+    if __i32(__ccall_ptr(__vk_fn(15), __vk_dev, pli, 0, t)) != 0 {
+        return false
+    }
+    layout = __load64(t)
+    cpi = __vk_struct(96)
+    __store32(cpi, 29)
+    __store32(cpi + 24, 18)
+    __store32(cpi + 44, 32)
+    __store64(cpi + 48, module)
+    __store64(cpi + 56, __cstr("main"))
+    __store64(cpi + 72, layout)
+    __store32(cpi + 88, -1)
+    if __i32(__ccall_ptr(__vk_fn(16), __vk_dev, 0, 1, cpi, 0, t)) != 0 {
+        __eprint("Slop: the GPU could not take this gpu for (its Vulkan driver refused the code), so it runs elsewhere")
+        return false
+    }
+    __store64(k, __load64(t))
+    __store64(k + 8, layout)
+    __store64(k + 16, setlayout)
+    __store64(k + 24, nb)
+    return true
+}
+
+# runs the loop; false if Vulkan failed before it ran (then the caller uses another way)
+fn __vk_run() -> bool {
+    t = __vk_tmp
+    # binding 0: the numbers; then the error flag and the lists, in order
+    nb = __vk_nbufs + 1
+    if not __vk_pipeline(nb) {
+        return false
+    }
+    k = __vk_kernels + __vk_cur * 32
+    all = __vk_struct(40 * nb)
+    if not __vk_make(16 + __vk_np * 4, all) {
+        return false
+    }
+    __memcpy(__load64(all + 32), __vk_params, __vk_np * 4)
+    for i in 0..__vk_nbufs {
+        src = __vk_bufs + i * 40
+        e = all + (i + 1) * 40
+        __store64(e, __load64(src))
+        __store64(e + 8, __load64(src + 8))
+        if not __vk_make(__load64(src + 8), e) {
+            return false
+        }
+        __memcpy(__load64(e + 32), __load64(src), __load64(src + 8))
+    }
+    sizes = __vk_struct(8)
+    __store32(sizes, 7)
+    __store32(sizes + 4, nb)
+    dpi = __vk_struct(40)
+    __store32(dpi, 33)
+    __store32(dpi + 20, 1)
+    __store32(dpi + 24, 1)
+    __store64(dpi + 32, sizes)
+    if __i32(__ccall_ptr(__vk_fn(17), __vk_dev, dpi, 0, t)) != 0 {
+        return false
+    }
+    pool = __load64(t)
+    __store64(t + 8, __load64(k + 16))
+    dsa = __vk_struct(40)
+    __store32(dsa, 34)
+    __store64(dsa + 16, pool)
+    __store32(dsa + 24, 1)
+    __store64(dsa + 32, t + 8)
+    if __i32(__ccall_ptr(__vk_fn(18), __vk_dev, dsa, t + 16)) != 0 {
+        return false
+    }
+    set = __load64(t + 16)
+    infos = __vk_struct(24 * nb)
+    writes = __vk_struct(64 * nb)
+    for i in 0..nb {
+        __store64(infos + i * 24, __load64(all + i * 40 + 16))
+        __store64(infos + i * 24 + 16, -1)
+        w = writes + i * 64
+        __store32(w, 35)
+        __store64(w + 16, set)
+        __store32(w + 24, i)
+        __store32(w + 32, 1)
+        __store32(w + 36, 7)
+        __store64(w + 48, infos + i * 24)
+    }
+    __ccall_ptr(__vk_fn(19), __vk_dev, nb, writes, 0, 0)
+    # record: pipeline, data, then enough groups of 64 threads
+    __ccall_ptr(__vk_fn(30), __vk_dev, __vk_cmdpool, 0)
+    cbi = __vk_struct(32)
+    __store32(cbi, 42)
+    __store32(cbi + 16, 1)
+    __ccall_ptr(__vk_fn(23), __vk_cmd, cbi)
+    __ccall_ptr(__vk_fn(24), __vk_cmd, 1, __load64(k))
+    __store64(t + 24, set)
+    __ccall_ptr(__vk_fn(25), __vk_cmd, 1, __load64(k + 8), 0, 1, t + 24, 0, 0)
+    n = __vk_count
+    if n > 0 {
+        groups = (n + 63) / 64
+        gx = groups
+        gy = 1
+        if groups > 1024 {
+            gx = 1024
+            gy = (n + 65535) / 65536
+        }
+        __ccall_ptr(__vk_fn(26), __vk_cmd, gx, gy, 1)
+    }
+    __ccall_ptr(__vk_fn(27), __vk_cmd)
+    __store64(t + 32, __vk_cmd)
+    si = __vk_struct(72)
+    __store32(si, 4)
+    __store32(si + 40, 1)
+    __store64(si + 48, t + 32)
+    ok = __i32(__ccall_ptr(__vk_fn(28), __vk_queue, 1, si, 0)) == 0 and __i32(__ccall_ptr(__vk_fn(29), __vk_queue)) == 0
+    if ok {
+        for i in 0..__vk_nbufs {
+            e = all + (i + 1) * 40
+            __memcpy(__load64(e), __load64(e + 32), __load64(e + 8))
+        }
+    }
+    for i in 0..nb {
+        e = all + i * 40
+        __ccall_ptr(__vk_fn(11), __vk_dev, __load64(e + 16), 0)
+        __ccall_ptr(__vk_fn(12), __vk_dev, __load64(e + 24), 0)
+    }
+    __ccall_ptr(__vk_fn(20), __vk_dev, pool, 0)
+    if not ok {
+        __eprint("Slop: the GPU failed to run a gpu for")
+        __os_exit(1)
+    }
+    if __load32(__load64(__vk_bufs)) != 0 {
+        __eprint("Slop Secure Guard: Array index out of bounds in a gpu for! Terminating process to prevent memory exploit.")
+        __os_exit(139)
+    }
+    __vk_backs = 1
+    return true
+}
+
+fn __vk_back() -> int {
+    p = __load64(__vk_bufs + __vk_backs * 40)
+    __vk_backs += 1
+    return p
+}
+
+fn __vk_end() {
+    for i in 0..__vk_nbufs {
+        e = __vk_bufs + i * 40
+        __os_release(__load64(e), __load64(e + 8))
+    }
+    __vk_nbufs = 0
+}
+
+# ---------- which GPU library runs a gpu for: Vulkan, else OpenCL ----------
+__gpu_api = 0
+
+fn __gpu_begin(src: string, spv: string, id: int, a: int, b: int) -> bool {
+    if not __gpu_thread_ok() {
+        return false
+    }
+    which = __env("SLOP_GPU")
+    if which != "opencl" and __vk_begin(spv, id, a, b) {
+        __gpu_api = 1
+        return true
+    }
+    if which != "vulkan" and __cl_begin(src, id, a, b) {
+        __gpu_api = 2
+        return true
+    }
+    return false
+}
+
+fn __gpu_buffer(bytes: int, n: int) -> int {
+    if __gpu_api == 1 {
+        return __vk_buffer(bytes, n)
+    }
+    return __cl_buffer(bytes, n)
+}
+
+fn __gpu_bytes(v: int, size: int) {
+    if __gpu_api == 1 {
+        __vk_bytes(v, size)
+    } else {
+        __cl_bytes(v, size)
+    }
+}
+
+fn __gpu_run() {
+    if __gpu_api == 1 {
+        if not __vk_run() {
+            __eprint("Slop: Vulkan could not start this gpu for")
+            __os_exit(1)
+        }
+    } else {
+        __cl_run()
+    }
+}
+
+fn __gpu_back() -> int {
+    if __gpu_api == 1 {
+        return __vk_back()
+    }
+    return __cl_back()
+}
+
+fn __gpu_end() {
+    if __gpu_api == 1 {
+        __vk_end()
+    } else {
+        __cl_end()
+    }
+}
+
+# the GPU's name, or "" when gpu for runs on the CPU
+fn __gpu_name() -> string {
+    if not __gpu_thread_ok() {
+        return ""
+    }
+    which = __env("SLOP_GPU")
+    if which != "opencl" and __vk_init() {
+        return __str(__vk_name, __strlen(__vk_name))
+    }
+    if which != "vulkan" {
+        return __cl_name()
+    }
+    return ""
+}
