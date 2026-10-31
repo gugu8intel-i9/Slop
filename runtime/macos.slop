@@ -196,6 +196,32 @@ fn __clock_ns() -> int {
     return __load64(t) * 1000000000 + __load64(t + 8)
 }
 
+# seconds since 1970 (the calendar clock)
+fn __time_unix() -> int {
+    t = __scratch()
+    # CLOCK_REALTIME
+    __ccall("clock_gettime", 0, t)
+    return __load64(t)
+}
+
+# n bytes from the system's secure random source
+fn __random_text(n: int) -> string {
+    p = __alloc_bytes(n)
+    got = 0
+    while got < n {
+        k = n - got
+        if k > 256 {
+            k = 256
+        }
+        if __ccall32("getentropy", p + got, k) != 0 {
+            __eprint("Slop: no secure random numbers available")
+            __os_exit(1)
+        }
+        got += k
+    }
+    return __str(p, n)
+}
+
 fn __sleep_ms(ms: int) {
     t = __scratch()
     __store64(t, ms / 1000)
@@ -257,6 +283,15 @@ fn __socket_connect(ip: string, port: int) -> int {
     }
     __no_sigpipe(fd)
     return fd
+}
+
+fn __windows_roots() -> array[string] {
+    out: array[string] = []
+    return out
+}
+
+fn __resolve(host: string) -> string {
+    return __getaddrinfo(host)
 }
 
 fn __socket_read(fd: int) -> string {

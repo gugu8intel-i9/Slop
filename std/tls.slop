@@ -1,0 +1,1223 @@
+# tls: TLS 1.3, the encryption behind https, written in Slop
+#   Used by the web module (serve_https, http_get with https://). It speaks
+#   TLS 1.3 with X25519 and ChaCha20-Poly1305, signs with ECDSA (P-256 or
+#   P-384 keys), and checks certificates (ECDSA and RSA) against the system's
+#   trusted list.
+use "crypto.slop"
+
+# ---------- base64 and PEM ----------
+__b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+fn base64_encode(b: array[int]) -> string {
+    out = ""
+    i = 0
+    while i < len(b) {
+        n = b[i] << 16
+        if i + 1 < len(b) {
+            n = n | (b[i + 1] << 8)
+        }
+        if i + 2 < len(b) {
+            n = n | b[i + 2]
+        }
+        out = out + char_at(__b64, (n >> 18) & 63) + char_at(__b64, (n >> 12) & 63)
+        if i + 1 < len(b) {
+            out = out + char_at(__b64, (n >> 6) & 63)
+        } else {
+            out = out + "="
+        }
+        if i + 2 < len(b) {
+            out = out + char_at(__b64, n & 63)
+        } else {
+            out = out + "="
+        }
+        i += 3
+    }
+    return out
+}
+
+fn base64_decode(s: string) -> array[int] {
+    out: array[int] = []
+    acc = 0
+    bits = 0
+    for i in 0..len(s) {
+        c = byte_at(s, i)
+        v = -1
+        if c >= 65 and c <= 90 {
+            v = c - 65
+        }
+        if c >= 97 and c <= 122 {
+            v = c - 71
+        }
+        if c >= 48 and c <= 57 {
+            v = c + 4
+        }
+        if c == 43 {
+            v = 62
+        }
+        if c == 47 {
+            v = 63
+        }
+        if v >= 0 {
+            acc = ((acc << 6) | v) & 16777215
+            bits += 6
+            if bits >= 8 {
+                bits -= 8
+                push(out, (acc >> bits) & 255)
+            }
+        }
+    }
+    return out
+}
+
+# the DER bytes of every "-----BEGIN label-----" block
+fn pem_blocks(pem: string, label: string) -> array[array[int]] {
+    out: array[array[int]] = []
+    begin = "-----BEGIN " + label + "-----"
+    stop = "-----END " + label + "-----"
+    rest = pem
+    while true {
+        a = find(rest, begin)
+        if a < 0 {
+            break
+        }
+        rest = slice(rest, a + len(begin), len(rest))
+        e = find(rest, stop)
+        if e < 0 {
+            break
+        }
+        push(out, base64_decode(slice(rest, 0, e)))
+        rest = slice(rest, e + len(stop), len(rest))
+    }
+    return out
+}
+
+fn pem_encode(label: string, der: array[int]) -> string {
+    b = base64_encode(der)
+    out = "-----BEGIN " + label + "-----\n"
+    i = 0
+    while i < len(b) {
+        e = i + 64
+        if e > len(b) {
+            e = len(b)
+        }
+        out = out + slice(b, i, e) + "\n"
+        i = e
+    }
+    return out + "-----END " + label + "-----\n"
+}
+
+# ---------- DER (the binary format of certificates and keys) ----------
+# [tag, content start, content length, end] of the element at i
+fn der_at(b: array[int], i: int) -> array[int] {
+    if i + 1 >= len(b) {
+        return [-1, i, 0, i]
+    }
+    tag = b[i]
+    l = b[i + 1]
+    start = i + 2
+    if l >= 128 {
+        nb = l & 127
+        l = 0
+        for k in 0..nb {
+            if start < len(b) {
+                l = (l << 8) | b[start]
+            }
+            start += 1
+        }
+    }
+    if start + l > len(b) {
+        return [-1, i, 0, i]
+    }
+    return [tag, start, l, start + l]
+}
+
+# positions of the elements inside a SEQUENCE/SET whose content is start..end
+fn der_items(b: array[int], start: int, end: int) -> array[int] {
+    out: array[int] = []
+    i = start
+    while i < end {
+        e = der_at(b, i)
+        if e[0] < 0 {
+            break
+        }
+        push(out, i)
+        i = e[3]
+    }
+    return out
+}
+
+fn der_content(b: array[int], i: int) -> array[int] {
+    e = der_at(b, i)
+    return sub_bytes(b, e[1], e[3])
+}
+
+fn der_whole(b: array[int], i: int) -> array[int] {
+    e = der_at(b, i)
+    return sub_bytes(b, i, e[3])
+}
+
+fn der(tag: int, content: array[int]) -> array[int] {
+    n = len(content)
+    head = [tag]
+    if n < 128 {
+        push(head, n)
+    } else {
+        if n < 256 {
+            push(head, 129)
+            push(head, n)
+        } else {
+            if n < 65536 {
+                push(head, 130)
+                push(head, n >> 8)
+                push(head, n & 255)
+            } else {
+                push(head, 131)
+                push(head, n >> 16)
+                push(head, (n >> 8) & 255)
+                push(head, n & 255)
+            }
+        }
+    }
+    return join_bytes(head, content)
+}
+
+fn der_seq(items: array[array[int]]) -> array[int] {
+    body: array[int] = []
+    for it in items {
+        body = join_bytes(body, it)
+    }
+    return der(48, body)
+}
+
+# a positive INTEGER from big-endian bytes
+fn der_uint(b: array[int]) -> array[int] {
+    i = 0
+    while i < len(b) - 1 and b[i] == 0 {
+        i += 1
+    }
+    v = sub_bytes(b, i, len(b))
+    if v[0] >= 128 {
+        v = join_bytes([0], v)
+    }
+    return der(2, v)
+}
+
+fn der_oid(hexs: string) -> array[int] {
+    return der(6, from_hex(hexs))
+}
+
+# ECDSA r||s -> DER SEQUENCE { r, s }, and back
+fn ecdsa_sig_der(rs: array[int]) -> array[int] {
+    h = len(rs) / 2
+    return der_seq([der_uint(sub_bytes(rs, 0, h)), der_uint(sub_bytes(rs, h, len(rs)))])
+}
+
+fn ecdsa_sig_raw(sig: array[int], size: int) -> array[int] {
+    empty: array[int] = []
+    top = der_at(sig, 0)
+    if top[0] != 48 {
+        return empty
+    }
+    items = der_items(sig, top[1], top[3])
+    if len(items) != 2 {
+        return empty
+    }
+    r = __fit(der_content(sig, items[0]), size / 2)
+    s = __fit(der_content(sig, items[1]), size / 2)
+    if len(r) == 0 or len(s) == 0 {
+        return empty
+    }
+    return join_bytes(r, s)
+}
+
+# a big-endian number as exactly n bytes (empty if it does not fit)
+fn __fit(b: array[int], n: int) -> array[int] {
+    i = 0
+    while i < len(b) and b[i] == 0 {
+        i += 1
+    }
+    v = sub_bytes(b, i, len(b))
+    if len(v) > n {
+        empty: array[int] = []
+        return empty
+    }
+    out: array[int] = []
+    for k in 0..n - len(v) {
+        push(out, 0)
+    }
+    return join_bytes(out, v)
+}
+
+# ---------- time ----------
+# days since 1970-01-01 for a calendar date
+fn days_from_civil(y0: int, m: int, d: int) -> int {
+    y = y0
+    if m <= 2 {
+        y -= 1
+    }
+    era = y / 400
+    if y < 0 and y % 400 != 0 {
+        era -= 1
+    }
+    yoe = y - era * 400
+    mp = (m + 9) % 12
+    doy = (153 * mp + 2) / 5 + d - 1
+    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+
+# [year, month, day] for days since 1970-01-01
+fn civil_from_days(z0: int) -> array[int] {
+    z = z0 + 719468
+    era = z / 146097
+    doe = z - era * 146097
+    yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    y = yoe + era * 400
+    doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    mp = (5 * doy + 2) / 153
+    d = doy - (153 * mp + 2) / 5 + 1
+    m = mp + 3
+    if m > 12 {
+        m -= 12
+    }
+    if m <= 2 {
+        y += 1
+    }
+    return [y, m, d]
+}
+
+fn __digits_at(b: array[int], i: int, n: int) -> int {
+    v = 0
+    for k in 0..n {
+        v = v * 10 + b[i + k] - 48
+    }
+    return v
+}
+
+# UTCTime (tag 23) or GeneralizedTime (tag 24) -> seconds since 1970
+fn der_time(b: array[int], i: int) -> int {
+    e = der_at(b, i)
+    s = e[1]
+    y = 0
+    if e[0] == 23 {
+        y = __digits_at(b, s, 2)
+        if y < 50 {
+            y += 2000
+        } else {
+            y += 1900
+        }
+        s += 2
+    } else {
+        y = __digits_at(b, s, 4)
+        s += 4
+    }
+    mo = __digits_at(b, s, 2)
+    d = __digits_at(b, s + 2, 2)
+    hh = __digits_at(b, s + 4, 2)
+    mi = __digits_at(b, s + 6, 2)
+    ss = __digits_at(b, s + 8, 2)
+    return days_from_civil(y, mo, d) * 86400 + hh * 3600 + mi * 60 + ss
+}
+
+fn __two(n: int) -> string {
+    if n < 10 {
+        return "0" + str(n)
+    }
+    return str(n)
+}
+
+fn der_utctime(t: int) -> array[int] {
+    c = civil_from_days(t / 86400)
+    r = t % 86400
+    s = __two(c[0] % 100) + __two(c[1]) + __two(c[2]) + __two(r / 3600) + __two(r % 3600 / 60) + __two(r % 60) + "Z"
+    return der(23, to_bytes(s))
+}
+
+# ---------- certificates (X.509) ----------
+struct X509Cert {
+    ok: bool,
+    der: array[int],
+    tbs: array[int],
+    sig_alg: string,
+    sig: array[int],
+    issuer: array[int],
+    subject: array[int],
+    not_before: int,
+    not_after: int,
+    key_type: string,
+    curve: string,
+    pub: array[int],
+    rsa_e: array[int],
+    names: array[string],
+    ips: array[string]
+}
+
+fn __bad_cert() -> X509Cert {
+    e: array[int] = []
+    n: array[string] = []
+    return X509Cert(false, e, e, "", e, e, e, 0, 0, "", "", e, e, n, n)
+}
+
+fn parse_cert(d: array[int]) -> X509Cert {
+    top = der_at(d, 0)
+    if top[0] != 48 {
+        return __bad_cert()
+    }
+    parts = der_items(d, top[1], top[3])
+    if len(parts) != 3 {
+        return __bad_cert()
+    }
+    tbs = der_whole(d, parts[0])
+    alg_seq = der_at(d, parts[1])
+    sig_alg = to_hex(der_content(d, der_items(d, alg_seq[1], alg_seq[3])[0]))
+    sigbits = der_content(d, parts[2])
+    sig = sub_bytes(sigbits, 1, len(sigbits))
+    t = der_at(d, parts[0])
+    f = der_items(d, t[1], t[3])
+    k = 0
+    if der_at(d, f[0])[0] == 160 {
+        k = 1
+    }
+    # serial, signature, issuer, validity, subject, key
+    issuer = der_whole(d, f[k + 2])
+    validity = der_at(d, f[k + 3])
+    vt = der_items(d, validity[1], validity[3])
+    nb = der_time(d, vt[0])
+    na = der_time(d, vt[1])
+    subject = der_whole(d, f[k + 4])
+    spki = der_at(d, f[k + 5])
+    sp = der_items(d, spki[1], spki[3])
+    alg = der_at(d, sp[0])
+    ai = der_items(d, alg[1], alg[3])
+    key_oid = to_hex(der_content(d, ai[0]))
+    keybits = der_content(d, sp[1])
+    key = sub_bytes(keybits, 1, len(keybits))
+    key_type = ""
+    curve = ""
+    pub = key
+    rsa_e: array[int] = []
+    if key_oid == "2a8648ce3d0201" {
+        key_type = "ec"
+        c = to_hex(der_content(d, ai[1]))
+        if c == "2a8648ce3d030107" {
+            curve = "P-256"
+        }
+        if c == "2b81040022" {
+            curve = "P-384"
+        }
+    }
+    if key_oid == "2a864886f70d010101" {
+        key_type = "rsa"
+        rk = der_at(key, 0)
+        ri = der_items(key, rk[1], rk[3])
+        pub = der_content(key, ri[0])
+        rsa_e = der_content(key, ri[1])
+    }
+    names: array[string] = []
+    ips: array[string] = []
+    for idx in f {
+        e = der_at(d, idx)
+        if e[0] == 163 {
+            exts = der_at(d, e[1])
+            for x in der_items(d, exts[1], exts[3]) {
+                xe = der_at(d, x)
+                xi = der_items(d, xe[1], xe[3])
+                oid = to_hex(der_content(d, xi[0]))
+                if oid == "551d11" {
+                    val = der_content(d, xi[len(xi) - 1])
+                    gs = der_at(val, 0)
+                    for g in der_items(val, gs[1], gs[3]) {
+                        ge = der_at(val, g)
+                        if ge[0] == 130 {
+                            push(names, lower(from_bytes(sub_bytes(val, ge[1], ge[3]))))
+                        }
+                        if ge[0] == 135 and ge[2] == 4 {
+                            push(ips, str(val[ge[1]]) + "." + str(val[ge[1] + 1]) + "." + str(val[ge[1] + 2]) + "." + str(val[ge[1] + 3]))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return X509Cert(true, d, tbs, sig_alg, sig, issuer, subject, nb, na, key_type, curve, pub, rsa_e, names, ips)
+}
+
+# does `signer` vouch for `c`? (checks the signature on c)
+fn cert_signed_by(c: X509Cert, signer: X509Cert) -> bool {
+    alg = ""
+    kind = ""
+    if c.sig_alg == "2a8648ce3d040302" {
+        alg = "sha256"
+        kind = "ec"
+    }
+    if c.sig_alg == "2a8648ce3d040303" {
+        alg = "sha384"
+        kind = "ec"
+    }
+    if c.sig_alg == "2a8648ce3d040304" {
+        alg = "sha512"
+        kind = "ec"
+    }
+    if c.sig_alg == "2a864886f70d01010b" {
+        alg = "sha256"
+        kind = "rsa"
+    }
+    if c.sig_alg == "2a864886f70d01010c" {
+        alg = "sha384"
+        kind = "rsa"
+    }
+    if c.sig_alg == "2a864886f70d01010d" {
+        alg = "sha512"
+        kind = "rsa"
+    }
+    if kind == "" or kind != signer.key_type {
+        return false
+    }
+    h = hash_with(alg, c.tbs)
+    if kind == "ec" {
+        if signer.curve == "" {
+            return false
+        }
+        C = curve_named(signer.curve)
+        rs = ecdsa_sig_raw(c.sig, C.size * 2)
+        if len(rs) == 0 {
+            return false
+        }
+        return ecdsa_verify(C, signer.pub, h, sub_bytes(rs, 0, C.size), sub_bytes(rs, C.size, len(rs)))
+    }
+    return rsa_verify_pkcs1(signer.pub, signer.rsa_e, alg, h, c.sig)
+}
+
+fn cert_matches_host(c: X509Cert, host: string) -> bool {
+    h = lower(host)
+    for ip in c.ips {
+        if ip == h {
+            return true
+        }
+    }
+    for n in c.names {
+        if n == h {
+            return true
+        }
+        if starts_with(n, "*.") {
+            dot = find(h, ".")
+            if dot > 0 and slice(h, dot, len(h)) == slice(n, 1, len(n)) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+# ---------- trusted certificates ----------
+__tls_roots: array[X509Cert] = []
+__tls_roots_loaded = false
+__tls_extra: array[array[int]] = []
+
+# trusts one more certificate (a PEM file), for example your own self-signed one
+fn tls_trust(path: string) {
+    for d in pem_blocks(read_file(path), "CERTIFICATE") {
+        push(__tls_extra, d)
+    }
+}
+
+fn __tls_load_roots() {
+    if __tls_roots_loaded {
+        return
+    }
+    __tls_roots_loaded = true
+    ders: array[array[int]] = []
+    if os_name() == "windows" {
+        for s in __windows_roots() {
+            push(ders, to_bytes(s))
+        }
+    } else {
+        for path in ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/ca-bundle.pem", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", "/etc/ssl/cert.pem", "/usr/local/etc/openssl/cert.pem", "/opt/homebrew/etc/openssl@3/cert.pem"] {
+            if len(ders) == 0 and file_exists(path) {
+                ders = pem_blocks(read_file(path), "CERTIFICATE")
+            }
+        }
+    }
+    roots: array[X509Cert] = []
+    for d in ders {
+        c = parse_cert(d)
+        if c.ok {
+            push(roots, c)
+        }
+    }
+    __tls_roots = roots
+}
+
+# checks the server's chain: each certificate signed by the next, ending at a
+# trusted one, all within their dates, the first one naming the host
+fn tls_check_chain(chain: array[X509Cert], host: string) -> string {
+    if len(chain) == 0 {
+        return "the server sent no certificate"
+    }
+    now = __time_unix()
+    for c in chain {
+        if not c.ok {
+            return "a certificate could not be read"
+        }
+    }
+    if not cert_matches_host(chain[0], host) {
+        return "the certificate is not for " + host
+    }
+    trusted: array[X509Cert] = []
+    for d in __tls_extra {
+        c = parse_cert(d)
+        if c.ok {
+            push(trusted, c)
+        }
+    }
+    __tls_load_roots()
+    for r in __tls_roots {
+        push(trusted, r)
+    }
+    i = 0
+    while i < len(chain) {
+        c = chain[i]
+        if now < c.not_before or now > c.not_after {
+            return "a certificate has expired or is not valid yet"
+        }
+        # is c itself trusted?
+        for t in trusted {
+            if same_bytes(t.der, c.der) {
+                return ""
+            }
+        }
+        # signed by a trusted certificate?
+        for t in trusted {
+            if same_bytes(t.subject, c.issuer) and cert_signed_by(c, t) {
+                return ""
+            }
+        }
+        # else the next one in the chain must have signed it
+        if i + 1 >= len(chain) or not same_bytes(chain[i + 1].subject, c.issuer) or not cert_signed_by(c, chain[i + 1]) {
+            return "the certificate is not signed by anyone this computer trusts"
+        }
+        i += 1
+    }
+    return "the certificate is not signed by anyone this computer trusts"
+}
+
+# ---------- keys ----------
+struct TlsKey {
+    ok: bool,
+    curve: string,
+    d: array[int],
+    chain: array[array[int]]
+}
+
+# reads a certificate file (the chain, PEM) and its private key (PEM: EC or PKCS#8)
+fn tls_load_key(cert_path: string, key_path: string) -> TlsKey {
+    chain = pem_blocks(read_file(cert_path), "CERTIFICATE")
+    kt = read_file(key_path)
+    e: array[int] = []
+    curve = ""
+    d = e
+    for blk in pem_blocks(kt, "PRIVATE KEY") {
+        # PKCS#8: { version, { ecPublicKey, curve }, OCTET STRING { EC key } }
+        top = der_at(blk, 0)
+        it = der_items(blk, top[1], top[3])
+        alg = der_at(blk, it[1])
+        ai = der_items(blk, alg[1], alg[3])
+        if len(ai) > 1 {
+            c = to_hex(der_content(blk, ai[1]))
+            if c == "2a8648ce3d030107" {
+                curve = "P-256"
+            }
+            if c == "2b81040022" {
+                curve = "P-384"
+            }
+        }
+        inner = der_content(blk, it[2])
+        ie = der_at(inner, 0)
+        ii = der_items(inner, ie[1], ie[3])
+        d = der_content(inner, ii[1])
+    }
+    for blk in pem_blocks(kt, "EC PRIVATE KEY") {
+        top = der_at(blk, 0)
+        it = der_items(blk, top[1], top[3])
+        d = der_content(blk, it[1])
+        for idx in it {
+            x = der_at(blk, idx)
+            if x[0] == 160 {
+                c = to_hex(der_content(blk, x[1]))
+                if c == "2a8648ce3d030107" {
+                    curve = "P-256"
+                }
+                if c == "2b81040022" {
+                    curve = "P-384"
+                }
+            }
+        }
+    }
+    return TlsKey(len(chain) > 0 and len(d) > 0 and curve != "", curve, d, chain)
+}
+
+# a self-signed certificate and key for trying https on your own computer
+fn tls_make_cert(host: string, cert_path: string, key_path: string) {
+    C = p256()
+    d = ecdsa_new_key(C)
+    pub = ecdsa_public(C, d)
+    name = der_seq([der(49, der_seq([der_oid("550403"), der(12, to_bytes(host))]))])
+    now = __time_unix()
+    alt = der(130, to_bytes(host))
+    if host == "localhost" {
+        alt = join_bytes(alt, der(135, [127, 0, 0, 1]))
+    }
+    if __is_ipv4(host) {
+        p = split(host, ".")
+        alt = der(135, [to_int(p[0]), to_int(p[1]), to_int(p[2]), to_int(p[3])])
+    }
+    san = der_seq([der_oid("551d11"), der(4, der(48, alt))])
+    tbs = der_seq([der(160, der(2, [2])), der_uint(join_bytes([1], random_bytes(8))), der_seq([der_oid("2a8648ce3d040302")]), name, der_seq([der_utctime(now - 86400), der_utctime(now + 365 * 86400)]), name, der_seq([der_seq([der_oid("2a8648ce3d0201"), der_oid("2a8648ce3d030107")]), der(3, join_bytes([0], pub))]), der(163, der_seq([san]))])
+    sig = ecdsa_sig_der(ecdsa_sign(C, d, sha256(tbs)))
+    cert = der_seq([tbs, der_seq([der_oid("2a8648ce3d040302")]), der(3, join_bytes([0], sig))])
+    ec = der_seq([der(2, [1]), der(4, d), der(160, der_oid("2a8648ce3d030107")), der(161, der(3, join_bytes([0], pub)))])
+    write_file(cert_path, pem_encode("CERTIFICATE", cert))
+    write_file(key_path, pem_encode("EC PRIVATE KEY", ec))
+}
+
+# ---------- TLS 1.3 connections ----------
+struct Tls {
+    fd: int,
+    ok: bool,
+    err: string,
+    raw: string,
+    rkey: array[int],
+    riv: array[int],
+    rseq: int,
+    wkey: array[int],
+    wiv: array[int],
+    wseq: int,
+    rtype: int,
+    rbody: string,
+    hsbuf: string,
+    mtype: int,
+    msg: string,
+    data: string,
+    closed: bool
+}
+
+fn __is_ipv4(host: string) -> bool {
+    parts = split(host, ".")
+    if len(parts) != 4 {
+        return false
+    }
+    for p in parts {
+        if len(p) == 0 or len(p) > 3 {
+            return false
+        }
+        for i in 0..len(p) {
+            if byte_at(p, i) < 48 or byte_at(p, i) > 57 {
+                return false
+            }
+        }
+    }
+    return true
+}
+
+fn __tls_new(fd: int) -> Tls {
+    e: array[int] = []
+    return Tls(fd, true, "", "", e, e, 0, e, e, 0, 0, "", "", 0, "", "", false)
+}
+
+fn __tls_fail(c: Tls, why: string) -> Tls {
+    c.ok = false
+    if c.err == "" {
+        c.err = why
+    }
+    return c
+}
+
+fn __u16(v: int) -> string {
+    return chr((v >> 8) & 255) + chr(v & 255)
+}
+
+fn __u24(v: int) -> string {
+    return chr((v >> 16) & 255) + chr((v >> 8) & 255) + chr(v & 255)
+}
+
+fn __num(s: string, i: int, n: int) -> int {
+    v = 0
+    for k in 0..n {
+        v = (v << 8) | byte_at(s, i + k)
+    }
+    return v
+}
+
+# reads one record (header + body) into c.rtype and c.rbody
+fn __tls_read_record(c: Tls) -> Tls {
+    while len(c.raw) < 5 {
+        more = socket_read(c.fd)
+        if more == "" {
+            return __tls_fail(c, "the connection closed")
+        }
+        c.raw = c.raw + more
+    }
+    n = __num(c.raw, 3, 2)
+    if n > 16640 {
+        return __tls_fail(c, "a record was too long")
+    }
+    while len(c.raw) < 5 + n {
+        more = socket_read(c.fd)
+        if more == "" {
+            return __tls_fail(c, "the connection closed")
+        }
+        c.raw = c.raw + more
+    }
+    c.rtype = byte_at(c.raw, 0)
+    c.rbody = slice(c.raw, 5, 5 + n)
+    head = slice(c.raw, 0, 5)
+    c.raw = slice(c.raw, 5 + n, len(c.raw))
+    if c.rtype == 23 and len(c.rkey) > 0 {
+        nonce = __tls_nonce(c.riv, c.rseq)
+        plain = chacha20_poly1305_open(c.rkey, nonce, to_bytes(c.rbody), to_bytes(head))
+        if not open_ok() {
+            return __tls_fail(c, "a record failed its integrity check")
+        }
+        c.rseq += 1
+        k = len(plain) - 1
+        while k >= 0 and plain[k] == 0 {
+            k -= 1
+        }
+        if k < 0 {
+            return __tls_fail(c, "an empty record")
+        }
+        c.rtype = plain[k]
+        c.rbody = from_bytes(sub_bytes(plain, 0, k))
+    }
+    if c.rtype == 21 {
+        if len(c.rbody) >= 2 and byte_at(c.rbody, 1) == 0 {
+            c.closed = true
+            return __tls_fail(c, "closed")
+        }
+        code = 0
+        if len(c.rbody) >= 2 {
+            code = byte_at(c.rbody, 1)
+        }
+        return __tls_fail(c, "the other side refused (alert " + str(code) + ")")
+    }
+    return c
+}
+
+fn __tls_nonce(iv: array[int], seq: int) -> array[int] {
+    out: array[int] = []
+    for i in 0..12 {
+        v = iv[i]
+        if i >= 4 {
+            v = v ^ ((seq >> ((11 - i) * 8)) & 255)
+        }
+        push(out, v)
+    }
+    return out
+}
+
+# the next whole handshake message, into c.mtype and c.msg (with its header)
+fn __tls_next_msg(c: Tls) -> Tls {
+    while len(c.hsbuf) < 4 or len(c.hsbuf) < 4 + __num(c.hsbuf, 1, 3) {
+        c = __tls_read_record(c)
+        if not c.ok {
+            return c
+        }
+        if c.rtype == 20 {
+            continue
+        }
+        if c.rtype != 22 {
+            return __tls_fail(c, "expected a handshake message")
+        }
+        c.hsbuf = c.hsbuf + c.rbody
+    }
+    n = __num(c.hsbuf, 1, 3)
+    c.mtype = byte_at(c.hsbuf, 0)
+    c.msg = slice(c.hsbuf, 0, 4 + n)
+    c.hsbuf = slice(c.hsbuf, 4 + n, len(c.hsbuf))
+    return c
+}
+
+fn __tls_write_plain(c: Tls, rtype: int, body: string) {
+    socket_write(c.fd, chr(rtype) + "\x03\x03" + __u16(len(body)) + body)
+}
+
+# encrypts and sends body (split into records), as content type rtype
+fn __tls_write(c: Tls, rtype: int, body: string) -> Tls {
+    i = 0
+    while i < len(body) or (i == 0 and len(body) == 0) {
+        e = i + 16000
+        if e > len(body) {
+            e = len(body)
+        }
+        inner = to_bytes(slice(body, i, e) + chr(rtype))
+        head = "\x17\x03\x03" + __u16(len(inner) + 16)
+        sealed = chacha20_poly1305_seal(c.wkey, __tls_nonce(c.wiv, c.wseq), inner, to_bytes(head))
+        c.wseq += 1
+        socket_write(c.fd, head + from_bytes(sealed))
+        i = e
+        if len(body) == 0 {
+            break
+        }
+    }
+    return c
+}
+
+fn __tls_label(secret: array[int], label: string, ctx: array[int], n: int) -> array[int] {
+    full = to_bytes("tls13 " + label)
+    info = join_bytes(join_bytes([(n >> 8) & 255, n & 255, len(full)], full), join_bytes([len(ctx)], ctx))
+    return hkdf_expand("sha256", secret, info, n)
+}
+
+fn __tls_hash(transcript: string) -> array[int] {
+    return sha256(to_bytes(transcript))
+}
+
+fn __tls_keys(c: Tls, read_secret: array[int], write_secret: array[int]) -> Tls {
+    e: array[int] = []
+    c.rkey = __tls_label(read_secret, "key", e, 32)
+    c.riv = __tls_label(read_secret, "iv", e, 12)
+    c.wkey = __tls_label(write_secret, "key", e, 32)
+    c.wiv = __tls_label(write_secret, "iv", e, 12)
+    c.rseq = 0
+    c.wseq = 0
+    return c
+}
+
+# the extensions of a ClientHello/ServerHello: [type, start, length, ...]
+fn __tls_exts(s: string, start: int, end: int) -> array[int] {
+    out: array[int] = []
+    i = start
+    while i + 4 <= end {
+        t = __num(s, i, 2)
+        n = __num(s, i + 2, 2)
+        push(out, t)
+        push(out, i + 4)
+        push(out, n)
+        i += 4 + n
+    }
+    return out
+}
+
+fn __zeros(n: int) -> array[int] {
+    out: array[int] = []
+    for i in 0..n {
+        push(out, 0)
+    }
+    return out
+}
+
+# server side: the handshake on a new connection
+fn tls_accept(fd: int, key: TlsKey) -> Tls {
+    c = __tls_new(fd)
+    c = __tls_next_msg(c)
+    if not c.ok {
+        return c
+    }
+    if c.mtype != 1 {
+        return __tls_fail(c, "expected a ClientHello")
+    }
+    ch = c.msg
+    p = 4 + 2 + 32
+    sid_len = byte_at(ch, p)
+    sid = slice(ch, p + 1, p + 1 + sid_len)
+    p += 1 + sid_len
+    ncs = __num(ch, p, 2)
+    has_suite = false
+    k = 0
+    while k < ncs {
+        if __num(ch, p + 2 + k, 2) == 4867 {
+            has_suite = true
+        }
+        k += 2
+    }
+    p += 2 + ncs
+    p += 1 + byte_at(ch, p)
+    ext_end = p + 2 + __num(ch, p, 2)
+    exts = __tls_exts(ch, p + 2, ext_end)
+    tls13 = false
+    share: array[int] = []
+    scheme = 1027
+    if key.curve == "P-384" {
+        scheme = 1283
+    }
+    has_scheme = false
+    alpn = false
+    k = 0
+    while k < len(exts) {
+        t = exts[k]
+        a = exts[k + 1]
+        n = exts[k + 2]
+        if t == 43 {
+            j = a + 1
+            while j < a + n {
+                if __num(ch, j, 2) == 772 {
+                    tls13 = true
+                }
+                j += 2
+            }
+        }
+        if t == 51 {
+            j = a + 2
+            while j + 4 <= a + n {
+                g = __num(ch, j, 2)
+                l = __num(ch, j + 2, 2)
+                if g == 29 and l == 32 {
+                    share = to_bytes(slice(ch, j + 4, j + 4 + 32))
+                }
+                j += 4 + l
+            }
+        }
+        if t == 13 {
+            j = a + 2
+            while j < a + n {
+                if __num(ch, j, 2) == scheme {
+                    has_scheme = true
+                }
+                j += 2
+            }
+        }
+        if t == 16 and contains(slice(ch, a, a + n), "http/1.1") {
+            alpn = true
+        }
+        k += 3
+    }
+    if not tls13 or not has_suite or len(share) != 32 or not has_scheme {
+        # handshake_failure
+        __tls_write_plain(c, 21, "\x02\x28")
+        return __tls_fail(c, "the browser and server have no TLS 1.3 settings in common")
+    }
+    priv = random_bytes(32)
+    pub = x25519_public(priv)
+    shared = x25519(priv, share)
+    sh_body = "\x03\x03" + from_bytes(random_bytes(32)) + chr(len(sid)) + sid + "\x13\x03\x00"
+    sh_ext = "\x00\x2b\x00\x02\x03\x04" + "\x00\x33\x00\x24\x00\x1d\x00\x20" + from_bytes(pub)
+    sh_body = sh_body + __u16(len(sh_ext)) + sh_ext
+    sh = "\x02" + __u24(len(sh_body)) + sh_body
+    __tls_write_plain(c, 22, sh)
+    __tls_write_plain(c, 20, "\x01")
+    th = ch + sh
+    e: array[int] = []
+    zero = __zeros(32)
+    early = hkdf_extract("sha256", zero, zero)
+    hs = hkdf_extract("sha256", __tls_label(early, "derived", sha256(e), 32), shared)
+    chs = __tls_label(hs, "c hs traffic", __tls_hash(th), 32)
+    shs = __tls_label(hs, "s hs traffic", __tls_hash(th), 32)
+    c = __tls_keys(c, chs, shs)
+    ee_ext = ""
+    if alpn {
+        ee_ext = "\x00\x10\x00\x0b\x00\x09\x08http/1.1"
+    }
+    ee = "\x08" + __u24(len(ee_ext) + 2) + __u16(len(ee_ext)) + ee_ext
+    certs = ""
+    for d in key.chain {
+        certs = certs + __u24(len(d)) + from_bytes(d) + "\x00\x00"
+    }
+    cert_body = "\x00" + __u24(len(certs)) + certs
+    cm = "\x0b" + __u24(len(cert_body)) + cert_body
+    th = th + ee + cm
+    content = repeat(" ", 64) + "TLS 1.3, server CertificateVerify\x00" + from_bytes(__tls_hash(th))
+    C = curve_named(key.curve)
+    sig = ecdsa_sig_der(ecdsa_sign(C, key.d, hash_with(__curve_hash(key.curve), to_bytes(content))))
+    cv_body = __u16(scheme) + __u16(len(sig)) + from_bytes(sig)
+    cv = "\x0f" + __u24(len(cv_body)) + cv_body
+    th = th + cv
+    sfk = __tls_label(shs, "finished", e, 32)
+    sfin = "\x14\x00\x00\x20" + from_bytes(hmac("sha256", sfk, __tls_hash(th)))
+    th = th + sfin
+    c = __tls_write(c, 22, ee + cm + cv + sfin)
+    master = hkdf_extract("sha256", __tls_label(hs, "derived", sha256(e), 32), zero)
+    cap = __tls_label(master, "c ap traffic", __tls_hash(th), 32)
+    sap = __tls_label(master, "s ap traffic", __tls_hash(th), 32)
+    cfk = __tls_label(chs, "finished", e, 32)
+    want = hmac("sha256", cfk, __tls_hash(th))
+    c = __tls_next_msg(c)
+    if not c.ok {
+        return c
+    }
+    if c.mtype != 20 or not same_bytes(to_bytes(slice(c.msg, 4, len(c.msg))), want) {
+        return __tls_fail(c, "the browser's Finished message was wrong")
+    }
+    return __tls_keys(c, cap, sap)
+}
+
+fn __curve_hash(curve: string) -> string {
+    if curve == "P-384" {
+        return "sha384"
+    }
+    return "sha256"
+}
+
+# client side: the handshake with a server; checks its certificate unless insecure
+fn tls_connect(fd: int, host: string, insecure: bool) -> Tls {
+    c = __tls_new(fd)
+    priv = random_bytes(32)
+    pub = x25519_public(priv)
+    sni = "\x00" + __u16(len(host)) + host
+    ext = "\x00\x00" + __u16(len(sni) + 2) + __u16(len(sni)) + sni
+    ext = ext + "\x00\x0a\x00\x04\x00\x02\x00\x1d"
+    schemes = "\x04\x03\x05\x03\x08\x04\x08\x05\x08\x06\x04\x01\x05\x01\x06\x01"
+    ext = ext + "\x00\x0d" + __u16(len(schemes) + 2) + __u16(len(schemes)) + schemes
+    ext = ext + "\x00\x2b\x00\x03\x02\x03\x04"
+    ext = ext + "\x00\x33\x00\x26\x00\x24\x00\x1d\x00\x20" + from_bytes(pub)
+    body = "\x03\x03" + from_bytes(random_bytes(32)) + "\x20" + from_bytes(random_bytes(32)) + "\x00\x02\x13\x03\x01\x00" + __u16(len(ext)) + ext
+    ch = "\x01" + __u24(len(body)) + body
+    __tls_write_plain(c, 22, ch)
+    c = __tls_next_msg(c)
+    if not c.ok {
+        return c
+    }
+    if c.mtype != 2 {
+        return __tls_fail(c, "expected a ServerHello")
+    }
+    sh = c.msg
+    if to_hex(to_bytes(slice(sh, 6, 38))) == "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c" {
+        return __tls_fail(c, "the server wants a key exchange Slop does not offer")
+    }
+    p = 4 + 2 + 32
+    p += 1 + byte_at(sh, p)
+    suite = __num(sh, p, 2)
+    p += 3
+    exts = __tls_exts(sh, p + 2, p + 2 + __num(sh, p, 2))
+    share: array[int] = []
+    tls13 = false
+    k = 0
+    while k < len(exts) {
+        if exts[k] == 43 and __num(sh, exts[k + 1], 2) == 772 {
+            tls13 = true
+        }
+        if exts[k] == 51 and __num(sh, exts[k + 1], 2) == 29 {
+            share = to_bytes(slice(sh, exts[k + 1] + 4, exts[k + 1] + 4 + 32))
+        }
+        k += 3
+    }
+    if not tls13 {
+        return __tls_fail(c, "the server only speaks an older TLS (Slop needs TLS 1.3)")
+    }
+    if suite != 4867 or len(share) != 32 {
+        return __tls_fail(c, "the server picked settings Slop does not offer")
+    }
+    shared = x25519(priv, share)
+    th = ch + sh
+    e: array[int] = []
+    zero = __zeros(32)
+    early = hkdf_extract("sha256", zero, zero)
+    hs = hkdf_extract("sha256", __tls_label(early, "derived", sha256(e), 32), shared)
+    chs = __tls_label(hs, "c hs traffic", __tls_hash(th), 32)
+    shs = __tls_label(hs, "s hs traffic", __tls_hash(th), 32)
+    c = __tls_keys(c, shs, chs)
+    chain: array[X509Cert] = []
+    while true {
+        c = __tls_next_msg(c)
+        if not c.ok {
+            return c
+        }
+        m = c.msg
+        if c.mtype == 8 {
+            th = th + m
+            continue
+        }
+        if c.mtype == 13 {
+            return __tls_fail(c, "the server asks for a client certificate (not supported)")
+        }
+        if c.mtype == 11 {
+            q = 4 + 1 + byte_at(m, 4)
+            end = q + 3 + __num(m, q, 3)
+            q += 3
+            while q < end {
+                n = __num(m, q, 3)
+                push(chain, parse_cert(to_bytes(slice(m, q + 3, q + 3 + n))))
+                q += 3 + n
+                q += 2 + __num(m, q, 2)
+            }
+            th = th + m
+            continue
+        }
+        if c.mtype == 15 {
+            if len(chain) == 0 {
+                return __tls_fail(c, "the server sent no certificate")
+            }
+            content = repeat(" ", 64) + "TLS 1.3, server CertificateVerify\x00" + from_bytes(__tls_hash(th))
+            sch = __num(m, 4, 2)
+            sig = to_bytes(slice(m, 8, 8 + __num(m, 6, 2)))
+            leaf = chain[0]
+            good = false
+            if (sch == 1027 or sch == 1283) and leaf.key_type == "ec" and leaf.curve != "" {
+                C = curve_named(leaf.curve)
+                hb = sha256(to_bytes(content))
+                if sch == 1283 {
+                    hb = sha384(to_bytes(content))
+                }
+                rs = ecdsa_sig_raw(sig, C.size * 2)
+                good = len(rs) > 0 and ecdsa_verify(C, leaf.pub, hb, sub_bytes(rs, 0, C.size), sub_bytes(rs, C.size, len(rs)))
+            }
+            if sch >= 2052 and sch <= 2054 and leaf.key_type == "rsa" {
+                alg = "sha256"
+                if sch == 2053 {
+                    alg = "sha384"
+                }
+                if sch == 2054 {
+                    alg = "sha512"
+                }
+                good = rsa_verify_pss(leaf.pub, leaf.rsa_e, alg, hash_with(alg, to_bytes(content)), sig)
+            }
+            if not good {
+                return __tls_fail(c, "the server's signature did not check out")
+            }
+            th = th + m
+            continue
+        }
+        if c.mtype == 20 {
+            sfk = __tls_label(shs, "finished", e, 32)
+            if not same_bytes(to_bytes(slice(m, 4, len(m))), hmac("sha256", sfk, __tls_hash(th))) {
+                return __tls_fail(c, "the server's Finished message was wrong")
+            }
+            th = th + m
+            break
+        }
+        return __tls_fail(c, "an unexpected handshake message")
+    }
+    if not insecure {
+        why = tls_check_chain(chain, host)
+        if why != "" {
+            # bad_certificate
+            __tls_write_plain(c, 21, "\x02\x2a")
+            return __tls_fail(c, why)
+        }
+    }
+    master = hkdf_extract("sha256", __tls_label(hs, "derived", sha256(e), 32), zero)
+    cap = __tls_label(master, "c ap traffic", __tls_hash(th), 32)
+    sap = __tls_label(master, "s ap traffic", __tls_hash(th), 32)
+    __tls_write_plain(c, 20, "\x01")
+    cfk = __tls_label(chs, "finished", e, 32)
+    c = __tls_write(c, 22, "\x14\x00\x00\x20" + from_bytes(hmac("sha256", cfk, __tls_hash(th))))
+    return __tls_keys(c, sap, cap)
+}
+
+# sends text over the connection
+fn tls_send(c: Tls, s: string) -> Tls {
+    return __tls_write(c, 23, s)
+}
+
+# the next piece of text into c.data ("" once the other side is done)
+fn tls_recv(c: Tls) -> Tls {
+    c.data = ""
+    while c.ok {
+        c = __tls_read_record(c)
+        if not c.ok {
+            return c
+        }
+        if c.rtype == 23 {
+            c.data = c.rbody
+            return c
+        }
+        # session tickets and other handshake messages after the start: skip
+    }
+    return c
+}
+
+fn tls_close(c: Tls) {
+    if c.ok and len(c.wkey) > 0 {
+        __tls_write(c, 21, "\x01\x00")
+    }
+    socket_close(c.fd)
+}

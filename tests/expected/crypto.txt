@@ -1,0 +1,12 @@
+sha256 true
+sha384 true
+sha512 true
+hmac true
+hkdf true
+chacha20-poly1305 true
+open true true
+tampered rejected true
+x25519 true
+x25519 agree true
+ecdsa P-256 true true
+ecdsa P-384 true true

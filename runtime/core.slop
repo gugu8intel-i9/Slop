@@ -780,3 +780,24 @@ fn __thread_join(block: int) -> int {
     __os_release(block, 8192)
     return r
 }
+
+# a name -> its IPv4 address through the system library's getaddrinfo (macOS, Windows)
+fn __getaddrinfo(host: string) -> string {
+    hints = __alloc(48)
+    __memzero(hints, 48)
+    __store32(hints + 4, 2)
+    __store32(hints + 8, 1)
+    res = __scratch() + 40
+    __store64(res, 0)
+    if __ccall32("getaddrinfo", __cstr(host), 0, hints, res) != 0 {
+        return ""
+    }
+    ai = __load64(res)
+    if ai == 0 {
+        return ""
+    }
+    a = __load64(ai + 32)
+    ip = __int_to_string(__load8(a + 4)) + "." + __int_to_string(__load8(a + 5)) + "." + __int_to_string(__load8(a + 6)) + "." + __int_to_string(__load8(a + 7))
+    __ccall("freeaddrinfo", ai)
+    return ip
+}

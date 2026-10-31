@@ -1,0 +1,1336 @@
+# crypto: hashing, message codes, encryption and signatures, in Slop
+#   use "crypto"
+#   print(to_hex(sha256(to_bytes("abc"))))
+# Byte data is a list of numbers 0-255 (array[int]); to_bytes() and from_bytes() convert.
+
+# ---------- to_bytes ----------
+fn to_bytes(s: string) -> array[int] {
+    out: array[int] = []
+    for i in 0..len(s) {
+        push(out, byte_at(s, i))
+    }
+    return out
+}
+
+fn from_bytes(b: array[int]) -> string {
+    return bytes_to_string(b)
+}
+
+fn to_hex(b: array[int]) -> string {
+    digits = "0123456789abcdef"
+    out = ""
+    for x in b {
+        out = out + char_at(digits, x >> 4) + char_at(digits, x & 15)
+    }
+    return out
+}
+
+fn from_hex(s: string) -> array[int] {
+    out: array[int] = []
+    i = 0
+    while i + 1 < len(s) {
+        push(out, __cr_hexval(byte_at(s, i)) * 16 + __cr_hexval(byte_at(s, i + 1)))
+        i += 2
+    }
+    return out
+}
+
+fn __cr_hexval(c: int) -> int {
+    if c >= 97 {
+        return c - 87
+    }
+    if c >= 65 {
+        return c - 55
+    }
+    return c - 48
+}
+
+fn join_bytes(a: array[int], b: array[int]) -> array[int] {
+    out: array[int] = []
+    for x in a {
+        push(out, x)
+    }
+    for x in b {
+        push(out, x)
+    }
+    return out
+}
+
+fn sub_bytes(a: array[int], start: int, end: int) -> array[int] {
+    out: array[int] = []
+    for i in start..end {
+        push(out, a[i])
+    }
+    return out
+}
+
+fn same_bytes(a: array[int], b: array[int]) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    d = 0
+    for i in 0..len(a) {
+        d = d | (a[i] ^ b[i])
+    }
+    return d == 0
+}
+
+fn __be32(v: int) -> array[int] {
+    return [(v >> 24) & 255, (v >> 16) & 255, (v >> 8) & 255, v & 255]
+}
+
+fn __be64(v: int) -> array[int] {
+    return join_bytes(__be32((v >> 32) & 4294967295), __be32(v & 4294967295))
+}
+
+# ---------- secure random to_bytes from the operating system ----------
+fn random_bytes(n: int) -> array[int] {
+    return to_bytes(__random_text(n))
+}
+
+# ---------- SHA-256 ----------
+__sha256_k = [1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993, 2453635748, 2870763221, 3624381080, 310598401, 607225278, 1426881987, 1925078388, 2162078206, 2614888103, 3248222580, 3835390401, 4022224774, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986, 2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711, 113926993, 338241895, 666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, 2177026350, 2456956037, 2730485921, 2820302411, 3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344, 430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779, 1955562222, 2024104815, 2227730452, 2361852424, 2428436474, 2756734187, 3204031479, 3329325298]
+
+fn __rotr32(x: int, n: int) -> int {
+    return ((x >> n) | (x << (32 - n))) & 4294967295
+}
+
+fn sha256(data: array[int]) -> array[int] {
+    h = [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]
+    msg: array[int] = []
+    for x in data {
+        push(msg, x)
+    }
+    bitlen = len(data) * 8
+    push(msg, 128)
+    while len(msg) % 64 != 56 {
+        push(msg, 0)
+    }
+    for x in __be64(bitlen) {
+        push(msg, x)
+    }
+    k = __sha256_k
+    w: array[int] = []
+    for i in 0..64 {
+        push(w, 0)
+    }
+    blk = 0
+    while blk < len(msg) {
+        for i in 0..16 {
+            j = blk + i * 4
+            w[i] = (msg[j] << 24) | (msg[j + 1] << 16) | (msg[j + 2] << 8) | msg[j + 3]
+        }
+        for i in 16..64 {
+            x = w[i - 15]
+            y = w[i - 2]
+            s0 = __rotr32(x, 7) ^ __rotr32(x, 18) ^ (x >> 3)
+            s1 = __rotr32(y, 17) ^ __rotr32(y, 19) ^ (y >> 10)
+            w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 4294967295
+        }
+        a = h[0]
+        b = h[1]
+        c = h[2]
+        d = h[3]
+        e = h[4]
+        f = h[5]
+        g = h[6]
+        hh = h[7]
+        for i in 0..64 {
+            S1 = __rotr32(e, 6) ^ __rotr32(e, 11) ^ __rotr32(e, 25)
+            ch = (e & f) ^ ((e ^ 4294967295) & g)
+            t1 = (hh + S1 + ch + k[i] + w[i]) & 4294967295
+            S0 = __rotr32(a, 2) ^ __rotr32(a, 13) ^ __rotr32(a, 22)
+            mj = (a & b) ^ (a & c) ^ (b & c)
+            t2 = (S0 + mj) & 4294967295
+            hh = g
+            g = f
+            f = e
+            e = (d + t1) & 4294967295
+            d = c
+            c = b
+            b = a
+            a = (t1 + t2) & 4294967295
+        }
+        h[0] = (h[0] + a) & 4294967295
+        h[1] = (h[1] + b) & 4294967295
+        h[2] = (h[2] + c) & 4294967295
+        h[3] = (h[3] + d) & 4294967295
+        h[4] = (h[4] + e) & 4294967295
+        h[5] = (h[5] + f) & 4294967295
+        h[6] = (h[6] + g) & 4294967295
+        h[7] = (h[7] + hh) & 4294967295
+        blk += 64
+    }
+    out: array[int] = []
+    for v in h {
+        for x in __be32(v) {
+            push(out, x)
+        }
+    }
+    return out
+}
+
+# ---------- SHA-384 and SHA-512 (64-bit words) ----------
+__sha512_k = [4794697086780616226, 8158064640168781261, -5349999486874862801, -1606136188198331460, 4131703408338449720, 6480981068601479193, -7908458776815382629, -6116909921290321640, -2880145864133508542, 1334009975649890238, 2608012711638119052, 6128411473006802146, 8268148722764581231, -9160688886553864527, -7215885187991268811, -4495734319001033068, -1973867731355612462, -1171420211273849373, 1135362057144423861, 2597628984639134821, 3308224258029322869, 5365058923640841347, 6679025012923562964, 8573033837759648693, -7476448914759557205, -6327057829258317296, -5763719355590565569, -4658551843659510044, -4116276920077217854, -3051310485924567259, 489312712824947311, 1452737877330783856, 2861767655752347644, 3322285676063803686, 5560940570517711597, 5996557281743188959, 7280758554555802590, 8532644243296465576, -9096487096722542874, -7894198246740708037, -6719396339535248540, -6333637450476146687, -4446306890439682159, -4076793802049405392, -3345356375505022440, -2983346525034927856, -860691631967231958, 1182934255886127544, 1847814050463011016, 2177327727835720531, 2830643537854262169, 3796741975233480872, 4115178125766777443, 5681478168544905931, 6601373596472566643, 7507060721942968483, 8399075790359081724, 8693463985226723168, -8878714635349349518, -8302665154208450068, -8016688836872298968, -6606660893046293015, -4685533653050689259, -4147400797238176981, -3880063495543823972, -3348786107499101689, -1523767162380948706, -757361751448694408, 500013540394364858, 748580250866718886, 1242879168328830382, 1977374033974150939, 2944078676154940804, 3659926193048069267, 4368137639120453308, 4836135668995329356, 5532061633213252278, 6448918945643986474, 6902733635092675308, 7801388544844847127]
+
+fn __rotr64(x: int, n: int) -> int {
+    return ((x >> n) & ((1 << (64 - n)) - 1)) | (x << (64 - n))
+}
+
+fn __shr64(x: int, n: int) -> int {
+    return (x >> n) & ((1 << (64 - n)) - 1)
+}
+
+fn __sha512_core(data: array[int], init: array[int], outlen: int) -> array[int] {
+    h: array[int] = []
+    for v in init {
+        push(h, v)
+    }
+    msg: array[int] = []
+    for x in data {
+        push(msg, x)
+    }
+    bitlen = len(data) * 8
+    push(msg, 128)
+    while len(msg) % 128 != 112 {
+        push(msg, 0)
+    }
+    for x in join_bytes(__be64(0), __be64(bitlen)) {
+        push(msg, x)
+    }
+    k = __sha512_k
+    w: array[int] = []
+    for i in 0..80 {
+        push(w, 0)
+    }
+    blk = 0
+    while blk < len(msg) {
+        for i in 0..16 {
+            j = blk + i * 8
+            v = 0
+            for b in 0..8 {
+                v = (v << 8) | msg[j + b]
+            }
+            w[i] = v
+        }
+        for i in 16..80 {
+            x = w[i - 15]
+            y = w[i - 2]
+            s0 = __rotr64(x, 1) ^ __rotr64(x, 8) ^ __shr64(x, 7)
+            s1 = __rotr64(y, 19) ^ __rotr64(y, 61) ^ __shr64(y, 6)
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1
+        }
+        a = h[0]
+        b = h[1]
+        c = h[2]
+        d = h[3]
+        e = h[4]
+        f = h[5]
+        g = h[6]
+        hh = h[7]
+        for i in 0..80 {
+            S1 = __rotr64(e, 14) ^ __rotr64(e, 18) ^ __rotr64(e, 41)
+            ch = (e & f) ^ ((e ^ -1) & g)
+            t1 = hh + S1 + ch + k[i] + w[i]
+            S0 = __rotr64(a, 28) ^ __rotr64(a, 34) ^ __rotr64(a, 39)
+            mj = (a & b) ^ (a & c) ^ (b & c)
+            t2 = S0 + mj
+            hh = g
+            g = f
+            f = e
+            e = d + t1
+            d = c
+            c = b
+            b = a
+            a = t1 + t2
+        }
+        h[0] = h[0] + a
+        h[1] = h[1] + b
+        h[2] = h[2] + c
+        h[3] = h[3] + d
+        h[4] = h[4] + e
+        h[5] = h[5] + f
+        h[6] = h[6] + g
+        h[7] = h[7] + hh
+        blk += 128
+    }
+    out: array[int] = []
+    for v in h {
+        for x in __be64(v) {
+            push(out, x)
+        }
+    }
+    return sub_bytes(out, 0, outlen)
+}
+
+fn sha384(data: array[int]) -> array[int] {
+    return __sha512_core(data, [-3766243637369397544, 7105036623409894663, -7973340178411365097, 1526699215303891257, 7436329637833083697, -8163818279084223215, -2662702644619276377, 5167115440072839076], 48)
+}
+
+fn sha512(data: array[int]) -> array[int] {
+    return __sha512_core(data, [7640891576956012808, -4942790177534073029, 4354685564936845355, -6534734903238641935, 5840696475078001361, -7276294671716946913, 2270897969802886507, 6620516959819538809], 64)
+}
+
+# hash by name: "sha256", "sha384" or "sha512"
+fn hash_with(alg: string, data: array[int]) -> array[int] {
+    if alg == "sha384" {
+        return sha384(data)
+    }
+    if alg == "sha512" {
+        return sha512(data)
+    }
+    return sha256(data)
+}
+
+fn __hash_block(alg: string) -> int {
+    if alg == "sha256" {
+        return 64
+    }
+    return 128
+}
+
+# ---------- HMAC and HKDF ----------
+fn hmac(alg: string, key: array[int], msg: array[int]) -> array[int] {
+    bs = __hash_block(alg)
+    k = key
+    if len(k) > bs {
+        k = hash_with(alg, k)
+    }
+    ipad: array[int] = []
+    opad: array[int] = []
+    for i in 0..bs {
+        v = 0
+        if i < len(k) {
+            v = k[i]
+        }
+        push(ipad, v ^ 54)
+        push(opad, v ^ 92)
+    }
+    inner = hash_with(alg, join_bytes(ipad, msg))
+    return hash_with(alg, join_bytes(opad, inner))
+}
+
+fn hmac_sha256(key: array[int], msg: array[int]) -> array[int] {
+    return hmac("sha256", key, msg)
+}
+
+fn hkdf_extract(alg: string, salt: array[int], ikm: array[int]) -> array[int] {
+    return hmac(alg, salt, ikm)
+}
+
+fn hkdf_expand(alg: string, prk: array[int], info: array[int], n: int) -> array[int] {
+    out: array[int] = []
+    t: array[int] = []
+    i = 1
+    while len(out) < n {
+        block = join_bytes(join_bytes(t, info), [i])
+        t = hmac(alg, prk, block)
+        for x in t {
+            if len(out) < n {
+                push(out, x)
+            }
+        }
+        i += 1
+    }
+    return out
+}
+
+# ---------- ChaCha20 and Poly1305 (RFC 8439) ----------
+fn __qr(s: array[int], a: int, b: int, c: int, d: int) {
+    s[a] = (s[a] + s[b]) & 4294967295
+    s[d] = __rotl32(s[d] ^ s[a], 16)
+    s[c] = (s[c] + s[d]) & 4294967295
+    s[b] = __rotl32(s[b] ^ s[c], 12)
+    s[a] = (s[a] + s[b]) & 4294967295
+    s[d] = __rotl32(s[d] ^ s[a], 8)
+    s[c] = (s[c] + s[d]) & 4294967295
+    s[b] = __rotl32(s[b] ^ s[c], 7)
+}
+
+fn __rotl32(x: int, n: int) -> int {
+    return ((x << n) | (x >> (32 - n))) & 4294967295
+}
+
+fn __le32(b: array[int], i: int) -> int {
+    return b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)
+}
+
+fn chacha20_block(key: array[int], counter: int, nonce: array[int]) -> array[int] {
+    st = [1634760805, 857760878, 2036477234, 1797285236]
+    for i in 0..8 {
+        push(st, __le32(key, i * 4))
+    }
+    push(st, counter & 4294967295)
+    for i in 0..3 {
+        push(st, __le32(nonce, i * 4))
+    }
+    w: array[int] = []
+    for x in st {
+        push(w, x)
+    }
+    for r in 0..10 {
+        __qr(w, 0, 4, 8, 12)
+        __qr(w, 1, 5, 9, 13)
+        __qr(w, 2, 6, 10, 14)
+        __qr(w, 3, 7, 11, 15)
+        __qr(w, 0, 5, 10, 15)
+        __qr(w, 1, 6, 11, 12)
+        __qr(w, 2, 7, 8, 13)
+        __qr(w, 3, 4, 9, 14)
+    }
+    out: array[int] = []
+    for i in 0..16 {
+        v = (w[i] + st[i]) & 4294967295
+        push(out, v & 255)
+        push(out, (v >> 8) & 255)
+        push(out, (v >> 16) & 255)
+        push(out, (v >> 24) & 255)
+    }
+    return out
+}
+
+fn chacha20_xor(key: array[int], counter: int, nonce: array[int], data: array[int]) -> array[int] {
+    out: array[int] = []
+    i = 0
+    ctr = counter
+    while i < len(data) {
+        ks = chacha20_block(key, ctr, nonce)
+        for j in 0..64 {
+            if i + j < len(data) {
+                push(out, data[i + j] ^ ks[j])
+            }
+        }
+        i += 64
+        ctr += 1
+    }
+    return out
+}
+
+# Poly1305 with five 26-bit pieces (fits 64-bit math)
+fn poly1305(key: array[int], msg: array[int]) -> array[int] {
+    r0 = __le32(key, 0) & 67108863
+    r1 = (__le32(key, 3) >> 2) & 67108611
+    r2 = (__le32(key, 6) >> 4) & 67092735
+    r3 = (__le32(key, 9) >> 6) & 66076671
+    r4 = (__le32(key, 12) >> 8) & 1048575
+    s1 = r1 * 5
+    s2 = r2 * 5
+    s3 = r3 * 5
+    s4 = r4 * 5
+    h0 = 0
+    h1 = 0
+    h2 = 0
+    h3 = 0
+    h4 = 0
+    i = 0
+    n = len(msg)
+    while i < n {
+        blk: array[int] = []
+        for j in 0..16 {
+            if i + j < n {
+                push(blk, msg[i + j])
+            } else {
+                push(blk, 0)
+            }
+        }
+        hibit = 16777216
+        if n - i < 16 {
+            blk[n - i] = 1
+            hibit = 0
+        }
+        push(blk, 0)
+        push(blk, 0)
+        push(blk, 0)
+        h0 += __le32(blk, 0) & 67108863
+        h1 += (__le32(blk, 3) >> 2) & 67108863
+        h2 += (__le32(blk, 6) >> 4) & 67108863
+        h3 += (__le32(blk, 9) >> 6) & 67108863
+        h4 += (__le32(blk, 12) >> 8) | hibit
+        d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1
+        d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2
+        d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3
+        d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4
+        d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0
+        c = d0 >> 26
+        h0 = d0 & 67108863
+        d1 += c
+        c = d1 >> 26
+        h1 = d1 & 67108863
+        d2 += c
+        c = d2 >> 26
+        h2 = d2 & 67108863
+        d3 += c
+        c = d3 >> 26
+        h3 = d3 & 67108863
+        d4 += c
+        c = d4 >> 26
+        h4 = d4 & 67108863
+        h0 += c * 5
+        c = h0 >> 26
+        h0 = h0 & 67108863
+        h1 += c
+        i += 16
+    }
+    c = h1 >> 26
+    h1 = h1 & 67108863
+    h2 += c
+    c = h2 >> 26
+    h2 = h2 & 67108863
+    h3 += c
+    c = h3 >> 26
+    h3 = h3 & 67108863
+    h4 += c
+    c = h4 >> 26
+    h4 = h4 & 67108863
+    h0 += c * 5
+    c = h0 >> 26
+    h0 = h0 & 67108863
+    h1 += c
+    # h - p
+    g0 = h0 + 5
+    c = g0 >> 26
+    g0 = g0 & 67108863
+    g1 = h1 + c
+    c = g1 >> 26
+    g1 = g1 & 67108863
+    g2 = h2 + c
+    c = g2 >> 26
+    g2 = g2 & 67108863
+    g3 = h3 + c
+    c = g3 >> 26
+    g3 = g3 & 67108863
+    g4 = h4 + c - 67108864
+    if g4 >= 0 {
+        h0 = g0
+        h1 = g1
+        h2 = g2
+        h3 = g3
+        h4 = g4
+    }
+    f0 = (h0 | (h1 << 26)) & 4294967295
+    f1 = ((h1 >> 6) | (h2 << 20)) & 4294967295
+    f2 = ((h2 >> 12) | (h3 << 14)) & 4294967295
+    f3 = ((h3 >> 18) | (h4 << 8)) & 4294967295
+    f0 = f0 + __le32(key, 16)
+    f1 = f1 + __le32(key, 20) + (f0 >> 32)
+    f2 = f2 + __le32(key, 24) + (f1 >> 32)
+    f3 = f3 + __le32(key, 28) + (f2 >> 32)
+    out: array[int] = []
+    for v in [f0, f1, f2, f3] {
+        push(out, v & 255)
+        push(out, (v >> 8) & 255)
+        push(out, (v >> 16) & 255)
+        push(out, (v >> 24) & 255)
+    }
+    return out
+}
+
+
+fn __aead_tag(key: array[int], nonce: array[int], aad: array[int], ct: array[int]) -> array[int] {
+    otk = sub_bytes(chacha20_block(key, 0, nonce), 0, 32)
+    mac: array[int] = []
+    for x in aad {
+        push(mac, x)
+    }
+    while len(mac) % 16 != 0 {
+        push(mac, 0)
+    }
+    for x in ct {
+        push(mac, x)
+    }
+    while len(mac) % 16 != 0 {
+        push(mac, 0)
+    }
+    for v in [len(aad), len(ct)] {
+        for i in 0..8 {
+            push(mac, (v >> (i * 8)) & 255)
+        }
+    }
+    return poly1305(otk, mac)
+}
+
+# encrypts and appends the 16-byte tag
+fn chacha20_poly1305_seal(key: array[int], nonce: array[int], plain: array[int], aad: array[int]) -> array[int] {
+    ct = chacha20_xor(key, 1, nonce, plain)
+    return join_bytes(ct, __aead_tag(key, nonce, aad, ct))
+}
+
+# checks the tag and decrypts; an empty list with ok_open() false when the tag is wrong
+__cr_open_ok = false
+
+fn chacha20_poly1305_open(key: array[int], nonce: array[int], sealed: array[int], aad: array[int]) -> array[int] {
+    __cr_open_ok = false
+    empty: array[int] = []
+    if len(sealed) < 16 {
+        return empty
+    }
+    ct = sub_bytes(sealed, 0, len(sealed) - 16)
+    tag = sub_bytes(sealed, len(sealed) - 16, len(sealed))
+    if not same_bytes(tag, __aead_tag(key, nonce, aad, ct)) {
+        return empty
+    }
+    __cr_open_ok = true
+    return chacha20_xor(key, 1, nonce, ct)
+}
+
+fn open_ok() -> bool {
+    return __cr_open_ok
+}
+
+# ---------- X25519 (from TweetNaCl: 16 pieces of 16 bits) ----------
+fn __gf() -> array[int] {
+    return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+}
+
+fn __car(o: array[int]) {
+    for i in 0..16 {
+        o[i] += 65536
+        c = o[i] >> 16
+        if i < 15 {
+            o[i + 1] += c - 1
+        } else {
+            o[0] += 38 * (c - 1)
+        }
+        o[i] -= c << 16
+    }
+}
+
+fn __sel(p: array[int], q: array[int], b: int) {
+    c = 0 - b
+    for i in 0..16 {
+        t = c & (p[i] ^ q[i])
+        p[i] = p[i] ^ t
+        q[i] = q[i] ^ t
+    }
+}
+
+fn __fadd(o: array[int], a: array[int], b: array[int]) {
+    for i in 0..16 {
+        o[i] = a[i] + b[i]
+    }
+}
+
+fn __fsub(o: array[int], a: array[int], b: array[int]) {
+    for i in 0..16 {
+        o[i] = a[i] - b[i]
+    }
+}
+
+fn __fmul(o: array[int], a: array[int], b: array[int]) {
+    t = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    for i in 0..16 {
+        ai = a[i]
+        for j in 0..16 {
+            t[i + j] += ai * b[j]
+        }
+    }
+    for i in 0..15 {
+        t[i] += 38 * t[i + 16]
+    }
+    for i in 0..16 {
+        o[i] = t[i]
+    }
+    __car(o)
+    __car(o)
+}
+
+fn __finv(o: array[int], x: array[int]) {
+    c = __gf()
+    for i in 0..16 {
+        c[i] = x[i]
+    }
+    a = 253
+    while a >= 0 {
+        __fmul(c, c, c)
+        if a != 2 and a != 4 {
+            __fmul(c, c, x)
+        }
+        a -= 1
+    }
+    for i in 0..16 {
+        o[i] = c[i]
+    }
+}
+
+fn __fpack(n: array[int]) -> array[int] {
+    t = __gf()
+    m = __gf()
+    for i in 0..16 {
+        t[i] = n[i]
+    }
+    __car(t)
+    __car(t)
+    __car(t)
+    for j in 0..2 {
+        m[0] = t[0] - 65517
+        for i in 1..15 {
+            m[i] = t[i] - 65535 - ((m[i - 1] >> 16) & 1)
+            m[i - 1] = m[i - 1] & 65535
+        }
+        m[15] = t[15] - 32767 - ((m[14] >> 16) & 1)
+        b = (m[15] >> 16) & 1
+        m[14] = m[14] & 65535
+        __sel(t, m, 1 - b)
+    }
+    out: array[int] = []
+    for i in 0..16 {
+        push(out, t[i] & 255)
+        push(out, (t[i] >> 8) & 255)
+    }
+    return out
+}
+
+# shared secret from my 32-byte secret and their 32-byte public key
+fn x25519(scalar: array[int], point: array[int]) -> array[int] {
+    z: array[int] = []
+    for i in 0..32 {
+        push(z, scalar[i])
+    }
+    z[31] = (z[31] & 127) | 64
+    z[0] = z[0] & 248
+    x = __gf()
+    for i in 0..16 {
+        x[i] = point[2 * i] + (point[2 * i + 1] << 8)
+    }
+    x[15] = x[15] & 32767
+    a = __gf()
+    b = __gf()
+    c = __gf()
+    d = __gf()
+    e = __gf()
+    f = __gf()
+    k121665 = [56129, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    for i in 0..16 {
+        b[i] = x[i]
+    }
+    a[0] = 1
+    d[0] = 1
+    i = 254
+    while i >= 0 {
+        r = (z[i >> 3] >> (i & 7)) & 1
+        __sel(a, b, r)
+        __sel(c, d, r)
+        __fadd(e, a, c)
+        __fsub(a, a, c)
+        __fadd(c, b, d)
+        __fsub(b, b, d)
+        __fmul(d, e, e)
+        __fmul(f, a, a)
+        __fmul(a, c, a)
+        __fmul(c, b, e)
+        __fadd(e, a, c)
+        __fsub(a, a, c)
+        __fmul(b, a, a)
+        __fsub(c, d, f)
+        __fmul(a, c, k121665)
+        __fadd(a, a, d)
+        __fmul(c, c, a)
+        __fmul(a, d, f)
+        __fmul(d, b, x)
+        __fmul(b, e, e)
+        __sel(a, b, r)
+        __sel(c, d, r)
+        i -= 1
+    }
+    __finv(c, c)
+    __fmul(a, a, c)
+    return __fpack(a)
+}
+
+# my public key from my 32-byte secret
+fn x25519_public(scalar: array[int]) -> array[int] {
+    base = [9]
+    for i in 1..32 {
+        push(base, 0)
+    }
+    return x25519(scalar, base)
+}
+
+# ---------- big numbers: little-endian lists of 16-bit pieces ----------
+# from big-endian to_bytes, as exactly n pieces
+fn bn_from(b: array[int], n: int) -> array[int] {
+    out: array[int] = []
+    for i in 0..n {
+        push(out, 0)
+    }
+    k = len(b) - 1
+    i = 0
+    while k >= 0 and i < n * 2 {
+        out[i / 2] = out[i / 2] | (b[k] << (8 * (i % 2)))
+        k -= 1
+        i += 1
+    }
+    return out
+}
+
+# to big-endian to_bytes, nbytes long
+fn bn_bytes(x: array[int], nbytes: int) -> array[int] {
+    out: array[int] = []
+    i = nbytes - 1
+    while i >= 0 {
+        v = 0
+        if i / 2 < len(x) {
+            v = (x[i / 2] >> (8 * (i % 2))) & 255
+        }
+        push(out, v)
+        i -= 1
+    }
+    return out
+}
+
+fn bn_zero(x: array[int]) -> bool {
+    for v in x {
+        if v != 0 {
+            return false
+        }
+    }
+    return true
+}
+
+# a >= b (same length)
+fn bn_ge(a: array[int], b: array[int]) -> bool {
+    i = len(a) - 1
+    while i >= 0 {
+        if a[i] != b[i] {
+            return a[i] > b[i]
+        }
+        i -= 1
+    }
+    return true
+}
+
+fn bn_sub(a: array[int], b: array[int]) -> array[int] {
+    out: array[int] = []
+    borrow = 0
+    for i in 0..len(a) {
+        d = a[i] - b[i] - borrow
+        borrow = 0
+        if d < 0 {
+            d += 65536
+            borrow = 1
+        }
+        push(out, d)
+    }
+    return out
+}
+
+fn bn_bitlen(x: array[int]) -> int {
+    i = len(x) - 1
+    while i >= 0 {
+        if x[i] != 0 {
+            b = 16
+            while ((x[i] >> (b - 1)) & 1) == 0 {
+                b -= 1
+            }
+            return i * 16 + b
+        }
+        i -= 1
+    }
+    return 0
+}
+
+fn bn_bit(x: array[int], i: int) -> int {
+    return (x[i / 16] >> (i % 16)) & 1
+}
+
+# arithmetic modulo an odd number, in Montgomery form
+struct ModCtx {
+    m: array[int],
+    mp: int,
+    r2: array[int],
+    one: array[int],
+    n: int
+}
+
+# (a + b) mod m for numbers below m
+fn mod_add(a: array[int], b: array[int], M: ModCtx) -> array[int] {
+    out: array[int] = []
+    carry = 0
+    for i in 0..M.n {
+        s = a[i] + b[i] + carry
+        push(out, s & 65535)
+        carry = s >> 16
+    }
+    if carry != 0 or bn_ge(out, M.m) {
+        return bn_sub(out, M.m)
+    }
+    return out
+}
+
+fn mod_sub(a: array[int], b: array[int], M: ModCtx) -> array[int] {
+    if bn_ge(a, b) {
+        return bn_sub(a, b)
+    }
+    return mod_add(a, bn_sub(M.m, b), M)
+}
+
+fn mont_new(m: array[int]) -> ModCtx {
+    n = len(m)
+    # -m^-1 mod 2^16
+    inv = 1
+    for k in 0..5 {
+        inv = (inv * (2 - m[0] * inv)) & 65535
+    }
+    mp = (65536 - inv) & 65535
+    one: array[int] = []
+    for i in 0..n {
+        push(one, 0)
+    }
+    one[0] = 1
+    tmp = ModCtx(m, mp, one, one, n)
+    # R mod m, then R^2 mod m, by doubling
+    x = one
+    for i in 0..n * 16 {
+        x = mod_add(x, x, tmp)
+    }
+    rmod = x
+    for i in 0..n * 16 {
+        x = mod_add(x, x, tmp)
+    }
+    return ModCtx(m, mp, x, rmod, n)
+}
+
+# a * b / R mod m
+fn mont_mul(a: array[int], b: array[int], M: ModCtx) -> array[int] {
+    n = M.n
+    m = M.m
+    t: array[int] = []
+    for i in 0..n + 2 {
+        push(t, 0)
+    }
+    for i in 0..n {
+        bi = b[i]
+        c = 0
+        for j in 0..n {
+            v = t[j] + a[j] * bi + c
+            t[j] = v & 65535
+            c = v >> 16
+        }
+        v = t[n] + c
+        t[n] = v & 65535
+        t[n + 1] = v >> 16
+        q = (t[0] * M.mp) & 65535
+        c = (t[0] + q * m[0]) >> 16
+        for j in 1..n {
+            v = t[j] + q * m[j] + c
+            t[j - 1] = v & 65535
+            c = v >> 16
+        }
+        v = t[n] + c
+        t[n - 1] = v & 65535
+        t[n] = t[n + 1] + (v >> 16)
+    }
+    out: array[int] = []
+    for i in 0..n {
+        push(out, t[i])
+    }
+    if t[n] != 0 or bn_ge(out, m) {
+        return bn_sub(out, m)
+    }
+    return out
+}
+
+fn mont_in(x: array[int], M: ModCtx) -> array[int] {
+    return mont_mul(x, M.r2, M)
+}
+
+fn mont_out(x: array[int], M: ModCtx) -> array[int] {
+    one: array[int] = []
+    for i in 0..M.n {
+        push(one, 0)
+    }
+    one[0] = 1
+    return mont_mul(x, one, M)
+}
+
+# base^e (base in Montgomery form, e a plain number)
+fn mont_pow(base: array[int], e: array[int], M: ModCtx) -> array[int] {
+    r = M.one
+    i = bn_bitlen(e) - 1
+    while i >= 0 {
+        r = mont_mul(r, r, M)
+        if bn_bit(e, i) == 1 {
+            r = mont_mul(r, base, M)
+        }
+        i -= 1
+    }
+    return r
+}
+
+# x^-1 for a prime modulus (Montgomery form in and out)
+fn mont_inv(x: array[int], M: ModCtx) -> array[int] {
+    two: array[int] = []
+    for i in 0..M.n {
+        push(two, 0)
+    }
+    two[0] = 2
+    return mont_pow(x, bn_sub(M.m, two), M)
+}
+
+# ---------- elliptic curves P-256 and P-384 ----------
+struct EcCurve {
+    name: string,
+    size: int,
+    p: ModCtx,
+    q: ModCtx,
+    a: array[int],
+    b: array[int],
+    gx: array[int],
+    gy: array[int]
+}
+
+fn __curve(name: string, size: int, p: string, n: string, b: string, gx: string, gy: string) -> EcCurve {
+    k = size / 2
+    P = mont_new(bn_from(from_hex(p), k))
+    Q = mont_new(bn_from(from_hex(n), k))
+    three: array[int] = []
+    for i in 0..k {
+        push(three, 0)
+    }
+    three[0] = 3
+    a = mod_sub(bn_sub(three, three), three, P)
+    return EcCurve(name, size, P, Q, mont_in(a, P), mont_in(bn_from(from_hex(b), k), P), mont_in(bn_from(from_hex(gx), k), P), mont_in(bn_from(from_hex(gy), k), P))
+}
+
+fn p256() -> EcCurve {
+    return __curve("P-256", 32, "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff", "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b", "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5")
+}
+
+fn p384() -> EcCurve {
+    return __curve("P-384", 48, "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff", "ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973", "b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef", "aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7", "3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f")
+}
+
+fn curve_named(name: string) -> EcCurve {
+    if name == "P-384" {
+        return p384()
+    }
+    return p256()
+}
+
+# points in Jacobian form (X, Y, Z), Montgomery numbers; Z = 0 is the point at infinity
+struct EcPoint {
+    x: array[int],
+    y: array[int],
+    z: array[int]
+}
+
+fn __pt_inf(C: EcCurve) -> EcPoint {
+    z: array[int] = []
+    for i in 0..C.p.n {
+        push(z, 0)
+    }
+    return EcPoint(C.p.one, C.p.one, z)
+}
+
+fn __pt_dbl(P: EcPoint, C: EcCurve) -> EcPoint {
+    if bn_zero(P.z) or bn_zero(P.y) {
+        return __pt_inf(C)
+    }
+    M = C.p
+    delta = mont_mul(P.z, P.z, M)
+    gamma = mont_mul(P.y, P.y, M)
+    beta = mont_mul(P.x, gamma, M)
+    t = mont_mul(mod_sub(P.x, delta, M), mod_add(P.x, delta, M), M)
+    alpha = mod_add(mod_add(t, t, M), t, M)
+    b4 = mod_add(beta, beta, M)
+    b4 = mod_add(b4, b4, M)
+    b8 = mod_add(b4, b4, M)
+    x3 = mod_sub(mont_mul(alpha, alpha, M), b8, M)
+    yz = mod_add(P.y, P.z, M)
+    z3 = mod_sub(mod_sub(mont_mul(yz, yz, M), gamma, M), delta, M)
+    g2 = mont_mul(gamma, gamma, M)
+    g8 = mod_add(g2, g2, M)
+    g8 = mod_add(g8, g8, M)
+    g8 = mod_add(g8, g8, M)
+    y3 = mod_sub(mont_mul(alpha, mod_sub(b4, x3, M), M), g8, M)
+    return EcPoint(x3, y3, z3)
+}
+
+fn __pt_add(P: EcPoint, Q: EcPoint, C: EcCurve) -> EcPoint {
+    if bn_zero(P.z) {
+        return Q
+    }
+    if bn_zero(Q.z) {
+        return P
+    }
+    M = C.p
+    z1z1 = mont_mul(P.z, P.z, M)
+    z2z2 = mont_mul(Q.z, Q.z, M)
+    u1 = mont_mul(P.x, z2z2, M)
+    u2 = mont_mul(Q.x, z1z1, M)
+    s1 = mont_mul(mont_mul(P.y, Q.z, M), z2z2, M)
+    s2 = mont_mul(mont_mul(Q.y, P.z, M), z1z1, M)
+    h = mod_sub(u2, u1, M)
+    r = mod_sub(s2, s1, M)
+    if bn_zero(h) {
+        if bn_zero(r) {
+            return __pt_dbl(P, C)
+        }
+        return __pt_inf(C)
+    }
+    r = mod_add(r, r, M)
+    h2 = mod_add(h, h, M)
+    i = mont_mul(h2, h2, M)
+    j = mont_mul(h, i, M)
+    v = mont_mul(u1, i, M)
+    x3 = mod_sub(mod_sub(mont_mul(r, r, M), j, M), mod_add(v, v, M), M)
+    sj = mont_mul(s1, j, M)
+    y3 = mod_sub(mont_mul(r, mod_sub(v, x3, M), M), mod_add(sj, sj, M), M)
+    zz = mod_add(P.z, Q.z, M)
+    z3 = mont_mul(mod_sub(mod_sub(mont_mul(zz, zz, M), z1z1, M), z2z2, M), h, M)
+    return EcPoint(x3, y3, z3)
+}
+
+# k * P with the same steps for every bit (a Montgomery ladder)
+fn __pt_mul(k: array[int], P: EcPoint, C: EcCurve) -> EcPoint {
+    r0 = __pt_inf(C)
+    r1 = P
+    i = C.size * 8 - 1
+    while i >= 0 {
+        if bn_bit(k, i) == 1 {
+            r0 = __pt_add(r0, r1, C)
+            r1 = __pt_dbl(r1, C)
+        } else {
+            r1 = __pt_add(r0, r1, C)
+            r0 = __pt_dbl(r0, C)
+        }
+        i -= 1
+    }
+    return r0
+}
+
+# affine x and y as big-endian to_bytes
+fn __pt_affine(P: EcPoint, C: EcCurve) -> array[int] {
+    M = C.p
+    zi = mont_inv(P.z, M)
+    zi2 = mont_mul(zi, zi, M)
+    x = mont_out(mont_mul(P.x, zi2, M), M)
+    y = mont_out(mont_mul(P.y, mont_mul(zi2, zi, M), M), M)
+    return join_bytes(bn_bytes(x, C.size), bn_bytes(y, C.size))
+}
+
+# a point from 04 || x || y, checked to be on the curve; Z = 0 if it is not
+fn __pt_decode(b: array[int], C: EcCurve) -> EcPoint {
+    bad = __pt_inf(C)
+    if len(b) != 1 + 2 * C.size or b[0] != 4 {
+        return bad
+    }
+    M = C.p
+    k = M.n
+    xr = bn_from(sub_bytes(b, 1, 1 + C.size), k)
+    yr = bn_from(sub_bytes(b, 1 + C.size, len(b)), k)
+    if bn_ge(xr, M.m) or bn_ge(yr, M.m) {
+        return bad
+    }
+    x = mont_in(xr, M)
+    y = mont_in(yr, M)
+    # y^2 = x^3 + a x + b
+    lhs = mont_mul(y, y, M)
+    rhs = mod_add(mod_add(mont_mul(mont_mul(x, x, M), x, M), mont_mul(C.a, x, M), M), C.b, M)
+    if not same_bytes(lhs, rhs) {
+        return bad
+    }
+    return EcPoint(x, y, M.one)
+}
+
+# hash -> a number below the group order (leftmost bits, then reduced)
+fn __ec_e(h: array[int], C: EcCurve) -> array[int] {
+    hb = h
+    if len(hb) > C.size {
+        hb = sub_bytes(hb, 0, C.size)
+    }
+    e = bn_from(hb, C.q.n)
+    if bn_ge(e, C.q.m) {
+        e = bn_sub(e, C.q.m)
+    }
+    return e
+}
+
+# checks an ECDSA signature (r, s as big-endian to_bytes) of a hash
+fn ecdsa_verify(C: EcCurve, pub: array[int], h: array[int], rb: array[int], sb: array[int]) -> bool {
+    Q = __pt_decode(pub, C)
+    if bn_zero(Q.z) {
+        return false
+    }
+    N = C.q
+    k = N.n
+    if len(rb) > C.size + 1 or len(sb) > C.size + 1 {
+        return false
+    }
+    r = bn_from(rb, k)
+    s = bn_from(sb, k)
+    if bn_zero(r) or bn_zero(s) or bn_ge(r, N.m) or bn_ge(s, N.m) {
+        return false
+    }
+    e = __ec_e(h, C)
+    w = mont_inv(mont_in(s, N), N)
+    u1 = mont_out(mont_mul(mont_in(e, N), w, N), N)
+    u2 = mont_out(mont_mul(mont_in(r, N), w, N), N)
+    G = EcPoint(C.gx, C.gy, C.p.one)
+    X = __pt_add(__pt_mul(u1, G, C), __pt_mul(u2, Q, C), C)
+    if bn_zero(X.z) {
+        return false
+    }
+    xy = __pt_affine(X, C)
+    v = bn_from(sub_bytes(xy, 0, C.size), k)
+    if bn_ge(v, N.m) {
+        v = bn_sub(v, N.m)
+    }
+    return same_bytes(v, r)
+}
+
+# signs a hash with a private key d (big-endian to_bytes); r || s as to_bytes
+fn ecdsa_sign(C: EcCurve, d: array[int], h: array[int]) -> array[int] {
+    N = C.q
+    k = N.n
+    dn = bn_from(d, k)
+    e = __ec_e(h, C)
+    G = EcPoint(C.gx, C.gy, C.p.one)
+    while true {
+        # nonce from the key, the hash and fresh randomness
+        seed = hmac("sha512", d, join_bytes(h, random_bytes(32)))
+        kk = bn_from(seed, k)
+        while bn_ge(kk, N.m) {
+            kk = bn_sub(kk, N.m)
+        }
+        if bn_zero(kk) {
+            continue
+        }
+        xy = __pt_affine(__pt_mul(kk, G, C), C)
+        r = bn_from(sub_bytes(xy, 0, C.size), k)
+        if bn_ge(r, N.m) {
+            r = bn_sub(r, N.m)
+        }
+        if bn_zero(r) {
+            continue
+        }
+        kinv = mont_inv(mont_in(kk, N), N)
+        rd = mont_mul(mont_in(r, N), mont_in(dn, N), N)
+        s = mont_out(mont_mul(kinv, mod_add(mont_in(e, N), rd, N), N), N)
+        if bn_zero(s) {
+            continue
+        }
+        return join_bytes(bn_bytes(r, C.size), bn_bytes(s, C.size))
+    }
+    return d
+}
+
+# the public point 04 || x || y for private key d
+fn ecdsa_public(C: EcCurve, d: array[int]) -> array[int] {
+    G = EcPoint(C.gx, C.gy, C.p.one)
+    return join_bytes([4], __pt_affine(__pt_mul(bn_from(d, C.q.n), G, C), C))
+}
+
+# a new private key: a random number below the group order
+fn ecdsa_new_key(C: EcCurve) -> array[int] {
+    while true {
+        d = random_bytes(C.size)
+        x = bn_from(d, C.q.n)
+        if not bn_zero(x) and not bn_ge(x, C.q.m) {
+            return d
+        }
+    }
+    return random_bytes(C.size)
+}
+
+# ---------- RSA signatures (checking only) ----------
+fn __rsa_em(n: array[int], e: array[int], sig: array[int]) -> array[int] {
+    k = (len(n) + 1) / 2
+    M = mont_new(bn_from(n, k))
+    s = bn_from(sig, k)
+    if bn_ge(s, M.m) {
+        empty: array[int] = []
+        return empty
+    }
+    m = mont_out(mont_pow(mont_in(s, M), bn_from(e, (len(e) + 1) / 2), M), M)
+    nb = len(n)
+    while nb > 0 and n[len(n) - nb] == 0 {
+        nb -= 1
+    }
+    return bn_bytes(m, nb)
+}
+
+fn __digest_info(alg: string) -> array[int] {
+    if alg == "sha384" {
+        return from_hex("3041300d060960864801650304020205000430")
+    }
+    if alg == "sha512" {
+        return from_hex("3051300d060960864801650304020305000440")
+    }
+    return from_hex("3031300d060960864801650304020105000420")
+}
+
+# RSASSA-PKCS1-v1_5
+fn rsa_verify_pkcs1(n: array[int], e: array[int], alg: string, h: array[int], sig: array[int]) -> bool {
+    em = __rsa_em(n, e, sig)
+    t = join_bytes(__digest_info(alg), h)
+    if len(em) < len(t) + 11 {
+        return false
+    }
+    want: array[int] = [0, 1]
+    for i in 0..len(em) - len(t) - 3 {
+        push(want, 255)
+    }
+    push(want, 0)
+    return same_bytes(em, join_bytes(want, t))
+}
+
+fn __mgf1(alg: string, seed: array[int], n: int) -> array[int] {
+    out: array[int] = []
+    c = 0
+    while len(out) < n {
+        for x in hash_with(alg, join_bytes(seed, __be32(c))) {
+            if len(out) < n {
+                push(out, x)
+            }
+        }
+        c += 1
+    }
+    return out
+}
+
+# RSASSA-PSS with MGF1 of the same hash and a salt as long as the hash
+fn rsa_verify_pss(n: array[int], e: array[int], alg: string, h: array[int], sig: array[int]) -> bool {
+    em_full = __rsa_em(n, e, sig)
+    k = (len(n) + 1) / 2
+    modbits = bn_bitlen(bn_from(n, k))
+    embits = modbits - 1
+    emlen = (embits + 7) / 8
+    if len(em_full) < emlen {
+        return false
+    }
+    em = sub_bytes(em_full, len(em_full) - emlen, len(em_full))
+    for i in 0..len(em_full) - emlen {
+        if em_full[i] != 0 {
+            return false
+        }
+    }
+    hlen = len(h)
+    if emlen < 2 * hlen + 2 or em[emlen - 1] != 188 {
+        return false
+    }
+    masked = sub_bytes(em, 0, emlen - hlen - 1)
+    hh = sub_bytes(em, emlen - hlen - 1, emlen - 1)
+    top = 8 * emlen - embits
+    if (masked[0] >> (8 - top)) != 0 and top > 0 {
+        return false
+    }
+    mask = __mgf1(alg, hh, len(masked))
+    db: array[int] = []
+    for i in 0..len(masked) {
+        push(db, masked[i] ^ mask[i])
+    }
+    db[0] = db[0] & (255 >> top)
+    ps = emlen - 2 * hlen - 2
+    for i in 0..ps {
+        if db[i] != 0 {
+            return false
+        }
+    }
+    if db[ps] != 1 {
+        return false
+    }
+    salt = sub_bytes(db, ps + 1, len(db))
+    mp = join_bytes(join_bytes([0, 0, 0, 0, 0, 0, 0, 0], h), salt)
+    return same_bytes(hash_with(alg, mp), hh)
+}

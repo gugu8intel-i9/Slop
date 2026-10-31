@@ -1,0 +1,34 @@
+# crypto: known answers from the standards (FIPS 180, RFC 4231, 5869, 7748, 8439)
+use "crypto"
+
+e: array[int] = []
+print("sha256", to_hex(sha256(to_bytes("abc"))) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+print("sha384", to_hex(sha384(to_bytes("abc"))) == "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7")
+print("sha512", to_hex(sha512(e)) == "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e")
+print("hmac", to_hex(hmac_sha256(to_bytes("Jefe"), to_bytes("what do ya want for nothing?"))) == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+prk = hkdf_extract("sha256", from_hex("000102030405060708090a0b0c"), from_hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"))
+print("hkdf", to_hex(hkdf_expand("sha256", prk, from_hex("f0f1f2f3f4f5f6f7f8f9"), 42)) == "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865")
+key = from_hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
+nonce = from_hex("070000004041424344454647")
+plain = to_bytes("Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.")
+aad = from_hex("50515253c0c1c2c3c4c5c6c7")
+sealed = chacha20_poly1305_seal(key, nonce, plain, aad)
+print("chacha20-poly1305", to_hex(sub_bytes(sealed, len(sealed) - 16, len(sealed))) == "1ae10b594f09e26a7e902ecbd0600691")
+print("open", from_bytes(chacha20_poly1305_open(key, nonce, sealed, aad)) == from_bytes(plain), open_ok())
+sealed[3] = sealed[3] ^ 1
+chacha20_poly1305_open(key, nonce, sealed, aad)
+print("tampered rejected", not open_ok())
+print("x25519", to_hex(x25519(from_hex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4"), from_hex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c"))) == "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552")
+a = random_bytes(32)
+b = random_bytes(32)
+print("x25519 agree", same_bytes(x25519(a, x25519_public(b)), x25519(b, x25519_public(a))))
+for C in [p256(), p384()] {
+    d = ecdsa_new_key(C)
+    pub = ecdsa_public(C, d)
+    h = sha256(to_bytes("message"))
+    sig = ecdsa_sign(C, d, h)
+    good = ecdsa_verify(C, pub, h, sub_bytes(sig, 0, C.size), sub_bytes(sig, C.size, len(sig)))
+    h[0] = h[0] ^ 1
+    bad = ecdsa_verify(C, pub, h, sub_bytes(sig, 0, C.size), sub_bytes(sig, C.size, len(sig)))
+    print("ecdsa", C.name, good, not bad)
+}

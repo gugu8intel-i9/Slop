@@ -331,6 +331,25 @@ fn __clock_ns() -> int {
     return count / freq * 1000000000 + count % freq * 1000000000 / freq
 }
 
+# seconds since 1970 (the calendar clock)
+fn __time_unix() -> int {
+    t = __scratch() + 48
+    __ccall("GetSystemTimeAsFileTime", t)
+    # 100 ns steps since 1601
+    return __load64(t) / 10000000 - 11644473600
+}
+
+# n bytes from the system's secure random source
+fn __random_text(n: int) -> string {
+    p = __alloc_bytes(n)
+    # BCRYPT_USE_SYSTEM_PREFERRED_RNG
+    if __ccall32("BCryptGenRandom", 0, p, n, 2) != 0 {
+        __eprint("Slop: no secure random numbers available")
+        __os_exit(1)
+    }
+    return __str(p, n)
+}
+
 fn __sleep_ms(ms: int) {
     __ccall("Sleep", ms)
 }
@@ -379,6 +398,35 @@ fn __socket_connect(ip: string, port: int) -> int {
         return -1
     }
     return fd
+}
+
+# the certificates Windows trusts (each one's DER bytes)
+fn __windows_roots() -> array[string] {
+    out: array[string] = []
+    store = __ccall("CertOpenSystemStoreA", 0, __cstr("ROOT"))
+    if store == 0 {
+        return out
+    }
+    ctx = 0
+    while true {
+        ctx = __ccall("CertEnumCertificatesInStore", store, ctx)
+        if ctx == 0 {
+            break
+        }
+        p = __load64(ctx + 8)
+        n = __load32(ctx + 16)
+        copy = __alloc_bytes(n)
+        __memcpy(copy, p, n)
+        push(out, __str(copy, n))
+    }
+    __ccall("CertCloseStore", store, 0)
+    return out
+}
+
+# a host name's IPv4 address as text ("" if unknown)
+fn __resolve(host: string) -> string {
+    __socket_init()
+    return __getaddrinfo(host)
 }
 
 fn __socket_accept(fd: int) -> int {

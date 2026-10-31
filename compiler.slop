@@ -14,6 +14,7 @@
 # ---------- tokens ----------
 # kinds: 1 name, 2 keyword, 3 number, 4 string, 5 symbol, 6 end of file
 use "tools/convert.slop"
+use "std/tls.slop"
 
 let g_tk_kind: array[int] = []
 let g_tk_text: array[string] = []
@@ -330,7 +331,13 @@ fn tokenize(src: string, with_eof: bool) {
                                 if e == 48 {
                                     out = out + chr(0)
                                 } else {
-                                    out = out + chr(e)
+                                    if e == 120 and hex_val(byte_at(src, i + 2)) >= 0 and hex_val(byte_at(src, i + 3)) >= 0 {
+                                        # \xHH: any byte
+                                        out = out + chr(hex_val(byte_at(src, i + 2)) * 16 + hex_val(byte_at(src, i + 3)))
+                                        i += 2
+                                    } else {
+                                        out = out + chr(e)
+                                    }
                                 }
                             }
                         }
@@ -5205,12 +5212,18 @@ fn use_lines(src: string) -> array[string] {
 
 # the standard library: modules built into slop itself
 fn std_modules() -> array[string] {
-    return ["csv", "files", "lists", "math", "random", "strings", "testing", "time", "web"]
+    return ["crypto", "csv", "files", "lists", "math", "random", "strings", "testing", "time", "tls", "web"]
 }
 
 fn std_source(name: string) -> string {
     if name == "csv" {
         return embed("std/csv.slop")
+    }
+    if name == "crypto" {
+        return embed("std/crypto.slop")
+    }
+    if name == "tls" {
+        return embed("std/tls.slop")
     }
     if name == "files" {
         return embed("std/files.slop")
@@ -5724,7 +5737,7 @@ fn rotr(x: int, n: int) -> int {
 }
 
 # SHA-256 of n bytes of data starting at start -> 32 bytes
-fn sha256(data: array[int], start: int, n: int) -> array[int] {
+fn sig_sha256(data: array[int], start: int, n: int) -> array[int] {
     let k = [1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993, 2453635748, 2870763221, 3624381080, 310598401, 607225278, 1426881987, 1925078388, 2162078206, 2614888103, 3248222580, 3835390401, 4022224774, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986, 2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711, 113926993, 338241895, 666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, 2177026350, 2456956037, 2730485921, 2820302411, 3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344, 430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779, 1955562222, 2024104815, 2227730452, 2361852424, 2428436474, 2756734187, 3204031479, 3329325298]
     let h = [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]
     # padded message: data, 0x80, zeros, 64-bit big-endian bit length
@@ -5857,14 +5870,28 @@ fn o_code_signature(code_limit: int, text_size: int) {
         if i * 4096 + n > code_limit {
             n = code_limit - i * 4096
         }
-        for b in sha256(g_out, i * 4096, n) {
+        for b in sig_sha256(g_out, i * 4096, n) {
             o8(b)
         }
     }
 }
 
+# which Windows library a function comes from: 0 kernel32, 1 ws2_32, 2 bcrypt, 3 crypt32
+fn dll_of(name: string) -> int {
+    if is_winsock(name) {
+        return 1
+    }
+    if starts_with_s(name, "BCrypt") {
+        return 2
+    }
+    if starts_with_s(name, "Cert") {
+        return 3
+    }
+    return 0
+}
+
 fn is_winsock(name: string) -> bool {
-    let names = ["WSAStartup", "socket", "setsockopt", "bind", "listen", "accept", "recv", "send", "closesocket", "connect"]
+    let names = ["WSAStartup", "socket", "setsockopt", "bind", "listen", "accept", "recv", "send", "closesocket", "connect", "getaddrinfo", "freeaddrinfo"]
     for n in names {
         if n == name {
             return true
@@ -5895,19 +5922,16 @@ fn build_pe() {
     let text_raw = align_up(text_size, 512)
     let idata_va = align_up(text_va + text_size, 4096)
     # imports grouped by DLL
-    let dll_names = ["KERNEL32.dll", "WS2_32.dll"]
+    let dll_names = ["KERNEL32.dll", "WS2_32.dll", "bcrypt.dll", "CRYPT32.dll"]
     let dll_funcs: array[array[int]] = []
-    push(dll_funcs, no_ints())
-    push(dll_funcs, no_ints())
+    for d in 0..len(dll_names) {
+        push(dll_funcs, no_ints())
+    }
     for k in 0..len(g_imp_name) {
-        if is_winsock(g_imp_name[k]) {
-            push(dll_funcs[1], k)
-        } else {
-            push(dll_funcs[0], k)
-        }
+        push(dll_funcs[dll_of(g_imp_name[k])], k)
     }
     let dlls: array[int] = []
-    for d in 0..2 {
+    for d in 0..len(dll_names) {
         if len(dll_funcs[d]) > 0 {
             push(dlls, d)
         }
@@ -6556,6 +6580,7 @@ fn help() {
     print("  slop new site --web        start a website in site.slop")
     print("  slop repl                  type Slop code and see results right away")
     print("  slop install               copy slop to a folder for programs on this computer")
+    print("  slop cert [host]           make cert.pem and key.pem for trying https locally")
     print("  slop convert hello.rs      turn Rust, C, C++, Java, C#, JavaScript, TypeScript,")
     print("                             Go, Kotlin, Swift or Python code into Slop")
     print("")
@@ -6915,6 +6940,16 @@ fn main(args: array[string]) {
     }
     if cmd == "convert" {
         convert_command(rest, from_lang, out)
+        return
+    }
+    if cmd == "cert" {
+        let host = "localhost"
+        if len(rest) > 0 {
+            host = rest[0]
+        }
+        tls_make_cert(host, "cert.pem", "key.pem")
+        print("wrote cert.pem and key.pem for " + host + " (self-signed: for trying https on your computer)")
+        print("use them with: serve_https(8443, \"cert.pem\", \"key.pem\")")
         return
     }
     if cmd == "std" {

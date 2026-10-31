@@ -60,6 +60,7 @@ bin/slop install
 | `slop add NAME` / `slop remove NAME` | adds or removes a package (see below) |
 | `slop list` / `slop search [word]` | shows your packages / finds packages |
 | `slop std [NAME]` | lists the standard library / shows one module |
+| `slop cert [host]` | makes `cert.pem` and `key.pem` for trying https locally |
 | `slop convert hello.rs` | turns code in another language into Slop (see below) |
 | `slop sync` / `slop update` | gets missing packages / gets the newest versions |
 | `slop version` / `slop help` | shows the version / all commands |
@@ -269,11 +270,25 @@ serve(8080)    # open http://localhost:8080
 | read the request | `route(req, method, "/path/:part")`, `param(name)`, `query(req, key)`, `form(req, key)`, `header(req, name)`, `cookie(req, name)`, `req.method`, `req.path`, `req.body` |
 | make pages | `page(title, body)` (a full page with a clean look), `render(template, ["key", value, ...])` (`{{key}}` is made safe for HTML, `{{{key}}}` is put in as is), `render_file(path, pairs)`, `escape_html` |
 | JSON | `json_string(s)`, `json_object(["key", json_text, ...])`, `json_list(items)` |
-| ask other servers | `http_get(url)`, `http_post(url, form_data)`, `http_status()` (http:// with a number address or localhost) |
+| ask other servers | `http_get(url)`, `http_post(url, form_data)`, `http_status()`, `http_error()` (http:// and https://) |
+| https | `serve_https(port, cert, key)`, `make_cert(host, cert, key)`, `trust_cert(cert)` |
 
 - `slop new mysite --web` starts a website you can build on; `examples/web_server.slop` is a small notes app.
 - Requests are answered one at a time; `serve_count(port, n)` stops after `n` requests, and `quiet()` turns off the request log.
-- There is no https yet: put Slop behind a proxy such as Caddy or nginx to serve https.
+
+### https
+
+Slop speaks https itself (TLS 1.3, written in Slop like everything else):
+
+```slop
+serve_https(443, "cert.pem", "key.pem")      # instead of serve(8080)
+page = http_get("https://example.com/")      # checks the site's certificate
+```
+
+- `slop cert` (or `make_cert("localhost", "cert.pem", "key.pem")`) makes a self-signed certificate for trying https on your computer. Browsers warn about self-signed certificates; `trust_cert("cert.pem")` makes `http_get` accept yours.
+- For a real site, use a certificate from a certificate authority such as Let's Encrypt, with an ECDSA key (P-256 or P-384), for example `certbot certonly --key-type ecdsa`. Pass the `fullchain.pem` and `privkey.pem` files.
+- `http_get` checks certificates against the ones your system trusts (ECDSA and RSA, with expiry dates and the host name) and refuses the connection if anything is wrong; `http_error()` says why.
+- Slop's TLS uses X25519 and ChaCha20-Poly1305, which every current browser and most servers support. It does not speak TLS 1.2 or older.
 
 ## Bring code from other languages
 
@@ -307,7 +322,9 @@ Modules that come with Slop, built into `slop` itself (nothing to download). Put
 
 | Module | What it has |
 |---|---|
-| `web` | websites: `serve`, `route`, `html`, `page`, `render`, `form`, `query`, `json_object`, `http_get` (see Websites) |
+| `web` | websites: `serve`, `serve_https`, `route`, `html`, `page`, `render`, `form`, `query`, `json_object`, `http_get` (see Websites) |
+| `crypto` | `sha256`, `sha384`, `sha512`, `hmac`, `hkdf_extract`/`hkdf_expand`, `chacha20_poly1305_seal`/`open`, `x25519`, `ecdsa_sign`/`ecdsa_verify` (P-256, P-384), `rsa_verify_pss`/`rsa_verify_pkcs1`, `random_bytes`, `to_hex`, `to_bytes` |
+| `tls` | TLS 1.3 connections, certificates and keys (used by `web`): `tls_connect`, `tls_accept`, `parse_cert`, `pem_blocks`, `base64_encode`/`decode` |
 | `math` | `PI`, `E`, `gcd`, `lcm`, `is_prime`, `factorial`, `ipow`, `clamp`, `lerp`, `hypot`, `radians`, `min_int`/`max_float`, ... |
 | `lists` | `sum_ints`, `sort_ints`, `sort_floats`, `sort_strings`, `reverse_ints`, `unique_ints`, `index_of_int`, `range_list`, ... |
 | `strings` | `pad_left`, `center`, `title_case`, `capitalize`, `words`, `lines`, `count`, `is_digit`, `trim_left`, `strip_suffix`, ... |

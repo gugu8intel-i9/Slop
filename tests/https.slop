@@ -1,0 +1,45 @@
+# https: a site served over TLS 1.3 and fetched with http_get, in one program
+use "web"
+
+fn handle(req: Request) -> Response {
+    if route(req, "GET", "/") {
+        return html(page("Secure", "<h1>secret page</h1>"))
+    }
+    if route(req, "POST", "/echo") {
+        return text("you sent " + form(req, "msg"))
+    }
+    return not_found()
+}
+
+quiet()
+make_cert("localhost", "slop-test-cert.pem", "slop-test-key.pem")
+trust_cert("slop-test-cert.pem")
+port = 21000 + clock_ns() / 1000 % 2000
+server = spawn serve_https_count(port, "slop-test-cert.pem", "slop-test-key.pem", 4)
+base = "https://localhost:" + str(port)
+tries = 0
+first = ""
+while tries < 300 and http_status() == 0 {
+    first = http_get(base + "/")
+    tries += 1
+}
+print(http_status(), contains(first, "<h1>secret page</h1>"), http_error())
+print(http_post(base + "/echo", "msg=hello+tls"), http_status())
+print(http_get("https://127.0.0.1:" + str(port) + "/missing") != "", http_status())
+# a certificate nobody trusts is refused
+make_cert("localhost", "slop-test-other.pem", "slop-test-other-key.pem")
+other = spawn serve_https_count(port + 1, "slop-test-other.pem", "slop-test-other-key.pem", 1)
+tries = 0
+http_get("https://localhost:" + str(port + 1) + "/")
+while tries < 300 and contains(http_error(), "cannot connect") {
+    http_get("https://localhost:" + str(port + 1) + "/")
+    tries += 1
+}
+print(http_status(), http_error())
+http_get(base + "/")
+join(server)
+join(other)
+remove_file("slop-test-cert.pem")
+remove_file("slop-test-key.pem")
+remove_file("slop-test-other.pem")
+remove_file("slop-test-other-key.pem")

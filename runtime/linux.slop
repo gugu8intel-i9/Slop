@@ -336,6 +336,37 @@ fn __clock_ns() -> int {
     return __load64(t) * 1000000000 + __load64(t + 8)
 }
 
+# seconds since 1970 (the calendar clock)
+fn __time_unix() -> int {
+    t = __scratch()
+    if __arm() {
+        __syscall(113, 0, t)
+    } else {
+        __syscall(228, 0, t)
+    }
+    return __load64(t)
+}
+
+# n bytes from the kernel's secure random source
+fn __random_text(n: int) -> string {
+    p = __alloc_bytes(n)
+    got = 0
+    while got < n {
+        r = 0
+        if __arm() {
+            r = __syscall(278, p + got, n - got, 0)
+        } else {
+            r = __syscall(318, p + got, n - got, 0)
+        }
+        if r <= 0 {
+            __eprint("Slop: no secure random numbers available")
+            __os_exit(1)
+        }
+        got += r
+    }
+    return __str(p, n)
+}
+
 fn __sleep_ms(ms: int) {
     t = __scratch()
     __store64(t, ms / 1000)
@@ -419,6 +450,119 @@ fn __socket_connect(ip: string, port: int) -> int {
         return -1
     }
     return fd
+}
+
+fn __windows_roots() -> array[string] {
+    out: array[string] = []
+    return out
+}
+
+# a host name -> its IPv4 address: /etc/hosts first, then a DNS question
+# to the name server in /etc/resolv.conf
+fn __resolve(host: string) -> string {
+    for line in __split(__read_file("/etc/hosts"), "\n") {
+        t = __trim(line)
+        if len(t) > 0 and __byte_at(t, 0) != 35 {
+            words = __split(__replace(t, "\t", " "), " ")
+            if len(words) > 1 and len(__split(words[0], ".")) == 4 {
+                for w in words {
+                    if w == host {
+                        return words[0]
+                    }
+                }
+            }
+        }
+    }
+    server = ""
+    for line in __split(__read_file("/etc/resolv.conf"), "\n") {
+        t = __trim(line)
+        if server == "" and __starts_with(t, "nameserver ") {
+            cand = __trim(__slice(t, 11, len(t)))
+            if len(__split(cand, ".")) == 4 {
+                server = cand
+            }
+        }
+    }
+    if server == "" {
+        server = "8.8.8.8"
+    }
+    # the question: id, flags (recursion), 1 question, the name, type A, class IN
+    q = __alloc_bytes(512)
+    n = 12
+    __memzero(q, 12)
+    __store8(q, 23)
+    __store8(q + 1, 41)
+    __store8(q + 2, 1)
+    __store8(q + 5, 1)
+    for label in __split(host, ".") {
+        __store8(q + n, len(label))
+        __memcpy(q + n + 1, __str_ptr(label), len(label))
+        n += 1 + len(label)
+    }
+    __store8(q + n, 0)
+    __store8(q + n + 1, 0)
+    __store8(q + n + 2, 1)
+    __store8(q + n + 3, 0)
+    __store8(q + n + 4, 1)
+    n += 5
+    fd = __syscall(__sock_nr(0), 2, 2, 0)
+    if fd < 0 {
+        return ""
+    }
+    # wait at most 3 seconds for the answer
+    tv = __scratch()
+    __store64(tv, 3)
+    __store64(tv + 8, 0)
+    __syscall(__sock_nr(1), fd, 1, 20, tv, 16)
+    a = __scratch() + 16
+    __memzero(a, 16)
+    __store8(a, 2)
+    __ipv4_fill(a, server, 53)
+    ans = __alloc_bytes(1500)
+    got = 0
+    for attempt in 0..2 {
+        if got <= 0 {
+            __syscall(__sock_nr(6), fd, q, n, 0, a, 16)
+            if __arm() {
+                got = __syscall(207, fd, ans, 1500, 0, 0, 0)
+            } else {
+                got = __syscall(45, fd, ans, 1500, 0, 0, 0)
+            }
+        }
+    }
+    __os_close(fd)
+    if got < 12 {
+        return ""
+    }
+    count = __load8(ans + 6) * 256 + __load8(ans + 7)
+    # skip the question
+    p = 12
+    while p < got and __load8(ans + p) != 0 {
+        p += 1 + __load8(ans + p)
+    }
+    p += 5
+    for i in 0..count {
+        if p + 12 > got {
+            return ""
+        }
+        # the name: a pointer (2 bytes) or labels
+        if __load8(ans + p) >= 192 {
+            p += 2
+        } else {
+            while p < got and __load8(ans + p) != 0 {
+                p += 1 + __load8(ans + p)
+            }
+            p += 1
+        }
+        typ = __load8(ans + p) * 256 + __load8(ans + p + 1)
+        rlen = __load8(ans + p + 8) * 256 + __load8(ans + p + 9)
+        p += 10
+        if typ == 1 and rlen == 4 {
+            return __int_to_string(__load8(ans + p)) + "." + __int_to_string(__load8(ans + p + 1)) + "." + __int_to_string(__load8(ans + p + 2)) + "." + __int_to_string(__load8(ans + p + 3))
+        }
+        p += rlen
+    }
+    return ""
 }
 
 fn __socket_close(fd: int) {
