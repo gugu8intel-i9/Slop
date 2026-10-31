@@ -475,28 +475,15 @@ fn __socket_close(fd: int) {
     __ccall32("closesocket", fd)
 }
 
-# ---------- gpu for: no GPU support here yet, so it runs on the CPU cores ----------
-fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
-    return false
+# ---------- system libraries (for the GPU) ----------
+fn __dl_open(name: string) -> int {
+    return __ccall("LoadLibraryA", __cstr(name + ".dll"))
 }
 
-fn __gpu_buffer(bytes: int, n: int) -> int {
-    return 0
+fn __dl_sym(lib: int, name: string) -> int {
+    return __ccall("GetProcAddress", lib, __cstr(name))
 }
 
-fn __gpu_bytes(v: int, size: int) {
-}
-
-fn __gpu_run() {
-}
-
-fn __gpu_back() -> int {
-    return 0
-}
-
-fn __gpu_end() {
-}
-
-fn __gpu_name() -> string {
-    return ""
+fn __gpu_thread_ok() -> bool {
+    return true
 }

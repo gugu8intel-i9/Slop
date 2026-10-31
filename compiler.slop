@@ -4339,6 +4339,21 @@ fn gen_call(name: string, pre: string) -> string {
         e_add_rsp(8)
         return "bool"
     }
+    if name == "__ccall_ptr" and pre == "" {
+        expect("(")
+        need_int(gen_expr(), name)
+        e_push(0)
+        let n = 0
+        while is_sym(",") {
+            g_pos += 1
+            need_int(gen_expr(), name)
+            e_push(0)
+            n += 1
+        }
+        expect(")")
+        e_ccall_any("", n, true)
+        return "int"
+    }
     if (name == "__ccall" or name == "__ccall32") and pre == "" {
         expect("(")
         if kind() != 4 {
@@ -4870,7 +4885,11 @@ fn gx_primary() -> string {
         if t == "af" {
             g_gx_type = "float"
         }
-        return "slop_rd(v_" + name + ", v_" + name + "_n, (int)(" + idx + "), slop_err)"
+        let rd = "slop_rdi("
+        if t == "af" {
+            rd = "slop_rdf("
+        }
+        return rd + "v_" + name + ", v_" + name + "_n, (int)(" + idx + "), slop_err)"
     }
     g_gx_type = t
     return "v_" + name
@@ -4896,25 +4915,28 @@ fn gx_call(name: string) -> string {
             }
             gx_need_num(types[0], name)
             g_gx_type = "float"
-            return "metal::" + f + "(float(" + args[0] + "))"
+            return f + "((float)(" + args[0] + "))"
         }
     }
     if name == "pow" and len(args) == 2 {
         g_gx_type = "float"
-        return "metal::pow(float(" + args[0] + "), float(" + args[1] + "))"
+        return "pow((float)(" + args[0] + "), (float)(" + args[1] + "))"
     }
     if name == "abs" and len(args) == 1 {
         gx_need_num(types[0], name)
         g_gx_type = types[0]
-        return "metal::abs(" + args[0] + ")"
+        if types[0] == "float" {
+            return "fabs(" + args[0] + ")"
+        }
+        return "abs(" + args[0] + ")"
     }
     if name == "float" and len(args) == 1 {
         g_gx_type = "float"
-        return "float(" + args[0] + ")"
+        return "((float)(" + args[0] + "))"
     }
     if name == "int" and len(args) == 1 {
         g_gx_type = "long"
-        return "int(" + args[0] + ")"
+        return "((int)(" + args[0] + "))"
     }
     gx_err("'" + name + "()' cannot run on the GPU (only math like sqrt, sin, pow, abs, float, int)")
     return ""
@@ -5146,7 +5168,12 @@ fn gen_gpu_for() {
     let k = int_to_string(g_par_count)
     let kname = "slop_gpu_" + k
     # the kernel in Metal's shading language
+    # Metal (macOS) or OpenCL (Linux, Windows): the same body, different wrapping
+    let metal = g_target == 2
     let params = "device atomic_int* slop_err [[buffer(0)]], constant int& slop_base [[buffer(1)]], constant int& slop_count [[buffer(2)]]"
+    if not metal {
+        params = "__global int* slop_err, int slop_base, int slop_count"
+    }
     let slot = 3
     for i in 0..len(g_gx_caps) {
         let n = g_gx_caps[i]
@@ -5156,14 +5183,22 @@ fn gen_gpu_for() {
             if kd == "ai" {
                 ty = "int"
             }
-            params = params + ", device " + ty + "* v_" + n + " [[buffer(" + int_to_string(slot) + ")]], constant int& v_" + n + "_n [[buffer(" + int_to_string(slot + 1) + ")]]"
+            if metal {
+                params = params + ", device " + ty + "* v_" + n + " [[buffer(" + int_to_string(slot) + ")]], constant int& v_" + n + "_n [[buffer(" + int_to_string(slot + 1) + ")]]"
+            } else {
+                params = params + ", __global " + ty + "* v_" + n + ", int v_" + n + "_n"
+            }
             slot += 2
         } else {
             let ty = "int"
             if kd == "f" {
                 ty = "float"
             }
-            params = params + ", constant " + ty + "& v_" + n + "_in [[buffer(" + int_to_string(slot) + ")]]"
+            if metal {
+                params = params + ", constant " + ty + "& v_" + n + "_in [[buffer(" + int_to_string(slot) + ")]]"
+            } else {
+                params = params + ", " + ty + " v_" + n + "_in"
+            }
             slot += 1
         }
     }
@@ -5188,7 +5223,15 @@ fn gen_gpu_for() {
     g_pos = body_start
     let body = gx_block()
     g_pos = saved_pos
-    let msl = "#include <metal_stdlib>\nusing namespace metal;\n" + "template<typename T> T slop_rd(device T* a, int n, int i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return T(0); } return a[i]; }\n" + "inline bool slop_ok(int n, int i, device atomic_int* e) { if (i < 0 || i >= n) { atomic_store_explicit(e, 1, memory_order_relaxed); return false; } return true; }\n" + "kernel void " + kname + "(" + params + ", uint slop_gid [[thread_position_in_grid]]) {\n" + "if ((int)slop_gid >= slop_count) return;\n" + "int v_" + var + " = slop_base + (int)slop_gid;\n" + setup + body + "}\n"
+    let msl = ""
+    if metal {
+        let e = "device atomic_int* e"
+        let bad = "atomic_store_explicit(e, 1, memory_order_relaxed);"
+        msl = "#include <metal_stdlib>\nusing namespace metal;\n" + "float slop_rdf(device float* a, int n, int i, " + e + ") { if (i < 0 || i >= n) { " + bad + " return 0.0f; } return a[i]; }\n" + "int slop_rdi(device int* a, int n, int i, " + e + ") { if (i < 0 || i >= n) { " + bad + " return 0; } return a[i]; }\n" + "bool slop_ok(int n, int i, " + e + ") { if (i < 0 || i >= n) { " + bad + " return false; } return true; }\n" + "kernel void " + kname + "(" + params + ", uint slop_gid [[thread_position_in_grid]]) {\n" + "if ((int)slop_gid >= slop_count) return;\n" + "int v_" + var + " = slop_base + (int)slop_gid;\n" + setup + body + "}\n"
+    } else {
+        let e = "__global int* e"
+        msl = "float slop_rdf(__global float* a, int n, int i, " + e + ") { if (i < 0 || i >= n) { *e = 1; return 0.0f; } return a[i]; }\n" + "int slop_rdi(__global int* a, int n, int i, " + e + ") { if (i < 0 || i >= n) { *e = 1; return 0; } return a[i]; }\n" + "bool slop_ok(int n, int i, " + e + ") { if (i < 0 || i >= n) { *e = 1; return false; } return true; }\n" + "__kernel void " + kname + "(" + params + ") {\n" + "if ((int)get_global_id(0) >= slop_count) return;\n" + "int v_" + var + " = slop_base + (int)get_global_id(0);\n" + setup + body + "}\n"
+    }
     # the code that runs it: on the GPU if there is one, else on the CPU cores
     let saved_file = g_cur_file
     g_cur_file = file
@@ -6015,6 +6058,9 @@ fn runtime_source() -> string {
     if g_target == 3 {
         os = embed("runtime/windows.slop")
     }
+    if g_target != 2 {
+        os = os + embed("runtime/opencl.slop")
+    }
     return embed("runtime/core.slop") + embed("runtime/numbers.slop") + embed("runtime/math.slop") + os
 }
 
@@ -6031,10 +6077,16 @@ fn import_index(name: string) -> int {
 # __ccall("name", args...): call a function of the operating system's own
 # libraries (macOS libSystem, Windows kernel32/ws2_32). Arguments are on the stack.
 fn e_ccall(name: string, n: int) {
-    if g_target == 1 {
-        err("__ccall is not available on Linux")
+    e_ccall_any(name, n, false)
+}
+
+# __ccall_ptr(f, args...): the same, calling the function at address f (from
+# dlsym or GetProcAddress); f is under the arguments on the stack
+fn e_ccall_any(name: string, n: int, by_ptr: bool) {
+    let idx = 0
+    if not by_ptr {
+        idx = import_index(name)
     }
-    let idx = import_index(name)
     if arm() {
         if n > 16 {
             err("__ccall takes at most 16 arguments")
@@ -6056,13 +6108,22 @@ fn e_ccall(name: string, n: int) {
             a_ldst(true, 17, 28, (n - 1 - i) * 8)
             a_ldst(false, 17, 31, (i - 8) * 8)
         }
-        if name == "open" and n == 3 {
+        if name == "open" and n == 3 and g_target == 2 {
             # str x2, [sp]
             a32(4177527778)
         }
-        a_adr_fixup(16, 14, idx)
+        if by_ptr {
+            a_ldst(true, 16, 28, n * 8)
+        } else {
+            a_adr_fixup(16, 14, idx)
+        }
+        # blr x16
         a32(3594453504)
-        e_add_rsp(n * 8)
+        if by_ptr {
+            e_add_rsp(n * 8 + 8)
+        } else {
+            e_add_rsp(n * 8)
+        }
         return
     }
     # keep our stack pointer in rbp and give the callee a 16-byte aligned stack
@@ -6090,21 +6151,42 @@ fn e_ccall(name: string, n: int) {
             }
         }
     } else {
-        if n > 6 {
-            err("__ccall takes at most 6 arguments on macOS")
+        if n > 12 {
+            err("__ccall takes at most 12 arguments")
+        }
+        # arguments after the sixth go on the stack, the 7th lowest
+        if n > 6 and (n - 6) % 2 == 1 {
+            e_alu_imm(1, 4, 8)
+        }
+        let i = n - 1
+        while i >= 6 {
+            e_push_mem(5, 8 + (n - 1 - i) * 8)
+            i -= 1
         }
         let regs = [7, 6, 2, 1, 8, 9]
-        for i in 0..n {
-            e_load(regs[i], 5, 8 + (n - 1 - i) * 8)
+        for j in 0..n {
+            if j < 6 {
+                e_load(regs[j], 5, 8 + (n - 1 - j) * 8)
+            }
         }
         e_mov_imm(0, 0)
     }
-    emit2(255, 21)
-    fixup(3, idx)
-    emit32(0)
+    if by_ptr {
+        # call r11
+        e_load(11, 5, 8 + n * 8)
+        emit3(65, 255, 211)
+    } else {
+        emit2(255, 21)
+        fixup(3, idx)
+        emit32(0)
+    }
     e_mov_rr(4, 5)
     e_pop(5)
-    e_add_rsp(n * 8)
+    if by_ptr {
+        e_add_rsp(n * 8 + 8)
+    } else {
+        e_add_rsp(n * 8)
+    }
 }
 
 # ---------- use "package" / use "file.slop" ----------
@@ -6404,10 +6486,11 @@ fn bss_size() -> int {
     return align_up(a_globals() + g_gl_next, 4096)
 }
 
-# Linux: ELF with one code segment and one zeroed data segment
+# Linux: ELF with one code segment and one zeroed data segment. Programs that
+# call into system libraries (only the GPU support does) are also linked
+# against the C library, whose loader fills in the addresses at start.
 fn build_elf() {
     let base = 4194304
-    let hdr = 232
     let page = 4096
     let machine = 62
     if arm() {
@@ -6415,11 +6498,62 @@ fn build_elf() {
         page = 65536
         machine = 183
     }
+    let dynamic = len(g_imp_name) > 0
+    let nph = 3
+    if dynamic {
+        nph = 6
+    }
+    if len(g_imp_name) > 224 {
+        err("too many imported functions")
+    }
+    let hdr = 64 + nph * 56
     let ro_off = align_up(hdr + g_code_len, 8)
     let file_size = ro_off + len(g_ro)
+    # the loader's tables, after the read-only data
+    let interp = "/lib64/ld-linux-x86-64.so.2"
+    let reloc_type = 6
+    if arm() {
+        interp = "/lib/ld-linux-aarch64.so.1"
+        reloc_type = 1025
+    }
+    let libs = ["libc.so.6", "libdl.so.2"]
+    let interp_off = 0
+    let str_off = 0
+    let str_size = 0
+    let sym_off = 0
+    let hash_off = 0
+    let rela_off = 0
+    let dyn_off = 0
+    let dyn_size = 0
+    let name_at: array[int] = []
+    let lib_at: array[int] = []
+    if dynamic {
+        interp_off = align_up(file_size, 8)
+        str_off = align_up(interp_off + len(interp) + 1, 8)
+        let at = 1
+        for l in libs {
+            push(lib_at, at)
+            at += len(l) + 1
+        }
+        for nm in g_imp_name {
+            push(name_at, at)
+            at += len(nm) + 1
+        }
+        str_size = at
+        sym_off = align_up(str_off + str_size, 8)
+        let nsym = len(g_imp_name) + 1
+        hash_off = sym_off + nsym * 24
+        rela_off = align_up(hash_off + (2 + 1 + nsym) * 4, 8)
+        dyn_off = rela_off + len(g_imp_name) * 24
+        dyn_size = (len(libs) + 11) * 16
+        file_size = dyn_off + dyn_size
+    }
     let data_addr = align_up(base + file_size, page)
-    let none: array[int] = []
-    resolve_fixups(base + hdr, base + ro_off, data_addr, none)
+    let imp: array[int] = []
+    for k in 0..len(g_imp_name) {
+        push(imp, data_addr + a_imports() + k * 8)
+    }
+    resolve_fixups(base + hdr, base + ro_off, data_addr, imp)
     o_text(chr(127) + "ELF", 4)
     o8(2)
     o8(1)
@@ -6434,14 +6568,100 @@ fn build_elf() {
     o32(0)
     o16(64)
     o16(56)
-    o16(3)
+    o16(nph)
     o16(64)
     o16(0)
     o16(0)
+    if dynamic {
+        # PT_PHDR, PT_INTERP
+        o_phdr_at(6, 4, 64, base + 64, nph * 56, 8)
+        o_phdr_at(3, 4, interp_off, base + interp_off, len(interp) + 1, 1)
+    }
     o_phdr(1, 5, base, file_size, file_size, page)
     o_phdr(1, 6, data_addr, 0, bss_size(), page)
+    if dynamic {
+        # PT_DYNAMIC
+        o_phdr_at(2, 4, dyn_off, base + dyn_off, dyn_size, 8)
+    }
     o_phdr(1685382481, 6, 0, 0, 0, 16)
     o_code_and_ro(ro_off)
+    if not dynamic {
+        return
+    }
+    o_pad_to(interp_off)
+    o_text(interp, len(interp) + 1)
+    o_pad_to(str_off)
+    o8(0)
+    for l in libs {
+        o_text(l, len(l) + 1)
+    }
+    for nm in g_imp_name {
+        o_text(nm, len(nm) + 1)
+    }
+    o_pad_to(sym_off)
+    for k in 0..24 {
+        o8(0)
+    }
+    for k in 0..len(g_imp_name) {
+        # global function, defined elsewhere
+        o32(name_at[k])
+        o8(18)
+        o8(0)
+        o16(0)
+        o64(0)
+        o64(0)
+    }
+    # a hash table with nothing to find: this program offers no symbols
+    o32(1)
+    o32(len(g_imp_name) + 1)
+    o32(0)
+    for k in 0..len(g_imp_name) + 1 {
+        o32(0)
+    }
+    o_pad_to(rela_off)
+    for k in 0..len(g_imp_name) {
+        o64(imp[k])
+        o64((k + 1) * 4294967296 + reloc_type)
+        o64(0)
+    }
+    for i in 0..len(libs) {
+        o64(1)
+        o64(lib_at[i])
+    }
+    o64(4)
+    o64(base + hash_off)
+    o64(5)
+    o64(base + str_off)
+    o64(6)
+    o64(base + sym_off)
+    o64(10)
+    o64(str_size)
+    o64(11)
+    o64(24)
+    o64(7)
+    o64(base + rela_off)
+    o64(8)
+    o64(len(g_imp_name) * 24)
+    o64(9)
+    o64(24)
+    # DT_BIND_NOW, DT_FLAGS = BIND_NOW
+    o64(24)
+    o64(0)
+    o64(30)
+    o64(8)
+    o64(0)
+    o64(0)
+}
+
+fn o_phdr_at(ptype: int, flags: int, offset: int, vaddr: int, size: int, align: int) {
+    o32(ptype)
+    o32(flags)
+    o64(offset)
+    o64(vaddr)
+    o64(vaddr)
+    o64(size)
+    o64(size)
+    o64(align)
 }
 
 fn o_phdr(ptype: int, flags: int, vaddr: int, filesz: int, memsz: int, align: int) {

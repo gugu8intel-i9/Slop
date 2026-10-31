@@ -38,5 +38,13 @@ jobs:
         run: ${{ matrix.slop }} run tests/run.slop
       - name: gpu for (shows whether the GPU was used)
         run: ${{ matrix.slop }} run examples/gpu.slop | tail -n 1
+      - name: gpu for through OpenCL (POCL, an OpenCL for the CPU)
+        if: matrix.slop == 'bin/slop'
+        run: |
+          sudo apt-get install -y -q pocl-opencl-icd > /dev/null
+          SLOP_OPENCL_CPU=1 bin/slop run tests/gpu.slop > gpu-opencl.txt
+          diff gpu-opencl.txt tests/expected/gpu.txt
+          SLOP_OPENCL_CPU=1 bin/slop run examples/gpu.slop | tail -n 1 | tee gpu-name.txt
+          grep -v "the CPU cores" gpu-name.txt
       - name: https to a real site (system certificates and name lookup)
         run: ${{ matrix.slop }} run examples/fetch.slop https://github.com/

@@ -596,28 +596,24 @@ fn __socket_close(fd: int) {
     __os_close(fd)
 }
 
-# ---------- gpu for: no GPU support here yet, so it runs on the CPU cores ----------
-fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
-    return false
+# ---------- system libraries (for the GPU) ----------
+__main_word = 0
+
+fn __dl_open(name: string) -> int {
+    h = __ccall("dlopen", __cstr("lib" + name + ".so.1"), 2)
+    if h == 0 {
+        h = __ccall("dlopen", __cstr("lib" + name + ".so"), 2)
+    }
+    return h
 }
 
-fn __gpu_buffer(bytes: int, n: int) -> int {
-    return 0
+fn __dl_sym(lib: int, name: string) -> int {
+    return __ccall("dlsym", lib, __cstr(name))
 }
 
-fn __gpu_bytes(v: int, size: int) {
-}
-
-fn __gpu_run() {
-}
-
-fn __gpu_back() -> int {
-    return 0
-}
-
-fn __gpu_end() {
-}
-
-fn __gpu_name() -> string {
-    return ""
+# the C library only works on the main thread here (others have no C setup)
+fn __gpu_thread_ok() -> bool {
+    # globals sit just after the main thread's state; other threads' state is elsewhere
+    d = addr_of(__main_word) - __data()
+    return d >= 0 and d < 1073741824
 }

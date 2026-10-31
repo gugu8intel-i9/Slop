@@ -1,0 +1,247 @@
+# gpu for on Linux and Windows: the GPU through OpenCL, which the graphics
+# drivers of NVIDIA, AMD and Intel provide. The library is loaded when the
+# first gpu for runs; without it (or without a GPU) gpu for runs on the CPU.
+__cl_state = 0
+__cl_fns = 0
+__cl_dev = 0
+__cl_ctx = 0
+__cl_queue = 0
+__cl_kernels = 0
+__cl_kernel = 0
+__cl_slot = 0
+__cl_count = 0
+__cl_tmp = 0
+__cl_bufs = 0
+__cl_nbufs = 0
+__cl_backs = 0
+
+fn __cl_fn(i: int) -> int {
+    return __load64(__cl_fns + i * 8)
+}
+
+fn __cl_init() -> bool {
+    if __cl_state != 0 {
+        return __cl_state == 1
+    }
+    __cl_state = -1
+    lib = __dl_open("OpenCL")
+    if lib == 0 {
+        return false
+    }
+    names = ["clGetPlatformIDs", "clGetDeviceIDs", "clCreateContext", "clCreateCommandQueue", "clCreateProgramWithSource", "clBuildProgram", "clGetProgramBuildInfo", "clCreateKernel", "clSetKernelArg", "clCreateBuffer", "clEnqueueNDRangeKernel", "clFinish", "clEnqueueReadBuffer", "clReleaseMemObject", "clGetDeviceInfo"]
+    __cl_fns = __alloc_bytes(8 * len(names))
+    for i in 0..len(names) {
+        f = __dl_sym(lib, names[i])
+        if f == 0 {
+            return false
+        }
+        __store64(__cl_fns + i * 8, f)
+    }
+    __cl_tmp = __alloc_bytes(256)
+    __memzero(__cl_tmp, 256)
+    t = __cl_tmp
+    plats = __alloc_bytes(8 * 16)
+    if __ccall_ptr(__cl_fn(0), 16, plats, t) != 0 {
+        return false
+    }
+    np = __load32(t)
+    if np > 16 {
+        np = 16
+    }
+    # a GPU (or accelerator); SLOP_OPENCL_CPU=1 also takes a CPU device (for testing)
+    kinds = [4, 8]
+    if __env("SLOP_OPENCL_CPU") == "1" {
+        kinds = [4, 8, 4294967295]
+    }
+    for kind in kinds {
+        for p in 0..np {
+            if __cl_dev == 0 {
+                __store32(t, 0)
+                if __ccall_ptr(__cl_fn(1), __load64(plats + p * 8), kind, 1, t + 8, t) == 0 and __load32(t) > 0 {
+                    __cl_dev = __load64(t + 8)
+                }
+            }
+        }
+    }
+    if __cl_dev == 0 {
+        return false
+    }
+    __store64(t + 8, __cl_dev)
+    __cl_ctx = __ccall_ptr(__cl_fn(2), 0, 1, t + 8, 0, 0, t)
+    if __cl_ctx == 0 {
+        return false
+    }
+    __cl_queue = __ccall_ptr(__cl_fn(3), __cl_ctx, __cl_dev, 0, t)
+    if __cl_queue == 0 {
+        return false
+    }
+    __cl_kernels = __alloc_bytes(8 * 4096)
+    __memzero(__cl_kernels, 8 * 4096)
+    __cl_bufs = __alloc_bytes(32 * 32)
+    __cl_state = 1
+    return true
+}
+
+# the compiled kernel for this gpu for (made once); 0 if the driver refused it
+fn __cl_kernel_for(src: string, id: int) -> int {
+    if id < 4096 {
+        k = __load64(__cl_kernels + id * 8)
+        if k == -1 {
+            return 0
+        }
+        if k != 0 {
+            return k
+        }
+    }
+    t = __cl_tmp
+    __store64(t + 16, __cstr(src))
+    __store64(t + 24, len(src))
+    __store64(t + 32, __cl_dev)
+    k = 0
+    prog = __ccall_ptr(__cl_fn(4), __cl_ctx, 1, t + 16, t + 24, t)
+    if prog != 0 {
+        # -w: no warnings (the code is generated)
+        if __ccall_ptr(__cl_fn(5), prog, 1, t + 32, __cstr("-w"), 0, 0) == 0 {
+            k = __ccall_ptr(__cl_fn(7), prog, __cstr("slop_gpu_" + __int_to_string(id)), t)
+        } else {
+            # CL_PROGRAM_BUILD_LOG
+            __store64(t + 40, 0)
+            __ccall_ptr(__cl_fn(6), prog, __cl_dev, 4483, 0, 0, t + 40)
+            size = __load64(t + 40)
+            msg = "the driver could not build it"
+            if size > 1 and size < 65536 {
+                buf = __alloc_bytes(size)
+                __ccall_ptr(__cl_fn(6), prog, __cl_dev, 4483, size, buf, 0)
+                msg = __str(buf, __strlen(buf))
+            }
+            __eprint("Slop: the GPU could not take this gpu for, so it runs on the CPU: " + msg)
+        }
+    }
+    if id < 4096 {
+        if k == 0 {
+            __store64(__cl_kernels + id * 8, -1)
+        } else {
+            __store64(__cl_kernels + id * 8, k)
+        }
+    }
+    return k
+}
+
+fn __gpu_begin(src: string, id: int, a: int, b: int) -> bool {
+    if not __gpu_thread_ok() {
+        return false
+    }
+    if not __cl_init() {
+        return false
+    }
+    n = b - a
+    if n > 1073741824 or a < -2147483648 or b > 2147483647 {
+        return false
+    }
+    k = __cl_kernel_for(src, id)
+    if k == 0 {
+        return false
+    }
+    __cl_kernel = k
+    __cl_slot = 0
+    __cl_nbufs = 0
+    __cl_backs = 0
+    __cl_count = n
+    # slot 0: set to 1 when the loop goes outside a list
+    __cl_add_buffer(4)
+    __gpu_bytes(a, 4)
+    __gpu_bytes(n, 4)
+    return true
+}
+
+# a list's memory: filled here, copied to the GPU when the loop starts
+fn __cl_add_buffer(bytes: int) -> int {
+    if bytes < 16 {
+        bytes = 16
+    }
+    p = __os_alloc(bytes)
+    if p == 0 or __cl_nbufs >= 32 {
+        __eprint("Slop: out of memory for the GPU")
+        __os_exit(1)
+    }
+    e = __cl_bufs + __cl_nbufs * 32
+    __store64(e, p)
+    __store64(e + 8, bytes)
+    __store64(e + 16, __cl_slot)
+    __store64(e + 24, 0)
+    __cl_nbufs += 1
+    __cl_slot += 1
+    return p
+}
+
+fn __gpu_buffer(bytes: int, n: int) -> int {
+    p = __cl_add_buffer(bytes)
+    __gpu_bytes(n, 4)
+    return p
+}
+
+fn __gpu_bytes(v: int, size: int) {
+    __store64(__cl_tmp + 48, v)
+    __ccall_ptr(__cl_fn(8), __cl_kernel, __cl_slot, size, __cl_tmp + 48)
+    __cl_slot += 1
+}
+
+fn __gpu_run() {
+    t = __cl_tmp
+    for i in 0..__cl_nbufs {
+        e = __cl_bufs + i * 32
+        # CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR
+        mem = __ccall_ptr(__cl_fn(9), __cl_ctx, 33, __load64(e + 8), __load64(e), t)
+        if mem == 0 {
+            __eprint("Slop: the GPU is out of memory")
+            __os_exit(1)
+        }
+        __store64(e + 24, mem)
+        __ccall_ptr(__cl_fn(8), __cl_kernel, __load64(e + 16), 8, e + 24)
+    }
+    if __cl_count > 0 {
+        __store64(t + 56, __cl_count)
+        if __ccall_ptr(__cl_fn(10), __cl_queue, __cl_kernel, 1, 0, t + 56, 0, 0, 0, 0) != 0 {
+            __eprint("Slop: the GPU failed to run a gpu for")
+            __os_exit(1)
+        }
+    }
+    __ccall_ptr(__cl_fn(11), __cl_queue)
+    for i in 0..__cl_nbufs {
+        e = __cl_bufs + i * 32
+        __ccall_ptr(__cl_fn(12), __cl_queue, __load64(e + 24), 1, 0, __load64(e + 8), __load64(e), 0, 0, 0)
+    }
+    if __load32(__load64(__cl_bufs)) != 0 {
+        __eprint("Slop Secure Guard: Array index out of bounds in a gpu for! Terminating process to prevent memory exploit.")
+        __os_exit(139)
+    }
+    # list buffers come after the error buffer, in order
+    __cl_backs = 1
+}
+
+fn __gpu_back() -> int {
+    p = __load64(__cl_bufs + __cl_backs * 32)
+    __cl_backs += 1
+    return p
+}
+
+fn __gpu_end() {
+    for i in 0..__cl_nbufs {
+        e = __cl_bufs + i * 32
+        __ccall_ptr(__cl_fn(13), __load64(e + 24))
+        __os_release(__load64(e), __load64(e + 8))
+    }
+    __cl_nbufs = 0
+}
+
+# the GPU's name, or "" when gpu for runs on the CPU
+fn __gpu_name() -> string {
+    if not __gpu_thread_ok() or not __cl_init() {
+        return ""
+    }
+    buf = __alloc_bytes(256)
+    __memzero(buf, 256)
+    # CL_DEVICE_NAME
+    __ccall_ptr(__cl_fn(14), __cl_dev, 4139, 255, buf, 0)
+    return __str(buf, __strlen(buf))
+}
