@@ -263,6 +263,79 @@ fn __sha512_core(data: array[int], init: array[int], outlen: int) -> array[int] 
     return sub_bytes(out, 0, outlen)
 }
 
+# ---------- SHA-1 (only for things that require it, such as WebSockets;
+# it is not safe for signatures or passwords) ----------
+fn sha1(data: array[int]) -> array[int] {
+    h = [1732584193, 4023233417, 2562383102, 271733878, 3285377520]
+    msg: array[int] = []
+    for x in data {
+        push(msg, x)
+    }
+    bitlen = len(data) * 8
+    push(msg, 128)
+    while len(msg) % 64 != 56 {
+        push(msg, 0)
+    }
+    for x in __be64(bitlen) {
+        push(msg, x)
+    }
+    w: array[int] = []
+    for i in 0..80 {
+        push(w, 0)
+    }
+    blk = 0
+    while blk < len(msg) {
+        for i in 0..16 {
+            j = blk + i * 4
+            w[i] = (msg[j] << 24) | (msg[j + 1] << 16) | (msg[j + 2] << 8) | msg[j + 3]
+        }
+        for i in 16..80 {
+            w[i] = __rotl32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1)
+        }
+        a = h[0]
+        b = h[1]
+        c = h[2]
+        d = h[3]
+        e = h[4]
+        for i in 0..80 {
+            f = 0
+            k = 0
+            if i < 20 {
+                f = (b & c) | ((b ^ 4294967295) & d)
+                k = 1518500249
+            } else if i < 40 {
+                f = b ^ c ^ d
+                k = 1859775393
+            } else if i < 60 {
+                f = (b & c) | (b & d) | (c & d)
+                k = 2400959708
+            } else {
+                f = b ^ c ^ d
+                k = 3395469782
+            }
+            t = (__rotl32(a, 5) + f + e + k + w[i]) & 4294967295
+            e = d
+            d = c
+            c = __rotl32(b, 30)
+            b = a
+            a = t
+        }
+        h[0] = (h[0] + a) & 4294967295
+        h[1] = (h[1] + b) & 4294967295
+        h[2] = (h[2] + c) & 4294967295
+        h[3] = (h[3] + d) & 4294967295
+        h[4] = (h[4] + e) & 4294967295
+        blk += 64
+    }
+    out: array[int] = []
+    for x in h {
+        for y in __be32(x) {
+            push(out, y)
+        }
+    }
+    return out
+}
+
 fn sha384(data: array[int]) -> array[int] {
     return __sha512_core(data, [-3766243637369397544, 7105036623409894663, -7973340178411365097, 1526699215303891257, 7436329637833083697, -8163818279084223215, -2662702644619276377, 5167115440072839076], 48)
 }
@@ -571,6 +644,21 @@ fn chacha20_poly1305_open(key: array[int], nonce: array[int], sealed: array[int]
     }
     __cr_open_ok = true
     return chacha20_xor(key, 1, nonce, ct)
+}
+
+# the same, safe when several threads decrypt at once: the plain bytes and
+# then 1, or just [0] when the tag is wrong
+fn __chacha_open_mark(key: array[int], nonce: array[int], sealed: array[int], aad: array[int]) -> array[int] {
+    if len(sealed) < 16 {
+        return [0]
+    }
+    ct = sub_bytes(sealed, 0, len(sealed) - 16)
+    if not same_bytes(sub_bytes(sealed, len(sealed) - 16, len(sealed)), __aead_tag(key, nonce, aad, ct)) {
+        return [0]
+    }
+    out = chacha20_xor(key, 1, nonce, ct)
+    push(out, 1)
+    return out
 }
 
 fn open_ok() -> bool {
@@ -1529,6 +1617,21 @@ fn aes128_gcm_open(key: array[int], nonce: array[int], sealed: array[int], aad: 
     }
     __cr_open_ok = true
     return __gcm_ctr(rk, nonce, 2, ct)
+}
+
+# the same, safe when several threads decrypt at once (see __chacha_open_mark)
+fn __gcm_open_mark(key: array[int], nonce: array[int], sealed: array[int], aad: array[int]) -> array[int] {
+    if len(sealed) < 16 {
+        return [0]
+    }
+    rk = aes128_keys(key)
+    ct = sub_bytes(sealed, 0, len(sealed) - 16)
+    if not same_bytes(sub_bytes(sealed, len(sealed) - 16, len(sealed)), __gcm_tag(rk, nonce, aad, ct)) {
+        return [0]
+    }
+    out = __gcm_ctr(rk, nonce, 2, ct)
+    push(out, 1)
+    return out
 }
 
 # ---------- ECDH on P-256 (for servers without X25519) ----------

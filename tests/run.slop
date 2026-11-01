@@ -113,7 +113,7 @@ for s in shipped {
 }
 
 # 2. test programs: output must match tests/expected/<name>.txt exactly
-tests = ["array", "array_struct_string", "core", "features", "fib", "float", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop", "std", "thread", "use", "web", "crypto", "https", "parallel", "gpu", "async", "npu", "matrix"]
+tests = ["array", "array_struct_string", "core", "features", "fib", "float", "function", "function_args", "hello_native", "method", "print", "struct", "sum_loop", "std", "thread", "use", "web", "crypto", "https", "websocket", "parallel", "gpu", "async", "npu", "matrix"]
 for name in tests {
     exe = tmp(name)
     if build("tests/" + name + ".slop", exe) {
@@ -144,6 +144,7 @@ checks = [
     Check("low_level_demo", "1337"),
     Check("slopfetch", "Kernel:"),
     Check("web_server", ""),
+    Check("chat", ""),
     Check("benchmark", ""),
     Check("fetch", ""),
     Check("gpu", "ran on"),

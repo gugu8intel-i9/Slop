@@ -834,11 +834,13 @@ fn __tls_seal(c: Tls, nonce: array[int], plain: array[int], aad: array[int]) -> 
     return chacha20_poly1305_seal(c.wkey, nonce, plain, aad)
 }
 
+# the plain bytes and then 1, or just [0] if the record was changed on the way
+# (no shared flag, so connections on different threads don't mix results)
 fn __tls_open(c: Tls, nonce: array[int], sealed: array[int], aad: array[int]) -> array[int] {
     if c.aes {
-        return aes128_gcm_open(c.rkey, nonce, sealed, aad)
+        return __gcm_open_mark(c.rkey, nonce, sealed, aad)
     }
-    return chacha20_poly1305_open(c.rkey, nonce, sealed, aad)
+    return __chacha_open_mark(c.rkey, nonce, sealed, aad)
 }
 
 # TLS 1.2 additional data: sequence number, type, version, length
@@ -880,11 +882,11 @@ fn __tls_read_record(c: Tls) -> Tls {
     }
     if c.renc and c.ver == 13 and c.rtype == 23 {
         plain = __tls_open(c, __tls_nonce(c.riv, c.rseq), to_bytes(c.rbody), to_bytes(head))
-        if not open_ok() {
+        if plain[len(plain) - 1] != 1 {
             return __tls_fail(c, "a record failed its integrity check")
         }
         c.rseq += 1
-        k = len(plain) - 1
+        k = len(plain) - 2
         while k >= 0 and plain[k] == 0 {
             k -= 1
         }
@@ -911,11 +913,11 @@ fn __tls_read_record(c: Tls) -> Tls {
                 return __tls_fail(c, "a record was too short")
             }
             plain = __tls_open(c, nonce, body, __aad12(c.rseq, c.rtype, len(body) - 16))
-            if not open_ok() {
+            if plain[len(plain) - 1] != 1 {
                 return __tls_fail(c, "a record failed its integrity check")
             }
             c.rseq += 1
-            c.rbody = from_bytes(plain)
+            c.rbody = from_bytes(sub_bytes(plain, 0, len(plain) - 1))
         }
     }
     if c.rtype == 21 {

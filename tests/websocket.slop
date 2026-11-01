@@ -1,0 +1,105 @@
+# WebSockets: a server and its clients in one program, over ws:// and wss://
+use "web"
+use "time"
+
+fn handle(req: Request) -> Response {
+    if route(req, "GET", "/echo") {
+        return websocket(req)
+    }
+    return text("home")
+}
+
+# each visitor's own loop: answer every message
+fn on_websocket(ws: WebSocket) {
+    ws = ws_receive(ws)
+    while ws.ok {
+        if ws.message == "count" {
+            ws_send(ws, str(ws_count()))
+        } else if ws.message == "all" {
+            ws_broadcast("hello everyone")
+        } else if ws.binary {
+            ws_send_binary(ws, ws.message + ws.message)
+        } else {
+            ws_send(ws, ws.path + " " + str(len(ws.message)) + " " + slice(ws.message, 0, 5))
+        }
+        ws = ws_receive(ws)
+    }
+}
+
+# connects, waiting for the server to start
+fn open(url: string) -> WebSocket {
+    ws = ws_connect(url)
+    tries = 0
+    while not ws.ok and tries < 300 {
+        sleep(20)
+        ws = ws_connect(url)
+        tries += 1
+    }
+    return ws
+}
+
+fn talk(base: string) {
+    a = open(base + "/echo")
+    print("open", a.ok, a.err)
+    ws_send(a, "hello")
+    a = ws_receive(a)
+    print(a.message)
+    ws_send(a, repeat("m", 300))
+    a = ws_receive(a)
+    print(a.message)
+    ws_send(a, repeat("b", 100000))
+    a = ws_receive(a)
+    print(a.message)
+    ws_send_binary(a, "\x00\x01\xff")
+    a = ws_receive(a)
+    print("binary", a.binary, len(a.message), byte_at(a.message, 5))
+    b = open(base + "/echo?room=2")
+    ws_send(b, "count")
+    b = ws_receive(b)
+    print("count", b.message)
+    ws_send(b, "all")
+    a = ws_receive(a)
+    b = ws_receive(b)
+    print(a.message, "/", b.message)
+    ws_send(b, "hi")
+    b = ws_receive(b)
+    print(b.message)
+    ws_close(a)
+    print("send after close", ws_send(a, "x"))
+    # the server sees a leave
+    left = ""
+    tries = 0
+    while left != "1" and tries < 200 {
+        ws_send(b, "count")
+        b = ws_receive(b)
+        left = b.message
+        tries += 1
+        if left != "1" {
+            sleep(10)
+        }
+    }
+    print("count", left)
+    ws_close(b)
+}
+
+quiet()
+port = 23000 + clock_ns() / 1000 % 2000
+# 2 WebSockets, a page asked for as a WebSocket by mistake, and the last page
+server = spawn serve_count(port, 4)
+talk("ws://127.0.0.1:" + str(port))
+http_get("http://127.0.0.1:" + str(port) + "/echo")
+print("plain request", http_status())
+http_get("http://127.0.0.1:" + str(port) + "/")
+join(server)
+print("bad address", ws_connect("http://x").err)
+print("refused", ws_connect("ws://127.0.0.1:" + str(port) + "/echo").ok)
+
+# the same over TLS
+make_cert("localhost", "slop-test-ws-cert.pem", "slop-test-ws-key.pem")
+trust_cert("slop-test-ws-cert.pem")
+server2 = spawn serve_https_count(port + 1, "slop-test-ws-cert.pem", "slop-test-ws-key.pem", 3)
+talk("wss://localhost:" + str(port + 1))
+http_get("https://localhost:" + str(port + 1) + "/")
+join(server2)
+remove_file("slop-test-ws-cert.pem")
+remove_file("slop-test-ws-key.pem")

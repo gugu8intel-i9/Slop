@@ -1,0 +1,41 @@
+# A chat room in the browser: every message goes to everyone, live.
+#   slop run examples/chat.slop     then open http://localhost:8080 in two tabs
+use "web"
+
+chat_page = "<div id=log style='height:300px;overflow:auto;border:1px solid #ccc;padding:8px'></div>
+<form id=f><input id=name placeholder='Your name' size=10> <input id=msg placeholder='Say something' size=40 autofocus> <button>Send</button></form>
+<script>
+const log = document.getElementById('log');
+const ws = new WebSocket((location.protocol == 'https:' ? 'wss://' : 'ws://') + location.host + '/chat');
+ws.onmessage = e => { const p = document.createElement('p'); p.textContent = e.data; log.appendChild(p); log.scrollTop = 1e9; };
+ws.onclose = () => { log.appendChild(document.createTextNode('(disconnected)')); };
+document.getElementById('f').onsubmit = e => {
+  e.preventDefault();
+  const name = document.getElementById('name').value || 'someone';
+  const box = document.getElementById('msg');
+  if (box.value) { ws.send(name + ': ' + box.value); box.value = ''; }
+};
+</script>"
+
+fn handle(req: Request) -> Response {
+    if route(req, "GET", "/") {
+        return html(page("Chat", "<h1>Chat</h1>" + chat_page))
+    }
+    if route(req, "GET", "/chat") {
+        return websocket(req)
+    }
+    return not_found()
+}
+
+# runs for each person in the room
+fn on_websocket(ws: WebSocket) {
+    ws_broadcast("(someone joined: " + str(ws_count()) + " here)")
+    ws = ws_receive(ws)
+    while ws.ok {
+        ws_broadcast(ws.message)
+        ws = ws_receive(ws)
+    }
+    ws_broadcast("(someone left)")
+}
+
+serve(8080)

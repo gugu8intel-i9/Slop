@@ -1,0 +1,23 @@
+open true 
+/echo 5 hello
+/echo 300 mmmmm
+/echo 100000 bbbbb
+binary true 6 255
+count 2
+hello everyone / hello everyone
+/echo?room=2 2 hi
+send after close false
+count 1
+plain request 400
+bad address the address should start with ws:// or wss://
+refused false
+open true 
+/echo 5 hello
+/echo 300 mmmmm
+/echo 100000 bbbbb
+binary true 6 255
+count 2
+hello everyone / hello everyone
+/echo?room=2 2 hi
+send after close false
+count 1

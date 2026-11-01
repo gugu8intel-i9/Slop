@@ -424,6 +424,7 @@ fn __web_wake_all(s: int) {
         }
     }
     __spin_unlock(s + 48)
+    __ws_wake(s)
 }
 
 fn __web_more(s: int) -> bool {
@@ -491,6 +492,7 @@ fn __web_worker(fd: int, s: int, me: int) {
     st = __load64(s + 40)
     ready = __alloc_bytes(8 * 16)
     last_sweep = clock_ns()
+    sockets: array[task[void]] = []
     while __web_more(s) {
         n = __poller_wait(p, ready, 16, 100)
         for i in 0..n {
@@ -518,7 +520,10 @@ fn __web_worker(fd: int, s: int, me: int) {
                 }
                 __spin_unlock(s + 48)
                 if mine {
-                    __web_conn(f, s)
+                    id = __web_conn(f, s)
+                    if id >= 0 {
+                        push(sockets, async __ws_run_plain(id, s))
+                    }
                 }
             }
         }
@@ -535,11 +540,33 @@ fn __web_worker(fd: int, s: int, me: int) {
             }
             __spin_unlock(s + 48)
         }
+        if len(sockets) > 0 {
+            sockets = __web_reap_done(sockets)
+        }
+    }
+    # the server is done: end its WebSockets
+    __ws_wake(s)
+    for t in sockets {
+        await t
     }
 }
 
-# answers the requests that came in on c, then gives it back to the event loop
-fn __web_conn(c: int, s: int) {
+# the tasks still running (never waits)
+fn __web_reap_done(live: array[task[void]]) -> array[task[void]] {
+    keep: array[task[void]] = []
+    for t in live {
+        if done(t) {
+            await t
+        } else {
+            push(keep, t)
+        }
+    }
+    return keep
+}
+
+# answers the requests that came in on c, then gives it back to the event
+# loop; or, when it became a WebSocket, its id (else -1)
+fn __web_conn(c: int, s: int) -> int {
     st = __load64(s + 40)
     raw = ""
     while true {
@@ -549,7 +576,7 @@ fn __web_conn(c: int, s: int) {
             if piece == "" or len(raw) > 16777216 {
                 __store64(st + c * 16, 0)
                 socket_close(c)
-                return
+                return -1
             }
             raw = raw + piece
             need = __web_need(raw)
@@ -562,19 +589,31 @@ fn __web_conn(c: int, s: int) {
             socket_write(c, out)
         }
         __web_count(s)
+        if starts_with(out, "HTTP/1.1 101 ") {
+            # the WebSocket's own task takes the connection from here
+            id = __ws_take(__tls_new(c), false, s, __ws_path_of(req))
+            __spin_lock(s + 48)
+            __store64(st + c * 16, 0)
+            __spin_unlock(s + 48)
+            if id < 0 {
+                socket_close(c)
+            }
+            return id
+        }
         if not keep or out == "" {
             __store64(st + c * 16, 0)
             socket_close(c)
-            return
+            return -1
         }
         if raw == "" {
             # nothing more for now: back to waiting
             __store64(st + c * 16 + 8, clock_ns())
             __store64(st + c * 16, 1)
             __poller_watch(__load64(s + 32), c, true)
-            return
+            return -1
         }
     }
+    return -1
 }
 
 fn __web_count(s: int) {
@@ -694,6 +733,13 @@ fn __web_reply_one(raw: string, scheme: string, keep: bool) -> string {
     __web_param_names = []
     __web_param_values = []
     resp = handle(req)
+    if resp.status == 101 {
+        # a WebSocket: the connection changes to messages after this
+        if not __web_quiet {
+            print(req.method + " " + req.path + " 101")
+        }
+        return "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" + resp.headers + "\r\n"
+    }
     extra = ""
     if scheme == "https" {
         # browsers remember to use https for this site
@@ -739,6 +785,17 @@ fn __web_answer(c: int, s: int, at: int) {
             socket_write(c, out)
         }
         __web_count(s)
+        if starts_with(out, "HTTP/1.1 101 ") {
+            t = __tls_new(c)
+            id = __ws_take(t, false, s, __ws_path_of(req))
+            __web_let_go(s, at)
+            if id >= 0 {
+                __ws_run(t, false, id, s)
+            } else {
+                socket_close(c)
+            }
+            return
+        }
         if not keep or out == "" {
             break
         }
@@ -783,6 +840,16 @@ fn __web_answer_tls(c: int, key: TlsKey, s: int, at: int) {
             t = tls_send(t, out)
         }
         __web_count(s)
+        if starts_with(out, "HTTP/1.1 101 ") {
+            id = __ws_take(t, true, s, __ws_path_of(req))
+            __web_let_go(s, at)
+            if id >= 0 {
+                __ws_run(t, true, id, s)
+            } else {
+                tls_close(t)
+            }
+            return
+        }
         if not keep or out == "" {
             break
         }
@@ -1183,4 +1250,549 @@ fn __web_unchunk(s: string) -> string {
         i = i + n + 2
     }
     return out
+}
+
+# ---------- WebSockets ----------
+# A connection that stays open: both sides send messages whenever they like.
+#   server: in handle(), return websocket(req) for the address; then your
+#           on_websocket(ws) runs for each visitor that connects:
+#             fn on_websocket(ws: WebSocket) {
+#                 ws = ws_receive(ws)
+#                 while ws.ok {
+#                     ws_send(ws, "you said " + ws.message)
+#                     ws = ws_receive(ws)
+#                 }
+#             }
+#   client: ws = ws_connect("ws://localhost:8080/chat")   (wss:// for TLS)
+struct WebSocket {
+    ok: bool,
+    id: int,
+    path: string,
+    message: string,
+    binary: bool,
+    err: string,
+    conn: Tls,
+    secure: bool,
+    buf: string,
+    frag: string,
+    fragging: bool,
+    fragbin: bool
+}
+
+# runs for each WebSocket a visitor opens (write your own to use them)
+fn on_websocket(ws: WebSocket) {
+}
+
+# the open connections, so any task can send on any of them. Each place
+# (160 bytes): +0 socket + 1 (0: free), +8 a lock, +16 the TLS sequence
+# number, +24 TLS version, +32 AES, +40 TLS, +48 the server it belongs to
+# (0: a client), +56 its number (id / 4096), +64 key length, +72 iv length,
+# +80 the path (for the server), +96 key (32 bytes), +128 iv (12 bytes)
+__ws_slots = 0
+__ws_word = 0
+__ws_gen = 0
+__ws_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+fn __ws_place(id: int) -> int {
+    if id < 0 or __ws_slots == 0 {
+        return 0
+    }
+    return __ws_slots + id % 4096 * 160
+}
+
+# a place for a new connection: its id, or -1 when all 4096 are taken
+fn __ws_take(t: Tls, secure: bool, owner: int, path: string) -> int {
+    __spin_lock(addr_of(__ws_word))
+    if __ws_slots == 0 {
+        __ws_slots = __os_alloc(4096 * 160)
+        __memzero(__ws_slots, 4096 * 160)
+    }
+    at = -1
+    i = 0
+    while at < 0 and i < 4096 {
+        if __load64(__ws_slots + i * 160) == 0 {
+            at = i
+        }
+        i += 1
+    }
+    gen = 0
+    if at >= 0 {
+        __ws_gen += 1
+        gen = __ws_gen
+        p = __ws_slots + at * 160
+        __store64(p, t.fd + 1)
+        __store64(p + 8, 0)
+        __store64(p + 16, t.wseq)
+        __store64(p + 24, t.ver)
+        __store64(p + 32, 0)
+        if t.aes {
+            __store64(p + 32, 1)
+        }
+        __store64(p + 40, 0)
+        if secure {
+            __store64(p + 40, 1)
+        }
+        __store64(p + 48, owner)
+        __store64(p + 56, gen)
+        __store64(p + 64, len(t.wkey))
+        __store64(p + 72, len(t.wiv))
+        for k in 0..len(t.wkey) {
+            __store8(p + 96 + k, t.wkey[k])
+        }
+        for k in 0..len(t.wiv) {
+            __store8(p + 128 + k, t.wiv[k])
+        }
+        __store64(p + 80, 0)
+        if owner != 0 {
+            buf = __os_alloc(len(path) + 8)
+            __store64(buf, len(path))
+            __memcpy(buf + 8, __str_ptr(path), len(path))
+            __store64(p + 80, buf)
+        }
+    }
+    __spin_unlock(addr_of(__ws_word))
+    if at < 0 {
+        return -1
+    }
+    return gen * 4096 + at
+}
+
+# one frame: FIN, the kind, the length, and (from clients) a mask
+fn __ws_frame(op: int, data: string, masked: bool) -> string {
+    n = len(data)
+    m = 0
+    if masked {
+        m = 128
+    }
+    head = chr(128 | op)
+    if n < 126 {
+        head = head + chr(m | n)
+    } else if n < 65536 {
+        head = head + chr(m | 126) + chr((n >> 8) & 255) + chr(n & 255)
+    } else {
+        head = head + chr(m | 127)
+        for i in 0..8 {
+            head = head + chr((n >> ((7 - i) * 8)) & 255)
+        }
+    }
+    if not masked {
+        return head + data
+    }
+    r = __random_text(4)
+    key = byte_at(r, 0) | (byte_at(r, 1) << 8) | (byte_at(r, 2) << 16) | (byte_at(r, 3) << 24)
+    return head + r + __ws_mask(data, key)
+}
+
+# data XOR the 4-byte mask (byte i uses mask byte i % 4)
+fn __ws_mask(s: string, key: int) -> string {
+    n = len(s)
+    p = __alloc_bytes(n + 8)
+    src = __str_ptr(s)
+    i = 0
+    while i < n {
+        __store8(p + i, __load8(src + i) ^ ((key >> ((i & 3) * 8)) & 255))
+        i += 1
+    }
+    return __str(p, n)
+}
+
+# sends one frame on connection id (from any task); false if it is closed
+fn __ws_write(id: int, op: int, data: string) -> bool {
+    p = __ws_place(id)
+    if p == 0 {
+        return false
+    }
+    __spin_lock(p + 8)
+    if __load64(p) == 0 or __load64(p + 56) != id / 4096 {
+        __spin_unlock(p + 8)
+        return false
+    }
+    frame = __ws_frame(op, data, __load64(p + 48) == 0)
+    fd = __load64(p) - 1
+    if __load64(p + 40) != 0 {
+        t = __tls_new(fd)
+        t.ver = __load64(p + 24)
+        t.aes = __load64(p + 32) != 0
+        t.wseq = __load64(p + 16)
+        key: array[int] = []
+        for k in 0..__load64(p + 64) {
+            push(key, __load8(p + 96 + k))
+        }
+        iv: array[int] = []
+        for k in 0..__load64(p + 72) {
+            push(iv, __load8(p + 128 + k))
+        }
+        t.wkey = key
+        t.wiv = iv
+        t.wenc = true
+        t = __tls_write(t, 23, frame)
+        __store64(p + 16, t.wseq)
+    } else {
+        socket_write(fd, frame)
+    }
+    __spin_unlock(p + 8)
+    return true
+}
+
+# closes connection id's socket and frees its place
+fn __ws_release(id: int) {
+    p = __ws_place(id)
+    if p == 0 {
+        return
+    }
+    __spin_lock(p + 8)
+    if __load64(p) == 0 or __load64(p + 56) != id / 4096 {
+        __spin_unlock(p + 8)
+        return
+    }
+    fd = __load64(p) - 1
+    __store64(p, 0)
+    if __load64(p + 80) != 0 {
+        buf = __load64(p + 80)
+        __os_release(buf, __load64(buf) + 8)
+        __store64(p + 80, 0)
+    }
+    __spin_unlock(p + 8)
+    socket_close(fd)
+}
+
+# the server s is done: its WebSockets stop waiting
+fn __ws_wake(s: int) {
+    if __ws_slots == 0 {
+        return
+    }
+    for i in 0..4096 {
+        p = __ws_slots + i * 160
+        if __load64(p) != 0 and __load64(p + 48) == s {
+            __spin_lock(p + 8)
+            if __load64(p) != 0 and __load64(p + 48) == s {
+                __socket_shutdown(__load64(p) - 1)
+            }
+            __spin_unlock(p + 8)
+        }
+    }
+}
+
+# answers an address with a WebSocket: return websocket(req) from handle(),
+# and on_websocket(ws) then runs for the connection
+fn websocket(req: Request) -> Response {
+    key = header(req, "Sec-WebSocket-Key")
+    if key == "" or not contains(lower(header(req, "Upgrade")), "websocket") {
+        return bad_request("this address is for WebSockets")
+    }
+    accept = base64_encode(sha1(to_bytes(key + __ws_guid)))
+    return Response(101, "", "Sec-WebSocket-Accept: " + accept + "\r\n", "")
+}
+
+# the path in a raw request ("GET /chat?x=1 HTTP/1.1" -> "/chat?x=1")
+fn __ws_path_of(raw: string) -> string {
+    first = split(slice(raw, 0, find(raw, "\r\n")), " ")
+    if len(first) < 2 {
+        return "/"
+    }
+    return first[1]
+}
+
+# runs on_websocket for a connection the server accepted
+fn __ws_run(t: Tls, secure: bool, id: int, s: int) {
+    p = __ws_place(id)
+    path = "/"
+    if p != 0 and __load64(p + 80) != 0 {
+        buf = __load64(p + 80)
+        path = __str(buf + 8, __load64(buf))
+    }
+    __socket_timeout(t.fd, 0)
+    ws = WebSocket(true, id, path, "", false, "", t, secure, "", "", false, false)
+    if __web_more(s) {
+        on_websocket(ws)
+    }
+    __ws_release(id)
+}
+
+# the same, from the event loop (which hands over only numbers)
+fn __ws_run_plain(id: int, s: int) {
+    p = __ws_place(id)
+    __ws_run(__tls_new(__load64(p) - 1), false, id, s)
+}
+
+# reads more from the connection into ws.buf
+fn __ws_more(ws: WebSocket) -> WebSocket {
+    piece = ""
+    if ws.secure {
+        ws.conn = tls_recv(ws.conn)
+        piece = ws.conn.data
+    } else {
+        piece = socket_read(ws.conn.fd)
+    }
+    if piece == "" {
+        ws.ok = false
+        if ws.err == "" {
+            ws.err = "the connection closed"
+        }
+        __ws_release(ws.id)
+        return ws
+    }
+    ws.buf = ws.buf + piece
+    return ws
+}
+
+# the length of the first whole frame in b, -1 if it has not all arrived,
+# -2 if it is too big (over 16 MB)
+fn __ws_need(b: string) -> int {
+    if len(b) < 2 {
+        return -1
+    }
+    n = byte_at(b, 1) & 127
+    h = 2
+    if n == 126 {
+        if len(b) < 4 {
+            return -1
+        }
+        n = (byte_at(b, 2) << 8) | byte_at(b, 3)
+        h = 4
+    } else if n == 127 {
+        if len(b) < 10 {
+            return -1
+        }
+        n = 0
+        for i in 2..10 {
+            n = (n << 8) | byte_at(b, i)
+        }
+        h = 10
+    }
+    if (byte_at(b, 1) & 128) != 0 {
+        h += 4
+    }
+    if n < 0 or n > 16777216 {
+        return -2
+    }
+    if len(b) < h + n {
+        return -1
+    }
+    return h + n
+}
+
+# the data in one whole frame (unmasked)
+fn __ws_payload(f: string) -> string {
+    n = byte_at(f, 1) & 127
+    h = 2
+    if n == 126 {
+        h = 4
+    } else if n == 127 {
+        h = 10
+    }
+    if (byte_at(f, 1) & 128) == 0 {
+        return slice(f, h, len(f))
+    }
+    key = byte_at(f, h) | (byte_at(f, h + 1) << 8) | (byte_at(f, h + 2) << 16) | (byte_at(f, h + 3) << 24)
+    return __ws_mask(slice(f, h + 4, len(f)), key)
+}
+
+# waits for the next message: ws.message (ws.binary if it was bytes);
+# ws.ok is false once the connection has closed
+fn ws_receive(ws: WebSocket) -> WebSocket {
+    ws.message = ""
+    ws.binary = false
+    while ws.ok {
+        need = __ws_need(ws.buf)
+        if need == -2 or len(ws.frag) > 16777216 {
+            __ws_write(ws.id, 8, "\x03\xf1")
+            __ws_release(ws.id)
+            ws.ok = false
+            ws.err = "a message was too big"
+            return ws
+        }
+        if need < 0 {
+            ws = __ws_more(ws)
+            continue
+        }
+        f = slice(ws.buf, 0, need)
+        ws.buf = slice(ws.buf, need, len(ws.buf))
+        op = byte_at(f, 0) & 15
+        fin = (byte_at(f, 0) & 128) != 0
+        data = __ws_payload(f)
+        if op == 9 {
+            # a ping: answer it
+            __ws_write(ws.id, 10, data)
+        } else if op == 10 {
+            # a pong: nothing to do
+        } else if op == 8 {
+            # the other side is done: answer, then close
+            code = "\x03\xe8"
+            if len(data) >= 2 {
+                code = slice(data, 0, 2)
+            }
+            __ws_write(ws.id, 8, code)
+            __ws_release(ws.id)
+            ws.ok = false
+            return ws
+        } else if op == 0 and ws.fragging {
+            ws.frag = ws.frag + data
+            if fin {
+                ws.message = ws.frag
+                ws.binary = ws.fragbin
+                ws.frag = ""
+                ws.fragging = false
+                return ws
+            }
+        } else if op == 1 or op == 2 {
+            if fin {
+                ws.message = data
+                ws.binary = op == 2
+                return ws
+            }
+            ws.frag = data
+            ws.fragging = true
+            ws.fragbin = op == 2
+        } else {
+            __ws_write(ws.id, 8, "\x03\xea")
+            __ws_release(ws.id)
+            ws.ok = false
+            ws.err = "the other side broke the WebSocket rules"
+            return ws
+        }
+    }
+    return ws
+}
+
+# sends a text message (false if the connection is closed)
+fn ws_send(ws: WebSocket, text: string) -> bool {
+    return __ws_write(ws.id, 1, text)
+}
+
+# sends bytes as a binary message
+fn ws_send_binary(ws: WebSocket, data: string) -> bool {
+    return __ws_write(ws.id, 2, data)
+}
+
+# sends a text message to the connection with this id (ws.id), from anywhere
+fn ws_send_to(id: int, text: string) -> bool {
+    return __ws_write(id, 1, text)
+}
+
+# sends a text message to every WebSocket visitor; how many got it
+fn ws_broadcast(text: string) -> int {
+    if __ws_slots == 0 {
+        return 0
+    }
+    sent = 0
+    for i in 0..4096 {
+        p = __ws_slots + i * 160
+        if __load64(p) != 0 and __load64(p + 48) != 0 {
+            if __ws_write(__load64(p + 56) * 4096 + i, 1, text) {
+                sent += 1
+            }
+        }
+    }
+    return sent
+}
+
+# how many WebSocket visitors are connected
+fn ws_count() -> int {
+    if __ws_slots == 0 {
+        return 0
+    }
+    n = 0
+    for i in 0..4096 {
+        p = __ws_slots + i * 160
+        if __load64(p) != 0 and __load64(p + 48) != 0 {
+            n += 1
+        }
+    }
+    return n
+}
+
+# closes the connection (telling the other side)
+fn ws_close(ws: WebSocket) {
+    __ws_write(ws.id, 8, "\x03\xe8")
+    __ws_release(ws.id)
+}
+
+# opens a WebSocket to a server: ws://host:port/path, or wss:// (TLS);
+# ws.ok is false (and ws.err says why) if it could not
+fn ws_connect(url: string) -> WebSocket {
+    e = __tls_new(-1)
+    ws = WebSocket(false, -1, "", "", false, "", e, false, "", "", false, false)
+    secure = starts_with(url, "wss://")
+    rest = ""
+    port = 80
+    if secure {
+        rest = slice(url, 6, len(url))
+        port = 443
+    } else if starts_with(url, "ws://") {
+        rest = slice(url, 5, len(url))
+    } else {
+        ws.err = "the address should start with ws:// or wss://"
+        return ws
+    }
+    slash = find(rest, "/")
+    hostport = rest
+    path = "/"
+    if slash >= 0 {
+        hostport = slice(rest, 0, slash)
+        path = slice(rest, slash, len(rest))
+    }
+    host = hostport
+    colon = find(hostport, ":")
+    if colon >= 0 {
+        host = slice(hostport, 0, colon)
+        port = to_int(slice(hostport, colon + 1, len(hostport)))
+    }
+    t = _web_open(host, port, secure)
+    if not t.ok {
+        ws.err = t.err
+        return ws
+    }
+    key = base64_encode(random_bytes(16))
+    msg = "GET " + path + " HTTP/1.1\r\nHost: " + hostport + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\nUser-Agent: slop\r\n\r\n"
+    if secure {
+        t = tls_send(t, msg)
+    } else {
+        socket_write(t.fd, msg)
+    }
+    raw = ""
+    while find(raw, "\r\n\r\n") < 0 {
+        t = _web_recv(t, secure)
+        if t.data == "" or len(raw) > 65536 {
+            socket_close(t.fd)
+            ws.err = "the server closed the connection"
+            return ws
+        }
+        raw = raw + t.data
+    }
+    he = find(raw, "\r\n\r\n")
+    lines = split(slice(raw, 0, he), "\r\n")
+    if not starts_with(lines[0], "HTTP/1.1 101") {
+        socket_close(t.fd)
+        ws.err = "the server did not take the WebSocket (" + lines[0] + ")"
+        return ws
+    }
+    want = base64_encode(sha1(to_bytes(key + __ws_guid)))
+    got = ""
+    for i in 1..len(lines) {
+        c = find(lines[i], ":")
+        if c > 0 and lower(trim(slice(lines[i], 0, c))) == "sec-websocket-accept" {
+            got = trim(slice(lines[i], c + 1, len(lines[i])))
+        }
+    }
+    if got != want {
+        socket_close(t.fd)
+        ws.err = "the server's WebSocket answer was wrong"
+        return ws
+    }
+    # messages may come at any time: no time limit
+    __socket_timeout(t.fd, 0)
+    id = __ws_take(t, secure, 0, "")
+    if id < 0 {
+        socket_close(t.fd)
+        ws.err = "too many WebSockets open"
+        return ws
+    }
+    ws.ok = true
+    ws.id = id
+    ws.path = path
+    ws.conn = t
+    ws.secure = secure
+    ws.buf = slice(raw, he + 4, len(raw))
+    return ws
 }
