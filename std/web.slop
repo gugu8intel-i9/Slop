@@ -2232,6 +2232,7 @@ fn _web_h2_round(st0: H2Server, c: int, s: int) -> H2Server {
     for round in 0..32 {
         # send what the windows allow
         out = ""
+        finished = 0
         k = 0
         while k < len(st.ids) {
             if st.started[k] == 1 {
@@ -2265,10 +2266,7 @@ fn _web_h2_round(st0: H2Server, c: int, s: int) -> H2Server {
                         __rb_clear(st.outs[k])
                         st.ids[k] = 0
                         st.started[k] = 0
-                        __web_count(s)
-                        if not __web_more(s) {
-                            st.closing = true
-                        }
+                        finished += 1
                         k += 1
                     }
                     continue
@@ -2278,6 +2276,13 @@ fn _web_h2_round(st0: H2Server, c: int, s: int) -> H2Server {
         }
         if out != "" {
             st.t = tls_send(st.t, out)
+        }
+        # answers count once they are sent (the last one may stop the server)
+        for q in 0..finished {
+            __web_count(s)
+        }
+        if finished > 0 and not __web_more(s) {
+            st.closing = true
         }
         if st.closing {
             pending = false
