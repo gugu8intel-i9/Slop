@@ -378,12 +378,13 @@ fn serve_count(port: int, count: int) {
 # +40 its table of connections, +48 the table's lock, +56 the connections
 # answered by tasks (4096 places, each 0 or the socket + 1)
 fn __web_server(port: int, count: int) -> int {
-    s = __alloc_bytes_in(2, 64)
+    # on a multiple of 8 bytes: the locks in it need that on ARM
+    s = (__alloc_bytes_in(2, 72) + 7) & -8
     __memzero(s, 64)
     __store64(s + 8, count)
     __store64(s + 16, port)
     __store64(s + 32, -1)
-    held = __alloc_bytes_in(2, 4096 * 8)
+    held = (__alloc_bytes_in(2, 4096 * 8 + 8) + 7) & -8
     __memzero(held, 4096 * 8)
     __store64(s + 56, held)
     return s
