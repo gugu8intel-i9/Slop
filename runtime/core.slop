@@ -186,12 +186,20 @@ fn __slice(s: string, a: int, b: int) -> string {
 fn __find(s: string, sub: string) -> int {
     n = len(s)
     m = len(sub)
+    if m == 0 {
+        return 0
+    }
     p = __str_ptr(s)
     q = __str_ptr(sub)
+    first = __load8(q)
+    last = n - m
     i = 0
-    while i + m <= n {
-        if __memeq(p + i, q, m) {
-            return i
+    # look for the first byte, and compare the rest only there
+    while i <= last {
+        if __load8(p + i) == first {
+            if m == 1 or __memeq(p + i + 1, q + 1, m - 1) {
+                return i
+            }
         }
         i += 1
     }

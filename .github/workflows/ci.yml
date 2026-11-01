@@ -158,5 +158,21 @@ jobs:
           printf 'print(__resolve("ipv6.google.com"))\n' > aaaa.slop
           ${{ matrix.slop }} run aaaa.slop | tee aaaa.txt
           grep -q ":" aaaa.txt
+      - name: HTTP/2 (curl, and h2load under load; no failures allowed)
+        if: matrix.slop == 'bin/slop' || matrix.slop == 'bin/slop-linux-arm64' || matrix.slop == 'bin/slop-macos-arm64'
+        run: |
+          printf 'use "web"\nfn handle(req: Request) -> Response {\n    return text("hello " + req.method)\n}\nmake_cert("localhost", "h2-cert.pem", "h2-key.pem")\nquiet()\nserve_https(18632, "h2-cert.pem", "h2-key.pem")\n' > h2.slop
+          ${{ matrix.slop }} h2.slop h2-server
+          ./h2-server &
+          sleep 2
+          curl -sk --http2 -o curl-out.txt -w '%{http_version}\n' https://localhost:18632/ | tee curl-version.txt
+          grep -qx 2 curl-version.txt
+          grep -q "hello GET" curl-out.txt
+          if [ "$(uname)" = "Linux" ]; then
+            command -v h2load > /dev/null || sudo apt-get install -y -q nghttp2-client > /dev/null
+            h2load -n 20000 -c 50 -m 10 https://localhost:18632/ | tee h2load.txt | grep -E "finished in|requests:"
+            grep -q "20000 succeeded, 0 failed" h2load.txt
+          fi
+          kill %1
       - name: https to a real site (system certificates and name lookup)
         run: ${{ matrix.slop }} run examples/fetch.slop https://github.com/

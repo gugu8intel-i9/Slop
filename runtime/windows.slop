@@ -615,9 +615,10 @@ fn __socket_nodelay(fd: int) {
     __ccall32("setsockopt", fd, 6, 1, one, 4)
 }
 
-# stops fd (a read waiting on it returns at once)
+# stops reading from fd (answers still being sent go out; on Windows a
+# read waiting on it may not wake, so waits also check every quarter second)
 fn __socket_shutdown(fd: int) {
-    __ccall32("shutdown", fd, 2)
+    __ccall32("shutdown", fd, 0)
 }
 
 # is there something to read on fd (or has it closed)? waits up to ms
