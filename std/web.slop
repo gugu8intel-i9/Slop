@@ -1017,6 +1017,39 @@ fn _web_recv(t: Tls, secure: bool) -> Tls {
     return t
 }
 
+# the host in "host:port", "host", "[::1]:8080" or "[::1]" (an IPv6 address
+# is written in brackets in web addresses)
+fn _web_host(hostport: string) -> string {
+    if starts_with(hostport, "[") {
+        end = find(hostport, "]")
+        if end > 0 {
+            return slice(hostport, 1, end)
+        }
+    }
+    colon = find(hostport, ":")
+    if colon >= 0 {
+        return slice(hostport, 0, colon)
+    }
+    return hostport
+}
+
+# the port in the same (the default if there is none)
+fn _web_port(hostport: string, fallback: int) -> int {
+    rest = hostport
+    if starts_with(hostport, "[") {
+        end = find(hostport, "]")
+        if end < 0 {
+            return fallback
+        }
+        rest = slice(hostport, end + 1, len(hostport))
+    }
+    colon = find(rest, ":")
+    if colon >= 0 {
+        return to_int(slice(rest, colon + 1, len(rest)))
+    }
+    return fallback
+}
+
 # a new connection to host:port (TLS for https), or one with ok false
 fn _web_open(host: string, port: int, secure: bool) -> Tls {
     let t = __tls_new(-1)
@@ -1025,7 +1058,7 @@ fn _web_open(host: string, port: int, secure: bool) -> Tls {
     if host == "localhost" {
         ip = "127.0.0.1"
     }
-    if len(split(ip, ".")) != 4 or find(ip, "-") >= 0 or lower(ip) != upper(ip) {
+    if not __is_ip(ip) {
         ip = __resolve(host)
         if ip == "" {
             t.err = "cannot find the address of " + host
@@ -1143,12 +1176,8 @@ fn http_request(method: string, url: string, body: string) -> string {
         hostport = slice(rest, 0, slash)
         path = slice(rest, slash, len(rest))
     }
-    let host = hostport
-    let colon = find(hostport, ":")
-    if colon >= 0 {
-        host = slice(hostport, 0, colon)
-        port = to_int(slice(hostport, colon + 1, len(hostport)))
-    }
+    let host = _web_host(hostport)
+    port = _web_port(hostport, port)
     let key = "http://"
     if secure {
         key = "https://"
@@ -1733,12 +1762,8 @@ fn ws_connect(url: string) -> WebSocket {
         hostport = slice(rest, 0, slash)
         path = slice(rest, slash, len(rest))
     }
-    host = hostport
-    colon = find(hostport, ":")
-    if colon >= 0 {
-        host = slice(hostport, 0, colon)
-        port = to_int(slice(hostport, colon + 1, len(hostport)))
-    }
+    host = _web_host(hostport)
+    port = _web_port(hostport, port)
     t = _web_open(host, port, secure)
     if not t.ok {
         ws.err = t.err

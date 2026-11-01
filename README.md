@@ -167,7 +167,7 @@ Types: `int`, `float`, `bool`, `string`, `array[T]`, `thread[T]` and your struct
 | Matrices (`use "matrix"`) | `matmul`, `gpu_matmul`, `matmul_library` |
 | Files | `read_file`, `write_file`, `remove_file`, `make_dir`, `make_executable` |
 | Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()`, `env(name)`, `program_path()`, `input_ended()` |
-| Network | `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close`, `socket_timeout(fd, ms)` (or `use "web"`) |
+| Network | TCP: `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close`, `socket_timeout(fd, ms)`; UDP: `udp_open(port)`, `udp_send(fd, host, port, data)`, `udp_receive(fd)`, `udp_reply(fd, data)`, `udp_sender(fd)`, `udp_sender_port(fd)`; `is_ip(text)`. IPv4 and IPv6 (see Networking below), or `use "web"` |
 | Packing | `slop_pack(list)`, `slop_unpack(packed)` |
 | Low level | see [LOW_LEVEL.md](LOW_LEVEL.md) |
 
@@ -337,6 +337,36 @@ page = http_get("https://example.com/")      # checks the site's certificate
 - `http_get` checks certificates against the ones your system trusts (ECDSA and RSA, with expiry dates and the host name) and refuses the connection if anything is wrong; `http_error()` says why.
 - Slop uses TLS 1.3 whenever the other side can, and TLS 1.2 for older browsers and servers (with the extended master secret, and the check that stops an attacker from pushing a 1.3 connection down to 1.2). TLS 1.1 and older are not supported: they are no longer safe.
 - Ciphers: ChaCha20-Poly1305 (preferred) and AES-128-GCM. Key exchange: X25519 (preferred) and P-256.
+
+## Networking: UDP and IPv6
+
+**UDP** sends single messages with no connection (games, live data, discovery, DNS-style questions). Each message arrives whole or not at all, and up to about 64 KB fits in one:
+
+```slop
+# a server that answers every message
+fd = udp_open(9000)
+while true {
+    msg = udp_receive(fd)                  # waits for the next message
+    print(udp_sender(fd), "sent", msg)     # who sent it ("192.168.1.5" or "2001:db8::5")
+    udp_reply(fd, "got it")                # answers whoever sent it
+}
+```
+
+```slop
+# a client
+fd = udp_open(0)                           # 0: any free port
+udp_send(fd, "localhost", 9000, "hello")   # an address or a name
+socket_timeout(fd, 2000)                   # wait at most 2 seconds for answers
+print(udp_receive(fd))                     # "" if nothing came in time
+```
+
+**IPv6** works everywhere an address goes:
+
+- Servers (`serve`, `serve_https`, `socket_listen`, `udp_open`) take visitors over IPv6 and IPv4 on the same port. On a computer without IPv6 they use IPv4 alone.
+- `socket_connect("::1", 8080)`, `udp_send(fd, "2001:db8::5", ...)`, and web addresses with the address in brackets: `http_get("http://[::1]:8080/")`, `ws_connect("ws://[::1]:8080/chat")`.
+- Names with only an IPv6 address are found (Slop asks for IPv4 first, then IPv6).
+- Addresses are shown in their usual short form (`2001:db8::1`), and an IPv4 visitor on an IPv6 socket is shown as IPv4 (`127.0.0.1`, not `::ffff:127.0.0.1`).
+- `make_cert("localhost", ...)` names `::1` too, so https works over `https://[::1]:8443/`.
 
 ## Bring code from other languages
 

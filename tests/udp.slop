@@ -1,0 +1,44 @@
+# UDP: messages between two sockets in one program, and IP address text
+fn echo_server(port: int) -> int {
+    fd = udp_open(port)
+    socket_timeout(fd, 10000)
+    n = 0
+    while n < 4 {
+        msg = udp_receive(fd)
+        udp_reply(fd, "got " + str(len(msg)) + " " + slice(msg, 0, 5) + " from " + udp_sender(fd))
+        n += 1
+    }
+    socket_close(fd)
+    return n
+}
+
+print(is_ip("127.0.0.1"), is_ip("::1"), is_ip("2001:db8::ff00:42:8329"), is_ip("example.com"), is_ip("1.2.3"), is_ip("::ffff:1.2.3.4"), is_ip("1:2:3:4:5:6:7:8:9"))
+port = 24000 + clock_ns() / 1000 % 2000
+server = spawn echo_server(port)
+c = udp_open(0)
+print("open", c >= 0)
+socket_timeout(c, 200)
+got = ""
+tries = 0
+while got == "" and tries < 100 {
+    udp_send(c, "127.0.0.1", port, "hello")
+    got = udp_receive(c)
+    tries += 1
+}
+print(got)
+print(udp_sender(c), udp_sender_port(c) == port)
+socket_timeout(c, 5000)
+# a big message (up to about 64 KB fits in one)
+udp_send(c, "localhost", port, repeat("x", 60000))
+print(udp_receive(c))
+# an empty one
+udp_send(c, "localhost", port, "")
+print(udp_receive(c))
+udp_send(c, "127.0.0.1", port, "bye")
+print(udp_receive(c))
+print("server answered", join(server))
+# nothing more comes: receive gives "" after the time limit
+socket_timeout(c, 100)
+print("time limit", udp_receive(c) == "")
+print("unknown name", udp_send(c, "no-such-host.invalid", port, "x"))
+socket_close(c)
