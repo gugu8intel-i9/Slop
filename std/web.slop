@@ -769,6 +769,11 @@ fn __web_answer(c: int, s: int, at: int) {
     while __web_more(s) {
         need = __web_need(raw)
         while need < 0 {
+            if raw == "" and not __web_wait(c, s) {
+                __web_let_go(s, at)
+                socket_close(c)
+                return
+            }
             piece = socket_read(c)
             if piece == "" or len(raw) > 16777216 {
                 __web_let_go(s, at)
@@ -805,6 +810,23 @@ fn __web_answer(c: int, s: int, at: int) {
     socket_close(c)
 }
 
+# waits for the next request on c, a quarter second at a time: false if
+# the server is done or nothing came for 30 seconds (on every system,
+# without needing another thread to wake the wait)
+fn __web_wait(c: int, s: int) -> bool {
+    waited = 0
+    while waited < 30000 {
+        if __socket_ready(c, 250) {
+            return true
+        }
+        if not __web_more(s) {
+            return false
+        }
+        waited += 250
+    }
+    return false
+}
+
 # the same over TLS
 fn __web_answer_tls(c: int, key: TlsKey, s: int, at: int) {
     __socket_nodelay(c)
@@ -824,6 +846,11 @@ fn __web_answer_tls(c: int, key: TlsKey, s: int, at: int) {
     while __web_more(s) {
         need = __web_need(raw)
         while need < 0 {
+            if raw == "" and t.raw == "" and not __web_wait(c, s) {
+                __web_let_go(s, at)
+                tls_close(t)
+                return
+            }
             t = tls_recv(t)
             if t.data == "" or len(raw) > 16777216 {
                 __web_let_go(s, at)
@@ -1317,7 +1344,8 @@ fn on_websocket(ws: WebSocket) {
 # (160 bytes): +0 socket + 1 (0: free), +8 a lock, +16 the TLS sequence
 # number, +24 TLS version, +32 AES, +40 TLS, +48 the server it belongs to
 # (0: a client), +56 its number (id / 4096), +64 key length, +72 iv length,
-# +80 the path (for the server), +96 key (32 bytes), +128 iv (12 bytes)
+# +80 the path (for the server), +96 key (32 bytes), +128 iv (12 bytes),
+# +144 1 once its server is done
 __ws_slots = 0
 __ws_word = 0
 __ws_gen = 0
@@ -1364,6 +1392,7 @@ fn __ws_take(t: Tls, secure: bool, owner: int, path: string) -> int {
         }
         __store64(p + 48, owner)
         __store64(p + 56, gen)
+        __store64(p + 144, 0)
         __store64(p + 64, len(t.wkey))
         __store64(p + 72, len(t.wiv))
         for k in 0..len(t.wkey) {
@@ -1496,6 +1525,9 @@ fn __ws_wake(s: int) {
         if __load64(p) != 0 and __load64(p + 48) == s {
             __spin_lock(p + 8)
             if __load64(p) != 0 and __load64(p + 48) == s {
+                # +144: the server is done (its reads see this within a
+                # quarter second, on every system)
+                __store64(p + 144, 1)
                 __socket_shutdown(__load64(p) - 1)
             }
             __spin_unlock(p + 8)
@@ -1548,6 +1580,19 @@ fn __ws_run_plain(id: int, s: int) {
 # reads more from the connection into ws.buf
 fn __ws_more(ws: WebSocket) -> WebSocket {
     piece = ""
+    p = __ws_place(ws.id)
+    if p != 0 and __load64(p + 48) != 0 and ws.conn.raw == "" {
+        # a server's connection: wait a quarter second at a time, so a
+        # server that is done can end it
+        while not __socket_ready(ws.conn.fd, 250) {
+            if __load64(p + 144) != 0 or __load64(p + 56) != ws.id / 4096 {
+                ws.ok = false
+                ws.err = "the server stopped"
+                __ws_release(ws.id)
+                return ws
+            }
+        }
+    }
     if ws.secure {
         ws.conn = tls_recv(ws.conn)
         piece = ws.conn.data

@@ -821,3 +821,22 @@ fn __socket_shutdown(fd: int) {
         __syscall(48, fd, 0)
     }
 }
+
+# is there something to read on fd (or has it closed)? waits up to ms
+fn __socket_ready(fd: int, ms: int) -> bool {
+    p = __alloc_bytes(16)
+    __memzero(p, 16)
+    __store32(p, fd)
+    __store8(p + 4, 1)
+    r = 0
+    if __arm() {
+        # ppoll (arm64 has no poll)
+        ts = __alloc_bytes(16)
+        __store64(ts, ms / 1000)
+        __store64(ts + 8, ms % 1000 * 1000000)
+        r = __syscall(73, p, 1, ts, 0, 8)
+    } else {
+        r = __syscall(7, p, 1, ms)
+    }
+    return r != 0
+}
