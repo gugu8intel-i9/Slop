@@ -921,3 +921,121 @@ fn __dl_sym(lib: int, name: string) -> int {
 fn __gpu_thread_ok() -> bool {
     return true
 }
+
+# ---------- matrix multiply on the GPU (the matrix module's gpu_matmul) ----------
+# Apple's own tuned one (Metal Performance Shaders) when the GPU supports it,
+# else the same tiled kernel as on other systems, in Metal's language.
+__mps_state = 0
+
+fn __mps_ok() -> bool {
+    if __mps_state != 0 {
+        return __mps_state == 1
+    }
+    __mps_state = -1
+    lib = __dl_load("/System/Library/Frameworks/MetalPerformanceShaders.framework/MetalPerformanceShaders")
+    if lib == 0 {
+        return false
+    }
+    f = __dl_sym(lib, "MPSSupportsMTLDevice")
+    if f == 0 or __ccall_ptr(f, __gpu_dev) % 256 == 0 {
+        return false
+    }
+    __mps_state = 1
+    return true
+}
+
+fn __mtl_mm_source() -> string {
+    return "#include <metal_stdlib>\nusing namespace metal;\nkernel void slop_gpu_4095(device const float* a [[buffer(0)]], device const float* b [[buffer(1)]], device float* c [[buffer(2)]], constant uint* p [[buffer(3)]], uint2 tid [[thread_position_in_threadgroup]], uint2 gid [[threadgroup_position_in_grid]]) {\nthreadgroup float As[16][64];\nthreadgroup float Bs[16][64];\nuint M = p[0], N = p[1], K = p[2];\nuint tx = tid.x, ty = tid.y, lid = ty * 16 + tx;\nuint row0 = gid.y * 64, col0 = gid.x * 64;\nfloat acc[4][4];\nfor (uint i = 0; i < 4; i++) for (uint j = 0; j < 4; j++) acc[i][j] = 0.0f;\nfor (uint k0 = 0; k0 < K; k0 += 16) {\nfor (uint s = 0; s < 4; s++) {\nuint e = lid + s * 256;\nuint r = e / 16, kk = e % 16, gr = row0 + r, gk = k0 + kk;\nAs[kk][r] = (gr < M && gk < K) ? a[gr * K + gk] : 0.0f;\nuint kb = e / 64, cc = e % 64, gk2 = k0 + kb, gc = col0 + cc;\nBs[kb][cc] = (gk2 < K && gc < N) ? b[gk2 * N + gc] : 0.0f;\n}\nthreadgroup_barrier(mem_flags::mem_threadgroup);\nfor (uint kk = 0; kk < 16; kk++) {\nfloat av[4], bv[4];\nfor (uint i = 0; i < 4; i++) { av[i] = As[kk][ty * 4 + i]; bv[i] = Bs[kk][tx * 4 + i]; }\nfor (uint i = 0; i < 4; i++) for (uint j = 0; j < 4; j++) acc[i][j] += av[i] * bv[j];\n}\nthreadgroup_barrier(mem_flags::mem_threadgroup);\n}\nfor (uint i = 0; i < 4; i++) {\nuint r = row0 + ty * 4 + i;\nif (r < M) for (uint j = 0; j < 4; j++) { uint cl = col0 + tx * 4 + j; if (cl < N) c[r * N + cl] = acc[i][j]; }\n}\n}\n"
+}
+
+fn __mtl_buffer(p: int, bytes: int) -> int {
+    if p == 0 {
+        return __ccall("objc_msgSend", __gpu_dev, __objc("newBufferWithLength:options:"), bytes, 0)
+    }
+    return __ccall("objc_msgSend", __gpu_dev, __objc("newBufferWithBytes:length:options:"), p, bytes, 0)
+}
+
+fn __mps_matrix(buf: int, rows: int, cols: int) -> int {
+    # MPSDataTypeFloat32
+    desc = __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("MPSMatrixDescriptor")), __objc("matrixDescriptorWithRows:columns:rowBytes:dataType:"), rows, cols, cols * 4, 268435488)
+    m = __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("MPSMatrix")), __objc("alloc"))
+    return __ccall("objc_msgSend", m, __objc("initWithBuffer:descriptor:"), buf, desc)
+}
+
+# the last GPU matmul's way: "Metal Performance Shaders", "Slop's Metal kernel"
+__mtl_mm_way = 0
+
+# c = a * b on the GPU, floats as 32 bits at a, b, c; false: not possible here
+fn __gpu_matmul(a: int, b: int, c: int, m: int, k: int, n: int) -> bool {
+    if not __gpu_init() {
+        return false
+    }
+    pool = __ccall("objc_autoreleasePoolPush")
+    ba = __mtl_buffer(a, m * k * 4)
+    bb = __mtl_buffer(b, k * n * 4)
+    bc = __mtl_buffer(0, m * n * 4)
+    cmd = __ccall("objc_msgSend", __gpu_queue, __objc("commandBuffer"))
+    ok = ba != 0 and bb != 0 and bc != 0 and cmd != 0
+    used = false
+    if ok and __env("SLOP_MPS") != "none" and __mps_ok() {
+        ma = __mps_matrix(ba, m, k)
+        mb = __mps_matrix(bb, k, n)
+        mc = __mps_matrix(bc, m, n)
+        mm = __ccall("objc_msgSend", __ccall("objc_getClass", __cstr("MPSMatrixMultiplication")), __objc("alloc"))
+        mm = __ccall("objc_msgSend", mm, __objc("initWithDevice:resultRows:resultColumns:interiorColumns:"), __gpu_dev, m, n, k)
+        if ma != 0 and mb != 0 and mc != 0 and mm != 0 {
+            __ccall("objc_msgSend", mm, __objc("encodeToCommandBuffer:leftMatrix:rightMatrix:resultMatrix:"), cmd, ma, mb, mc)
+            used = true
+            __mtl_mm_way = 1
+        }
+        for x in [ma, mb, mc, mm] {
+            if x != 0 {
+                __ccall("objc_msgSend", x, __objc("release"))
+            }
+        }
+    }
+    if ok and not used {
+        pipe = __gpu_pipe(__mtl_mm_source(), 4095)
+        if pipe != 0 {
+            enc = __ccall("objc_msgSend", cmd, __objc("computeCommandEncoder"))
+            __ccall("objc_msgSend", enc, __objc("setComputePipelineState:"), pipe)
+            __ccall("objc_msgSend", enc, __objc("setBuffer:offset:atIndex:"), ba, 0, 0)
+            __ccall("objc_msgSend", enc, __objc("setBuffer:offset:atIndex:"), bb, 0, 1)
+            __ccall("objc_msgSend", enc, __objc("setBuffer:offset:atIndex:"), bc, 0, 2)
+            p = __alloc_bytes(16)
+            __store32(p, m)
+            __store32(p + 4, n)
+            __store32(p + 8, k)
+            __ccall("objc_msgSend", enc, __objc("setBytes:length:atIndex:"), p, 16, 3)
+            # MTLSize structs, passed by address: groups, then threads per group
+            g = __alloc_bytes(48)
+            __store64(g, (n + 63) / 64)
+            __store64(g + 8, (m + 63) / 64)
+            __store64(g + 16, 1)
+            __store64(g + 24, 16)
+            __store64(g + 32, 16)
+            __store64(g + 40, 1)
+            __ccall("objc_msgSend", enc, __objc("dispatchThreadgroups:threadsPerThreadgroup:"), g, g + 24)
+            __ccall("objc_msgSend", enc, __objc("endEncoding"))
+            used = true
+            __mtl_mm_way = 2
+        }
+    }
+    if used {
+        __ccall("objc_msgSend", cmd, __objc("commit"))
+        __ccall("objc_msgSend", cmd, __objc("waitUntilCompleted"))
+        # MTLCommandBufferStatusError
+        if __ccall("objc_msgSend", cmd, __objc("status")) == 5 {
+            used = false
+        } else {
+            __memcpy(c, __ccall("objc_msgSend", bc, __objc("contents")), m * n * 4)
+        }
+    }
+    for x in [ba, bb, bc] {
+        if x != 0 {
+            __ccall("objc_msgSend", x, __objc("release"))
+        }
+    }
+    __ccall("objc_autoreleasePoolPop", pool)
+    return used
+}

@@ -47,6 +47,7 @@ jobs:
           diff gpu-opencl.txt tests/expected/gpu.txt
           SLOP_OPENCL_CPU=1 bin/slop run examples/gpu.slop | tail -n 1 | tee gpu-name.txt
           grep -v "the CPU cores" gpu-name.txt
+          SLOP_OPENCL_CPU=1 bin/slop run tests/matrix.slop | diff - tests/expected/matrix.txt
       - name: gpu for through Vulkan (lavapipe, a Vulkan for the CPU)
         if: matrix.slop == 'bin/slop' || matrix.slop == 'bin/slop-linux-arm64'
         run: |
@@ -56,6 +57,14 @@ jobs:
           diff gpu-vulkan.txt tests/expected/gpu.txt
           ${{ matrix.slop }} run examples/gpu.slop | tail -n 1 | tee gpu-vk-name.txt
           grep "llvmpipe" gpu-vk-name.txt
+          ${{ matrix.slop }} run tests/matrix.slop | diff - tests/expected/matrix.txt
+          ${{ matrix.slop }} run examples/matmul.slop 512 | grep "gpu_matmul on llvmpipe"
+      - name: gpu_matmul through Metal (Apple's MPS when the GPU has it, and Slop's own kernel)
+        if: matrix.slop == 'bin/slop-macos-arm64'
+        run: |
+          bin/slop-macos-arm64 run tests/matrix.slop | diff - tests/expected/matrix.txt
+          SLOP_MPS=none bin/slop-macos-arm64 run tests/matrix.slop | diff - tests/expected/matrix.txt
+          bin/slop-macos-arm64 run examples/matmul.slop 1024
       - uses: actions/setup-python@v5
         if: matrix.slop == 'bin/slop' || matrix.slop == 'bin/slop.exe'
         with:

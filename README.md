@@ -164,7 +164,7 @@ Types: `int`, `float`, `bool`, `string`, `array[T]`, `thread[T]` and your struct
 | Threads | `spawn f(args)`, `join(t)`, `lock()`, `unlock()`, `cpu_count()` |
 | Async | `async f(args)`, `await t`, `done(t)`, `task[T]` |
 | NPU (`use "npu"`) | `npu_matmul`, `dense`, `npu_name` |
-| Matrices (`use "matrix"`) | `matmul`, `matmul_library` |
+| Matrices (`use "matrix"`) | `matmul`, `gpu_matmul`, `matmul_library` |
 | Files | `read_file`, `write_file`, `remove_file`, `make_dir`, `make_executable` |
 | Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()`, `env(name)`, `program_path()`, `input_ended()` |
 | Network | `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close` (or `use "web"`) |
@@ -432,6 +432,7 @@ print(matmul_library())      # "Accelerate", "OpenBLAS", "MKL", or "" for Slop's
 - Uses the computer's tuned matrix library when there is one: Accelerate on macOS (always there; it uses Apple's matrix units), and OpenBLAS, MKL or BLIS on Linux and Windows if installed. `SLOP_BLAS` can name another library file, or `none`.
 - Otherwise Slop's own: the work is cut into blocks that stay in the CPU caches, shared over all cores, and multiplied two numbers per instruction (SSE2 / NEON). It gives exactly the same answers as plain loops.
 - Full 64-bit precision either way. On a 4-core test machine, 1024 x 1024: plain loops on all cores 2.5 s, Slop's own 91 ms (about 28 times faster), OpenBLAS 32 ms.
+- `gpu_matmul(a, b, m, k, n)` does the same on the GPU with 32-bit floats (about 7 correct digits): Apple's own tuned multiply (Metal Performance Shaders) on Macs, and on Windows and Linux a tuned kernel through Vulkan or OpenCL, where each group of 256 GPU threads makes a 64 x 64 block of the answer from pieces kept in the GPU's fast shared memory. Without a GPU it is `matmul`. `SLOP_MPS=none` uses Slop's own kernel on Macs too.
 - `examples/matmul.slop` shows the speed on your computer.
 
 ## Using the NPU

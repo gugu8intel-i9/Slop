@@ -1,3 +1,8 @@
+gpu 1x1 * 1x1: ok
+gpu 3x5 * 5x2: ok
+gpu 65x17 * 17x130: ok
+gpu 200x300 * 300x100: ok
+gpu 256x64 * 64x257: ok
 1x1 * 1x1: ok, sum 2.2
 3x5 * 5x2: ok, sum 10.86
 37x53 * 53x29: ok, sum 49698.28

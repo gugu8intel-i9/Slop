@@ -245,3 +245,68 @@ fn __cl_name() -> string {
     __ccall_ptr(__cl_fn(14), __cl_dev, 4139, 255, buf, 0)
     return __str(buf, __strlen(buf))
 }
+
+# ---------- matrix multiply on the GPU (the matrix module's gpu_matmul) ----------
+# The same tuned kernel as for Vulkan: 16 x 16 threads per 64 x 64 block of c.
+__cl_mm = 0
+
+fn __cl_mm_source() -> string {
+    return "__kernel __attribute__((reqd_work_group_size(16, 16, 1)))\nvoid slop_mm(__global const float* a, __global const float* b, __global float* c, uint M, uint N, uint K) {\n__local float As[16][64];\n__local float Bs[16][64];\nuint tx = get_local_id(0), ty = get_local_id(1), lid = ty * 16 + tx;\nuint row0 = get_group_id(1) * 64, col0 = get_group_id(0) * 64;\nfloat acc[4][4];\nfor (uint i = 0; i < 4; i++) for (uint j = 0; j < 4; j++) acc[i][j] = 0.0f;\nfor (uint k0 = 0; k0 < K; k0 += 16) {\nfor (uint s = 0; s < 4; s++) {\nuint e = lid + s * 256;\nuint r = e / 16, kk = e % 16, gr = row0 + r, gk = k0 + kk;\nAs[kk][r] = (gr < M && gk < K) ? a[gr * K + gk] : 0.0f;\nuint kb = e / 64, cc = e % 64, gk2 = k0 + kb, gc = col0 + cc;\nBs[kb][cc] = (gk2 < K && gc < N) ? b[gk2 * N + gc] : 0.0f;\n}\nbarrier(CLK_LOCAL_MEM_FENCE);\nfor (uint kk = 0; kk < 16; kk++) {\nfloat av[4], bv[4];\nfor (uint i = 0; i < 4; i++) { av[i] = As[kk][ty * 4 + i]; bv[i] = Bs[kk][tx * 4 + i]; }\nfor (uint i = 0; i < 4; i++) for (uint j = 0; j < 4; j++) acc[i][j] += av[i] * bv[j];\n}\nbarrier(CLK_LOCAL_MEM_FENCE);\n}\nfor (uint i = 0; i < 4; i++) {\nuint r = row0 + ty * 4 + i;\nif (r < M) for (uint j = 0; j < 4; j++) { uint cl = col0 + tx * 4 + j; if (cl < N) c[r * N + cl] = acc[i][j]; }\n}\n}\n"
+}
+
+# c = a * b on the GPU, floats as 32 bits at a, b, c; false: not possible here
+fn __cl_matmul(a: int, b: int, c: int, m: int, k: int, n: int) -> bool {
+    if not __cl_init() {
+        return false
+    }
+    t = __cl_tmp
+    if __cl_mm == 0 {
+        __cl_mm = -1
+        src = __cl_mm_source()
+        __store64(t + 16, __cstr(src))
+        __store64(t + 24, len(src))
+        __store64(t + 32, __cl_dev)
+        prog = __ccall_ptr(__cl_fn(4), __cl_ctx, 1, t + 16, t + 24, t)
+        if prog != 0 and __i32(__ccall_ptr(__cl_fn(5), prog, 1, t + 32, __cstr("-w"), 0, 0)) == 0 {
+            kern = __ccall_ptr(__cl_fn(7), prog, __cstr("slop_mm"), t)
+            if kern != 0 {
+                __cl_mm = kern
+            }
+        }
+    }
+    if __cl_mm == -1 {
+        return false
+    }
+    # CL_MEM_READ_ONLY | COPY_HOST_PTR, then CL_MEM_WRITE_ONLY
+    mems = __alloc_bytes(32)
+    __store64(mems, __ccall_ptr(__cl_fn(9), __cl_ctx, 36, m * k * 4, a, t))
+    __store64(mems + 8, __ccall_ptr(__cl_fn(9), __cl_ctx, 36, k * n * 4, b, t))
+    __store64(mems + 16, __ccall_ptr(__cl_fn(9), __cl_ctx, 2, m * n * 4, 0, t))
+    ok = __load64(mems) != 0 and __load64(mems + 8) != 0 and __load64(mems + 16) != 0
+    if ok {
+        for i in 0..3 {
+            __ccall_ptr(__cl_fn(8), __cl_mm, i, 8, mems + i * 8)
+        }
+        __store64(t + 48, m)
+        __ccall_ptr(__cl_fn(8), __cl_mm, 3, 4, t + 48)
+        __store64(t + 48, n)
+        __ccall_ptr(__cl_fn(8), __cl_mm, 4, 4, t + 48)
+        __store64(t + 48, k)
+        __ccall_ptr(__cl_fn(8), __cl_mm, 5, 4, t + 48)
+        g = __alloc_bytes(32)
+        __store64(g, (n + 63) / 64 * 16)
+        __store64(g + 8, (m + 63) / 64 * 16)
+        __store64(g + 16, 16)
+        __store64(g + 24, 16)
+        ok = __i32(__ccall_ptr(__cl_fn(10), __cl_queue, __cl_mm, 2, 0, g, g + 16, 0, 0, 0)) == 0
+        if ok {
+            ok = __i32(__ccall_ptr(__cl_fn(12), __cl_queue, __load64(mems + 16), 1, 0, m * n * 4, c, 0, 0, 0)) == 0
+        }
+    }
+    for i in 0..3 {
+        if __load64(mems + i * 8) != 0 {
+            __ccall_ptr(__cl_fn(13), __load64(mems + i * 8))
+        }
+    }
+    return ok
+}

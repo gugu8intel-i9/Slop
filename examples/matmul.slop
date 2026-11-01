@@ -47,6 +47,16 @@ fn main(args: array[string]) {
         lib = "Slop's own"
     }
     print(str(n) + " x " + str(n) + " matmul with " + lib + ": " + str(ms) + " ms, " + gflops(n, ms))
+    # the GPU: once to get it ready, then timed
+    let warm = gpu_matmul([1.0], [1.0], 1, 1, 1)
+    t = now_ms()
+    let g = gpu_matmul(a, b, n, n, n)
+    let gms = now_ms() - t
+    let gpu = gpu_name()
+    if gpu == "" {
+        gpu = "no GPU (the CPU did it)"
+    }
+    print("gpu_matmul on " + gpu + ": " + str(gms) + " ms, " + gflops(n, gms))
     if n <= 1024 {
         t = now_ms()
         let d = plain(a, b, n)

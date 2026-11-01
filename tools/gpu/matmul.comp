@@ -1,0 +1,46 @@
+#version 450
+// C (M x N) = A (M x K) * B (K x N), float32, rows one after another.
+// Each group of 16 x 16 threads makes a 64 x 64 block of C; each thread 4 x 4.
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer BA { float a[]; };
+layout(std430, binding = 1) readonly buffer BB { float b[]; };
+layout(std430, binding = 2) writeonly buffer BC { float c[]; };
+layout(std430, binding = 3) readonly buffer BP { uint M; uint N; uint K; };
+shared float As[16][64];
+shared float Bs[16][64];
+void main() {
+    uint tx = gl_LocalInvocationID.x;
+    uint ty = gl_LocalInvocationID.y;
+    uint lid = ty * 16u + tx;
+    uint row0 = gl_WorkGroupID.y * 64u;
+    uint col0 = gl_WorkGroupID.x * 64u;
+    float acc[4][4];
+    for (uint i = 0u; i < 4u; i++) for (uint j = 0u; j < 4u; j++) acc[i][j] = 0.0;
+    for (uint k0 = 0u; k0 < K; k0 += 16u) {
+        for (uint s = 0u; s < 4u; s++) {
+            uint e = lid + s * 256u;
+            uint r = e / 16u, kk = e % 16u;
+            uint gr = row0 + r, gk = k0 + kk;
+            As[kk][r] = (gr < M && gk < K) ? a[gr * K + gk] : 0.0;
+            uint kb = e / 64u, cc = e % 64u;
+            uint gk2 = k0 + kb, gc = col0 + cc;
+            Bs[kb][cc] = (gk2 < K && gc < N) ? b[gk2 * N + gc] : 0.0;
+        }
+        barrier();
+        for (uint kk = 0u; kk < 16u; kk++) {
+            float av[4], bv[4];
+            for (uint i = 0u; i < 4u; i++) { av[i] = As[kk][ty * 4u + i]; bv[i] = Bs[kk][tx * 4u + i]; }
+            for (uint i = 0u; i < 4u; i++) for (uint j = 0u; j < 4u; j++) acc[i][j] += av[i] * bv[j];
+        }
+        barrier();
+    }
+    for (uint i = 0u; i < 4u; i++) {
+        uint r = row0 + ty * 4u + i;
+        if (r < M) {
+            for (uint j = 0u; j < 4u; j++) {
+                uint cl = col0 + tx * 4u + j;
+                if (cl < N) c[r * N + cl] = acc[i][j];
+            }
+        }
+    }
+}
