@@ -453,6 +453,14 @@ fn __bound_socket(kind: int, port: int) -> int {
                 __syscall(__sock_nr(1), fd, 41, 26, zero, 4)
                 n = 28
             }
+            if kind == 2 {
+                # room for big messages (up to 64 KB; macOS allows only 9 KB
+                # unless the send buffer is bigger) and for bursts of them
+                big = __alloc_bytes(8)
+                __store64(big, 1048576)
+                __syscall(__sock_nr(1), fd, 1, 7, big, 4)
+                __syscall(__sock_nr(1), fd, 1, 8, big, 4)
+            }
             a = __alloc_bytes(32)
             __sa_init(a, v6)
             __store8(a + 2, port / 256)

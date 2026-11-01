@@ -285,6 +285,14 @@ fn __bound_socket(kind: int, port: int) -> int {
                 __ccall32("setsockopt", fd, 41, 27, zero, 4)
                 n = 28
             }
+            if kind == 2 {
+                # room for big messages (up to 64 KB; macOS allows only 9 KB
+                # unless the send buffer is bigger) and for bursts of them
+                big = __alloc_bytes(8)
+                __store64(big, 1048576)
+                __ccall32("setsockopt", fd, 65535, 4097, big, 4)
+                __ccall32("setsockopt", fd, 65535, 4098, big, 4)
+            }
             a = __alloc_bytes(32)
             __sa_init(a, v6)
             __store8(a + 2, port / 256)
