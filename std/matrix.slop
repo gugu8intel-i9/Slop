@@ -2,6 +2,7 @@
 #   use "matrix"
 #
 #   c = matmul(a, b, m, k, n)     # a is m x k, b is k x n, c is m x n
+#   c = gpu_matmul(a, b, m, k, n) # the same on the GPU (32-bit floats)
 #
 # Lists hold the numbers row after row. matmul uses the computer's own tuned
 # math library when there is one (Accelerate on macOS, which uses Apple's
@@ -65,4 +66,34 @@ fn matmul(a: array[float], b: array[float], m: int, k: int, n: int) -> array[flo
 # the name of the math library matmul uses, or "" for Slop's own
 fn matmul_library() -> string {
     return __blas_name()
+}
+
+# the same on the GPU, with 32-bit floats (about 7 correct digits): Apple's
+# own tuned multiply on Macs, a tuned tiled kernel through Vulkan or OpenCL
+# elsewhere. Without a GPU it is matmul on the CPU (then with 64-bit floats).
+fn gpu_matmul(a: array[float], b: array[float], m: int, k: int, n: int) -> array[float] {
+    if m < 1 or k < 1 or n < 1 or len(a) != m * k or len(b) != k * n {
+        eprint("gpu_matmul: the lists do not match the sizes m=" + str(m) + " k=" + str(k) + " n=" + str(n) + " (a needs m*k numbers, b needs k*n)")
+        exit(1)
+    }
+    if m * k > 268435456 or k * n > 268435456 or m * n > 268435456 {
+        return matmul(a, b, m, k, n)
+    }
+    let fa = __alloc_bytes(m * k * 4 + 16)
+    let fb = __alloc_bytes(k * n * 4 + 16)
+    let fc = __alloc_bytes(m * n * 4 + 16)
+    for i in 0..m * k {
+        __store32(fa + i * 4, __f64_to_f32(float_bits(a[i])))
+    }
+    for i in 0..k * n {
+        __store32(fb + i * 4, __f64_to_f32(float_bits(b[i])))
+    }
+    if not __gpu_matmul(fa, fb, fc, m, k, n) {
+        return matmul(a, b, m, k, n)
+    }
+    let c: array[float] = []
+    for i in 0..m * n {
+        push(c, float_from_bits(__f32_to_f64(__load32(fc + i * 4))))
+    }
+    return c
 }

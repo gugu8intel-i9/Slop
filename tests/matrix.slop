@@ -42,7 +42,41 @@ fn check(m: int, k: int, n: int) {
     print(str(m) + "x" + str(k) + " * " + str(k) + "x" + str(n) + ": " + verdict + ", sum " + str(round(total * 1000.0) / 1000.0))
 }
 
+# gpu_matmul: 32-bit on a GPU, so close to matmul rather than equal
+fn check_gpu(m: int, k: int, n: int) {
+    let a: array[float] = []
+    let b: array[float] = []
+    for i in 0..m * k {
+        push(a, float(i % 11) * 0.3 - 1.1)
+    }
+    for i in 0..k * n {
+        push(b, float(i % 13) * 0.7 - 2.0)
+    }
+    let c = gpu_matmul(a, b, m, k, n)
+    let d = matmul(a, b, m, k, n)
+    let worst = 0.0
+    let scale = 1.0
+    for i in 0..m * n {
+        if abs(c[i] - d[i]) > worst {
+            worst = abs(c[i] - d[i])
+        }
+        if abs(d[i]) > scale {
+            scale = abs(d[i])
+        }
+    }
+    let verdict = "ok"
+    if worst > 0.0001 * scale {
+        verdict = "WRONG by " + str(worst)
+    }
+    print("gpu " + str(m) + "x" + str(k) + " * " + str(k) + "x" + str(n) + ": " + verdict)
+}
+
 fn main() {
+    check_gpu(1, 1, 1)
+    check_gpu(3, 5, 2)
+    check_gpu(65, 17, 130)
+    check_gpu(200, 300, 100)
+    check_gpu(256, 64, 257)
     check(1, 1, 1)
     check(3, 5, 2)
     check(37, 53, 29)
