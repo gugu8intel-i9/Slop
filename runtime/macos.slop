@@ -244,26 +244,101 @@ fn __sleep_ms(ms: int) {
     __ccall("nanosleep", t, 0)
 }
 
+fn __af6() -> int {
+    return 30
+}
+
+fn __sa_init(a: int, v6: bool) {
+    __memzero(a, 28)
+    if v6 {
+        __store8(a, 28)
+        __store8(a + 1, 30)
+    } else {
+        __store8(a, 16)
+        __store8(a + 1, 2)
+    }
+}
+
+fn __sa_is6(a: int) -> bool {
+    return __load8(a + 1) == 30
+}
+
+# a socket (kind 1: TCP, 2: UDP) on port for every address: IPv6 and IPv4
+# together where the system has IPv6, else IPv4
+fn __bound_socket(kind: int, port: int) -> int {
+    for v6 in [true, false] {
+        fam = 2
+        if v6 {
+            fam = 30
+        }
+        fd = __ccall32("socket", fam, kind, 0)
+        if fd >= 0 {
+            one = __alloc_bytes(8)
+            __store64(one, 1)
+            # SOL_SOCKET, SO_REUSEADDR
+            __ccall32("setsockopt", fd, 65535, 4, one, 4)
+            n = 16
+            if v6 {
+                # IPPROTO_IPV6, IPV6_V6ONLY off: IPv4 visitors too
+                zero = __alloc_bytes(8)
+                __store64(zero, 0)
+                __ccall32("setsockopt", fd, 41, 27, zero, 4)
+                n = 28
+            }
+            if kind == 2 {
+                # room for big messages (up to 64 KB; macOS allows only 9 KB
+                # unless the send buffer is bigger) and for bursts of them
+                big = __alloc_bytes(8)
+                __store64(big, 1048576)
+                __ccall32("setsockopt", fd, 65535, 4097, big, 4)
+                __ccall32("setsockopt", fd, 65535, 4098, big, 4)
+            }
+            a = __alloc_bytes(32)
+            __sa_init(a, v6)
+            __store8(a + 2, port / 256)
+            __store8(a + 3, port % 256)
+            if __ccall32("bind", fd, a, n) == 0 {
+                return fd
+            }
+            __ccall32("close", fd)
+        }
+    }
+    return -1
+}
+
 fn __socket_listen(port: int) -> int {
-    fd = __ccall32("socket", 2, 1, 0)
+    fd = __bound_socket(1, port)
     if fd < 0 {
         return -1
     }
-    one = __scratch()
-    __store64(one, 1)
-    # SOL_SOCKET, SO_REUSEADDR
-    __ccall32("setsockopt", fd, 65535, 4, one, 4)
-    a = __scratch() + 16
-    __memzero(a, 16)
-    __store8(a, 16)
-    __store8(a + 1, 2)
-    __store8(a + 2, port / 256)
-    __store8(a + 3, port % 256)
-    if __ccall32("bind", fd, a, 16) != 0 or __ccall32("listen", fd, 4096) != 0 {
+    if __ccall32("listen", fd, 4096) != 0 {
         __ccall32("close", fd)
         return -1
     }
     return fd
+}
+
+fn __udp_open(port: int) -> int {
+    return __bound_socket(2, port)
+}
+
+fn __socket_is6(fd: int) -> bool {
+    a = __alloc_bytes(32)
+    __memzero(a, 32)
+    l = __alloc_bytes(8)
+    __store64(l, 32)
+    __ccall32("getsockname", fd, a, l)
+    return __sa_is6(a)
+}
+
+fn __sendto(fd: int, data: string, a: int, n: int) -> bool {
+    return __ccall("sendto", fd, __str_ptr(data), len(data), 0, a, n) >= 0
+}
+
+fn __recvfrom(fd: int, buf: int, n: int, a: int) -> int {
+    l = __alloc_bytes(8)
+    __store64(l, 32)
+    return __ccall("recvfrom", fd, buf, n, 0, a, l)
 }
 
 fn __socket_accept(fd: int) -> int {
@@ -282,17 +357,22 @@ fn __no_sigpipe(fd: int) {
     }
 }
 
-# connects to ip:port (like "127.0.0.1"); -1 if it can't
+# connects to ip:port ("127.0.0.1" or an IPv6 address like "::1"); -1 if it can't
 fn __socket_connect(ip: string, port: int) -> int {
-    fd = __ccall32("socket", 2, 1, 0)
+    a = __alloc_bytes(32)
+    n = __sockaddr(a, ip, port, false)
+    if n == 0 {
+        return -1
+    }
+    fam = 2
+    if n == 28 {
+        fam = 30
+    }
+    fd = __ccall32("socket", fam, 1, 0)
     if fd < 0 {
         return -1
     }
-    a = __scratch() + 16
-    __memzero(a, 16)
-    __store8(a, 16)
-    __store8(a + 1, 2)
-    if not __ipv4_fill(a, ip, port) or __ccall32("connect", fd, a, 16) != 0 {
+    if __ccall32("connect", fd, a, n) != 0 {
         __ccall32("close", fd)
         return -1
     }

@@ -415,24 +415,106 @@ fn __sock_nr(i: int) -> int {
     return nums[i]
 }
 
+fn __af6() -> int {
+    return 10
+}
+
+fn __sa_init(a: int, v6: bool) {
+    __memzero(a, 28)
+    if v6 {
+        __store8(a, 10)
+    } else {
+        __store8(a, 2)
+    }
+}
+
+fn __sa_is6(a: int) -> bool {
+    return __load8(a) == 10
+}
+
+# a socket (kind 1: TCP, 2: UDP) on port for every address: IPv6 and IPv4
+# together where the system has IPv6, else IPv4
+fn __bound_socket(kind: int, port: int) -> int {
+    for v6 in [true, false] {
+        fam = 2
+        if v6 {
+            fam = 10
+        }
+        fd = __syscall(__sock_nr(0), fam, kind, 0)
+        if fd >= 0 {
+            one = __alloc_bytes(8)
+            __store64(one, 1)
+            __syscall(__sock_nr(1), fd, 1, 2, one, 4)
+            n = 16
+            if v6 {
+                # IPPROTO_IPV6, IPV6_V6ONLY off: IPv4 visitors too
+                zero = __alloc_bytes(8)
+                __store64(zero, 0)
+                __syscall(__sock_nr(1), fd, 41, 26, zero, 4)
+                n = 28
+            }
+            if kind == 2 {
+                # room for big messages (up to 64 KB; macOS allows only 9 KB
+                # unless the send buffer is bigger) and for bursts of them
+                big = __alloc_bytes(8)
+                __store64(big, 1048576)
+                __syscall(__sock_nr(1), fd, 1, 7, big, 4)
+                __syscall(__sock_nr(1), fd, 1, 8, big, 4)
+            }
+            a = __alloc_bytes(32)
+            __sa_init(a, v6)
+            __store8(a + 2, port / 256)
+            __store8(a + 3, port % 256)
+            if __syscall(__sock_nr(2), fd, a, n) >= 0 {
+                return fd
+            }
+            __os_close(fd)
+        }
+    }
+    return -1
+}
+
 fn __socket_listen(port: int) -> int {
-    fd = __syscall(__sock_nr(0), 2, 1, 0)
+    fd = __bound_socket(1, port)
     if fd < 0 {
         return -1
     }
-    one = __scratch()
-    __store64(one, 1)
-    __syscall(__sock_nr(1), fd, 1, 2, one, 4)
-    a = __scratch() + 16
-    __memzero(a, 16)
-    __store8(a, 2)
-    __store8(a + 2, port / 256)
-    __store8(a + 3, port % 256)
-    if __syscall(__sock_nr(2), fd, a, 16) < 0 or __syscall(__sock_nr(3), fd, 4096) < 0 {
+    if __syscall(__sock_nr(3), fd, 4096) < 0 {
         __os_close(fd)
         return -1
     }
     return fd
+}
+
+fn __udp_open(port: int) -> int {
+    return __bound_socket(2, port)
+}
+
+fn __socket_is6(fd: int) -> bool {
+    a = __alloc_bytes(32)
+    __memzero(a, 32)
+    l = __alloc_bytes(8)
+    __store64(l, 32)
+    nr = 51
+    if __arm() {
+        nr = 204
+    }
+    __syscall(nr, fd, a, l)
+    return __sa_is6(a)
+}
+
+fn __sendto(fd: int, data: string, a: int, n: int) -> bool {
+    return __syscall(__sock_nr(6), fd, __str_ptr(data), len(data), 16384, a, n) >= 0
+}
+
+fn __recvfrom(fd: int, buf: int, n: int, a: int) -> int {
+    l = __alloc_bytes(8)
+    __store64(l, 32)
+    nr = 45
+    if __arm() {
+        nr = 207
+    }
+    return __syscall(nr, fd, buf, n, 0, a, l)
 }
 
 fn __socket_accept(fd: int) -> int {
@@ -463,16 +545,22 @@ fn __socket_write(fd: int, s: string) {
     }
 }
 
-# connects to ip:port (like "127.0.0.1"); -1 if it can't
+# connects to ip:port ("127.0.0.1" or an IPv6 address like "::1"); -1 if it can't
 fn __socket_connect(ip: string, port: int) -> int {
-    fd = __syscall(__sock_nr(0), 2, 1, 0)
+    a = __alloc_bytes(32)
+    n = __sockaddr(a, ip, port, false)
+    if n == 0 {
+        return -1
+    }
+    fam = 2
+    if n == 28 {
+        fam = 10
+    }
+    fd = __syscall(__sock_nr(0), fam, 1, 0)
     if fd < 0 {
         return -1
     }
-    a = __scratch() + 16
-    __memzero(a, 16)
-    __store8(a, 2)
-    if not __ipv4_fill(a, ip, port) or __syscall(__sock_nr(5), fd, a, 16) < 0 {
+    if __syscall(__sock_nr(5), fd, a, n) < 0 {
         __os_close(fd)
         return -1
     }
@@ -484,14 +572,28 @@ fn __windows_roots() -> array[string] {
     return out
 }
 
-# a host name -> its IPv4 address: /etc/hosts first, then a DNS question
-# to the name server in /etc/resolv.conf
+# a host name -> its address: IPv4 if it has one, else IPv6. /etc/hosts
+# first, then a DNS question to the name server in /etc/resolv.conf
 fn __resolve(host: string) -> string {
+    r = __hosts_lookup(host, false)
+    if r == "" {
+        r = __dns_ask(host, 1)
+    }
+    if r == "" {
+        r = __hosts_lookup(host, true)
+    }
+    if r == "" {
+        r = __dns_ask(host, 28)
+    }
+    return r
+}
+
+fn __hosts_lookup(host: string, v6: bool) -> string {
     for line in __split(__read_file("/etc/hosts"), "\n") {
         t = __trim(line)
         if len(t) > 0 and __byte_at(t, 0) != 35 {
             words = __split(__replace(t, "\t", " "), " ")
-            if len(words) > 1 and len(__split(words[0], ".")) == 4 {
+            if len(words) > 1 and __contains(words[0], ":") == v6 and __is_ip(words[0]) {
                 for w in words {
                     if w == host {
                         return words[0]
@@ -500,12 +602,17 @@ fn __resolve(host: string) -> string {
             }
         }
     }
+    return ""
+}
+
+# asks the name server for host's address of this type (1: IPv4, 28: IPv6)
+fn __dns_ask(host: string, qtype: int) -> string {
     server = ""
     for line in __split(__read_file("/etc/resolv.conf"), "\n") {
         t = __trim(line)
         if server == "" and __starts_with(t, "nameserver ") {
             cand = __trim(__slice(t, 11, len(t)))
-            if len(__split(cand, ".")) == 4 {
+            if __is_ip(cand) {
                 server = cand
             }
         }
@@ -513,7 +620,7 @@ fn __resolve(host: string) -> string {
     if server == "" {
         server = "8.8.8.8"
     }
-    # the question: id, flags (recursion), 1 question, the name, type A, class IN
+    # the question: id, flags (recursion), 1 question, the name, the type, class IN
     q = __alloc_bytes(512)
     n = 12
     __memzero(q, 12)
@@ -528,28 +635,33 @@ fn __resolve(host: string) -> string {
     }
     __store8(q + n, 0)
     __store8(q + n + 1, 0)
-    __store8(q + n + 2, 1)
+    __store8(q + n + 2, qtype)
     __store8(q + n + 3, 0)
     __store8(q + n + 4, 1)
     n += 5
-    fd = __syscall(__sock_nr(0), 2, 2, 0)
+    a = __alloc_bytes(32)
+    an = __sockaddr(a, server, 53, false)
+    if an == 0 {
+        return ""
+    }
+    fam = 2
+    if an == 28 {
+        fam = 10
+    }
+    fd = __syscall(__sock_nr(0), fam, 2, 0)
     if fd < 0 {
         return ""
     }
     # wait at most 3 seconds for the answer
-    tv = __scratch()
+    tv = __alloc_bytes(16)
     __store64(tv, 3)
     __store64(tv + 8, 0)
     __syscall(__sock_nr(1), fd, 1, 20, tv, 16)
-    a = __scratch() + 16
-    __memzero(a, 16)
-    __store8(a, 2)
-    __ipv4_fill(a, server, 53)
     ans = __alloc_bytes(1500)
     got = 0
     for attempt in 0..2 {
         if got <= 0 {
-            __syscall(__sock_nr(6), fd, q, n, 0, a, 16)
+            __syscall(__sock_nr(6), fd, q, n, 0, a, an)
             if __arm() {
                 got = __syscall(207, fd, ans, 1500, 0, 0, 0)
             } else {
@@ -584,8 +696,11 @@ fn __resolve(host: string) -> string {
         typ = __load8(ans + p) * 256 + __load8(ans + p + 1)
         rlen = __load8(ans + p + 8) * 256 + __load8(ans + p + 9)
         p += 10
-        if typ == 1 and rlen == 4 {
+        if typ == 1 and rlen == 4 and qtype == 1 {
             return __int_to_string(__load8(ans + p)) + "." + __int_to_string(__load8(ans + p + 1)) + "." + __int_to_string(__load8(ans + p + 2)) + "." + __int_to_string(__load8(ans + p + 3))
+        }
+        if typ == 28 and rlen == 16 and qtype == 28 {
+            return __ip6_text(ans + p)
         }
         p += rlen
     }

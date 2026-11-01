@@ -147,5 +147,16 @@ jobs:
           grep -q "Failed requests: *0" ab1.txt
           grep -q "Failed requests: *0" ab2.txt
           grep -q "Complete requests: *20000" ab1.txt
+      - name: IPv6 (http, https, sockets and UDP over ::1; IPv4 on the same server)
+        run: |
+          ${{ matrix.slop }} run tests/ipv6.slop > ipv6-out.txt
+          cat ipv6-out.txt
+          diff --strip-trailing-cr ipv6-out.txt tests/expected/ipv6.txt
+      - name: name lookup for a name with only an IPv6 address (Slop's own DNS)
+        if: matrix.slop == 'bin/slop' || matrix.slop == 'bin/slop-linux-arm64'
+        run: |
+          printf 'print(__resolve("ipv6.google.com"))\n' > aaaa.slop
+          ${{ matrix.slop }} run aaaa.slop | tee aaaa.txt
+          grep -q ":" aaaa.txt
       - name: https to a real site (system certificates and name lookup)
         run: ${{ matrix.slop }} run examples/fetch.slop https://github.com/

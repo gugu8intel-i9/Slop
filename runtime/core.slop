@@ -472,6 +472,354 @@ fn __ipv4_fill(a: int, ip: string, port: int) -> bool {
     return true
 }
 
+# ---------- addresses (IPv4 and IPv6) ----------
+fn __hexdig(c: int) -> int {
+    if c >= 48 and c <= 57 {
+        return c - 48
+    }
+    if c >= 97 and c <= 102 {
+        return c - 87
+    }
+    if c >= 65 and c <= 70 {
+        return c - 55
+    }
+    return -1
+}
+
+# the 16-bit groups of one side of an IPv6 address ("" -> none); -1 in the
+# list means the text was not valid
+fn __ip6_groups(s: string) -> array[int] {
+    out: array[int] = []
+    if s == "" {
+        return out
+    }
+    for part in __split(s, ":") {
+        if __contains(part, ".") {
+            q = __split(part, ".")
+            if len(q) != 4 {
+                push(out, -1)
+                return out
+            }
+            push(out, __to_int(q[0]) * 256 + __to_int(q[1]))
+            push(out, __to_int(q[2]) * 256 + __to_int(q[3]))
+        } else {
+            if len(part) < 1 or len(part) > 4 {
+                push(out, -1)
+                return out
+            }
+            v = 0
+            for i in 0..len(part) {
+                d = __hexdig(__byte_at(part, i))
+                if d < 0 {
+                    push(out, -1)
+                    return out
+                }
+                v = v * 16 + d
+            }
+            push(out, v)
+        }
+    }
+    return out
+}
+
+# an IPv6 address as text ("::1", "[2001:db8::5]", "fe80::1%eth0") -> its
+# 16 bytes at out; false if it is not one
+fn __ip6_parse(ip: string, out: int) -> bool {
+    s = ip
+    if len(s) > 1 and __byte_at(s, 0) == 91 and __byte_at(s, len(s) - 1) == 93 {
+        s = __slice(s, 1, len(s) - 1)
+    }
+    pct = __find(s, "%")
+    if pct >= 0 {
+        s = __slice(s, 0, pct)
+    }
+    if not __contains(s, ":") {
+        return false
+    }
+    __memzero(out, 16)
+    dbl = __find(s, "::")
+    head: array[int] = []
+    tail: array[int] = []
+    if dbl >= 0 {
+        head = __ip6_groups(__slice(s, 0, dbl))
+        tail = __ip6_groups(__slice(s, dbl + 2, len(s)))
+        if __contains(__slice(s, dbl + 2, len(s)), "::") or len(head) + len(tail) > 7 {
+            return false
+        }
+    } else {
+        head = __ip6_groups(s)
+        if len(head) != 8 {
+            return false
+        }
+    }
+    for g in head {
+        if g < 0 {
+            return false
+        }
+    }
+    for g in tail {
+        if g < 0 {
+            return false
+        }
+    }
+    for i in 0..len(head) {
+        __store8(out + i * 2, head[i] / 256)
+        __store8(out + i * 2 + 1, head[i] % 256)
+    }
+    start = 8 - len(tail)
+    for i in 0..len(tail) {
+        __store8(out + (start + i) * 2, tail[i] / 256)
+        __store8(out + (start + i) * 2 + 1, tail[i] % 256)
+    }
+    return true
+}
+
+fn __hex_text(v: int) -> string {
+    digits = "0123456789abcdef"
+    if v == 0 {
+        return "0"
+    }
+    out = ""
+    while v > 0 {
+        out = __slice(digits, v % 16, v % 16 + 1) + out
+        v = v / 16
+    }
+    return out
+}
+
+# 16 address bytes -> text, the short form ("2001:db8::1"); an IPv4 address
+# that came in on an IPv6 socket (::ffff:1.2.3.4) is given as IPv4
+fn __ip6_text(p: int) -> string {
+    mapped = __load8(p + 10) == 255 and __load8(p + 11) == 255
+    for i in 0..10 {
+        if __load8(p + i) != 0 {
+            mapped = false
+        }
+    }
+    if mapped {
+        return __int_to_string(__load8(p + 12)) + "." + __int_to_string(__load8(p + 13)) + "." + __int_to_string(__load8(p + 14)) + "." + __int_to_string(__load8(p + 15))
+    }
+    g: array[int] = []
+    for i in 0..8 {
+        push(g, __load8(p + i * 2) * 256 + __load8(p + i * 2 + 1))
+    }
+    # the longest run of zero groups (2 or more) becomes "::"
+    best = -1
+    best_len = 1
+    i = 0
+    while i < 8 {
+        if g[i] == 0 {
+            j = i
+            while j < 8 and g[j] == 0 {
+                j += 1
+            }
+            if j - i > best_len {
+                best = i
+                best_len = j - i
+            }
+            i = j
+        } else {
+            i += 1
+        }
+    }
+    out = ""
+    i = 0
+    while i < 8 {
+        if i == best {
+            out = out + "::"
+            i += best_len
+        } else {
+            if len(out) > 0 and __byte_at(out, len(out) - 1) != 58 {
+                out = out + ":"
+            }
+            out = out + __hex_text(g[i])
+            i += 1
+        }
+    }
+    return out
+}
+
+# fills the socket address at a (32 bytes) for ip and port: its length
+# (16 for IPv4, 28 for IPv6), or 0 if ip is not an address. With v6, an IPv4
+# address is written the IPv6 way (::ffff:a.b.c.d), for an IPv6 socket.
+fn __sockaddr(a: int, ip: string, port: int, v6: bool) -> int {
+    if ip == "localhost" {
+        ip = "127.0.0.1"
+    }
+    if __contains(ip, ":") {
+        __sa_init(a, true)
+        __store8(a + 2, port / 256)
+        __store8(a + 3, port % 256)
+        if not __ip6_parse(ip, a + 8) {
+            return 0
+        }
+        return 28
+    }
+    if v6 {
+        __sa_init(a, true)
+        __store8(a + 2, port / 256)
+        __store8(a + 3, port % 256)
+        parts = __split(ip, ".")
+        if len(parts) != 4 {
+            return 0
+        }
+        __store8(a + 18, 255)
+        __store8(a + 19, 255)
+        for i in 0..4 {
+            __store8(a + 20 + i, __to_int(parts[i]))
+        }
+        return 28
+    }
+    __sa_init(a, false)
+    if not __ipv4_fill(a, ip, port) {
+        return 0
+    }
+    return 16
+}
+
+# the address in a socket address, as text
+fn __sockaddr_text(a: int) -> string {
+    if __sa_is6(a) {
+        return __ip6_text(a + 8)
+    }
+    return __int_to_string(__load8(a + 4)) + "." + __int_to_string(__load8(a + 5)) + "." + __int_to_string(__load8(a + 6)) + "." + __int_to_string(__load8(a + 7))
+}
+
+fn __sockaddr_port(a: int) -> int {
+    return __load8(a + 2) * 256 + __load8(a + 3)
+}
+
+# an IP address in its usual form ("0:0::1" -> "::1"; "[::1]" -> "::1");
+# "" if s is not an address
+fn __ip_normalize(s: string) -> string {
+    if __contains(s, ":") {
+        b = __alloc_bytes(16)
+        if __ip6_parse(s, b) {
+            return __ip6_text(b)
+        }
+        return ""
+    }
+    if __is_ip(s) {
+        return s
+    }
+    return ""
+}
+
+# is this text an IP address (IPv4 or IPv6), not a name?
+fn __is_ip(s: string) -> bool {
+    if __contains(s, ":") {
+        tmp = __alloc_bytes(16)
+        return __ip6_parse(s, tmp)
+    }
+    parts = __split(s, ".")
+    if len(parts) != 4 {
+        return false
+    }
+    for p in parts {
+        if len(p) == 0 or len(p) > 3 {
+            return false
+        }
+        for i in 0..len(p) {
+            if __byte_at(p, i) < 48 or __byte_at(p, i) > 57 {
+                return false
+            }
+        }
+    }
+    return true
+}
+
+# where UDP messages came from: for each socket (by number % 4096), the
+# socket number and its sender's address (48 bytes each)
+__udp_from = 0
+__udp_word = 0
+
+fn __udp_note(fd: int, a: int) {
+    if __udp_from == 0 {
+        __spin_lock(addr_of(__udp_word))
+        if __udp_from == 0 {
+            t = __os_alloc(4096 * 48)
+            __memzero(t, 4096 * 48)
+            __udp_from = t
+        }
+        __spin_unlock(addr_of(__udp_word))
+    }
+    e = __udp_from + fd % 4096 * 48
+    __store64(e, fd + 1)
+    __memcpy(e + 8, a, 32)
+}
+
+# the address the last message on fd came from (0 if none)
+fn __udp_last(fd: int) -> int {
+    if __udp_from == 0 {
+        return 0
+    }
+    e = __udp_from + fd % 4096 * 48
+    if __load64(e) != fd + 1 {
+        return 0
+    }
+    return e + 8
+}
+
+fn __udp_sender(fd: int) -> string {
+    a = __udp_last(fd)
+    if a == 0 {
+        return ""
+    }
+    return __sockaddr_text(a)
+}
+
+fn __udp_sender_port(fd: int) -> int {
+    a = __udp_last(fd)
+    if a == 0 {
+        return 0
+    }
+    return __sockaddr_port(a)
+}
+
+# sends data to host (an address or a name) and port; false if it could not
+fn __udp_send(fd: int, host: string, port: int, data: string) -> bool {
+    ip = host
+    if host != "localhost" and not __is_ip(host) {
+        ip = __resolve(host)
+        if ip == "" {
+            return false
+        }
+    }
+    a = __alloc_bytes(32)
+    __memzero(a, 32)
+    n = __sockaddr(a, ip, port, __socket_is6(fd))
+    if n == 0 {
+        return false
+    }
+    return __sendto(fd, data, a, n)
+}
+
+# answers the sender of the last message on fd
+fn __udp_reply(fd: int, data: string) -> bool {
+    a = __udp_last(fd)
+    if a == 0 {
+        return false
+    }
+    n = 16
+    if __sa_is6(a) {
+        n = 28
+    }
+    return __sendto(fd, data, a, n)
+}
+
+# the next message on fd ("" after a time limit set by socket_timeout)
+fn __udp_receive(fd: int) -> string {
+    buf = __alloc_bytes(65536)
+    a = __alloc_bytes(32)
+    __memzero(a, 32)
+    r = __recvfrom(fd, buf, 65536, a)
+    if r < 0 {
+        return ""
+    }
+    __udp_note(fd, a)
+    return __str(buf, r)
+}
+
 fn __file_exists(path: string) -> bool {
     fd = __os_open_read(__cstr(path))
     if fd < 0 {
@@ -933,11 +1281,20 @@ fn __task_free(block: int) {
     __os_release(block, 8192)
 }
 
-# a name -> its IPv4 address through the system library's getaddrinfo (macOS, Windows)
+# a name -> its address through the system library's getaddrinfo (macOS,
+# Windows): IPv4 if it has one, else IPv6
 fn __getaddrinfo(host: string) -> string {
+    r = __getaddrinfo_in(host, 2)
+    if r == "" {
+        r = __getaddrinfo_in(host, __af6())
+    }
+    return r
+}
+
+fn __getaddrinfo_in(host: string, fam: int) -> string {
     hints = __alloc(48)
     __memzero(hints, 48)
-    __store32(hints + 4, 2)
+    __store32(hints + 4, fam)
     __store32(hints + 8, 1)
     res = __scratch() + 40
     __store64(res, 0)
@@ -949,7 +1306,12 @@ fn __getaddrinfo(host: string) -> string {
         return ""
     }
     a = __load64(ai + 32)
-    ip = __int_to_string(__load8(a + 4)) + "." + __int_to_string(__load8(a + 5)) + "." + __int_to_string(__load8(a + 6)) + "." + __int_to_string(__load8(a + 7))
+    ip = ""
+    if fam == 2 {
+        ip = __int_to_string(__load8(a + 4)) + "." + __int_to_string(__load8(a + 5)) + "." + __int_to_string(__load8(a + 6)) + "." + __int_to_string(__load8(a + 7))
+    } else {
+        ip = __ip6_text(a + 8)
+    }
     __ccall("freeaddrinfo", ai)
     return ip
 }

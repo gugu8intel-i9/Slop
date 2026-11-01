@@ -3558,6 +3558,9 @@ fn builtin_alias(name: string) -> string {
     if name == "socket_listen" or name == "socket_accept" or name == "socket_read" or name == "socket_write" or name == "socket_close" or name == "socket_connect" or name == "socket_timeout" {
         return "__" + name
     }
+    if name == "udp_open" or name == "udp_send" or name == "udp_receive" or name == "udp_reply" or name == "udp_sender" or name == "udp_sender_port" or name == "is_ip" {
+        return "__" + name
+    }
     if name == "str" {
         return "__int_to_string"
     }
@@ -8065,7 +8068,7 @@ fn dll_of(name: string) -> int {
 }
 
 fn is_winsock(name: string) -> bool {
-    let names = ["WSAStartup", "socket", "setsockopt", "bind", "listen", "accept", "recv", "send", "closesocket", "connect", "getaddrinfo", "freeaddrinfo", "shutdown"]
+    let names = ["WSAStartup", "socket", "setsockopt", "bind", "listen", "accept", "recv", "send", "closesocket", "connect", "getaddrinfo", "freeaddrinfo", "shutdown", "sendto", "recvfrom", "getsockname", "WSAIoctl"]
     for n in names {
         if n == name {
             return true
