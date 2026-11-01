@@ -31,7 +31,7 @@ fn handle(req: Request) -> Response {
 
 quiet()
 port = 18000 + clock_ns() / 1000 % 2000
-server = spawn serve_count(port, 9)
+server = spawn serve_count(port, 8)
 base = "http://127.0.0.1:" + str(port)
 sleep_until_up = 0
 first = ""

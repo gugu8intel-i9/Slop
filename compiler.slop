@@ -3555,7 +3555,7 @@ fn builtin_alias(name: string) -> string {
     if name == "exec" or name == "clock_ns" or name == "eprint" or name == "input" or name == "upper" or name == "lower" {
         return "__" + name
     }
-    if name == "socket_listen" or name == "socket_accept" or name == "socket_read" or name == "socket_write" or name == "socket_close" or name == "socket_connect" {
+    if name == "socket_listen" or name == "socket_accept" or name == "socket_read" or name == "socket_write" or name == "socket_close" or name == "socket_connect" or name == "socket_timeout" {
         return "__" + name
     }
     if name == "str" {

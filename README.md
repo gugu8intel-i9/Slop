@@ -167,7 +167,7 @@ Types: `int`, `float`, `bool`, `string`, `array[T]`, `thread[T]` and your struct
 | Matrices (`use "matrix"`) | `matmul`, `gpu_matmul`, `matmul_library` |
 | Files | `read_file`, `write_file`, `remove_file`, `make_dir`, `make_executable` |
 | Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()`, `env(name)`, `program_path()`, `input_ended()` |
-| Network | `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close` (or `use "web"`) |
+| Network | `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close`, `socket_timeout(fd, ms)` (or `use "web"`) |
 | Packing | `slop_pack(list)`, `slop_unpack(packed)` |
 | Low level | see [LOW_LEVEL.md](LOW_LEVEL.md) |
 
@@ -277,7 +277,15 @@ serve(8080)    # open http://localhost:8080
 | https | `serve_https(port, cert, key)`, `make_cert(host, cert, key)`, `trust_cert(cert)` |
 
 - `slop new mysite --web` starts a website you can build on; `examples/web_server.slop` is a small notes app.
-- Requests are answered one at a time; `serve_count(port, n)` stops after `n` requests, and `quiet()` turns off the request log.
+- `serve_count(port, n)` stops after `n` requests, and `quiet()` turns off the request log.
+
+### Speed
+
+- Connections stay open between requests (HTTP keep-alive), so a browser or client sends many requests over one.
+- On Linux and macOS the server is an event loop (epoll / kqueue): a few worker threads, two per core, wait on one poller that watches every open connection, and a connection takes a worker only while a request is being answered. Thousands of open connections cost no threads; ones idle for a minute are closed. On Windows each connection has its own task.
+- Small answers go out at once (no packet batching), slow senders get 10 seconds per request, and `handle` itself runs for one request at a time, so it can use globals safely.
+- `http_get` and `http_post` keep connections to the servers they talk to and use them again, so a second https request to the same site skips the handshake.
+- On a 4-core test machine: about 74,000 requests a second over 50 connections, about 42,000 a second with 5,000 connections open at once; 200 https requests in a row to one server in 23 ms (20 seconds before connections were kept).
 
 ### https
 
