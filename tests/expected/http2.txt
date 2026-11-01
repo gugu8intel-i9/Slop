@@ -1,0 +1,9 @@
+true :status 200 content-type text/plain x-made-by slop slop slop
+www.example.com 12
+200 HTTP/2 true 
+got 10 bytes, name=Ada L 200 2
+big 1000000 true 2
+got 200000 bytes, name= 2
+404 2
+100 more 200 2
+true 200 1.1

@@ -321,7 +321,18 @@ serve(8080)
 - On Linux and macOS the server is an event loop (epoll / kqueue): a few worker threads, two per core, wait on one poller that watches every open connection, and a connection takes a worker only while a request is being answered. Thousands of open connections cost no threads; ones idle for a minute are closed. On Windows each connection has its own task.
 - Small answers go out at once (no packet batching), slow senders get 10 seconds per request, and `handle` itself runs for one request at a time, so it can use globals safely.
 - `http_get` and `http_post` keep connections to the servers they talk to and use them again, so a second https request to the same site skips the handshake.
+- A server's memory stays flat however long it runs: each request (or each batch of requests on a connection) is answered in its own function, and Slop frees a function's memory when it returns.
 - On a 4-core test machine: about 74,000 requests a second over 50 connections, about 42,000 a second with 5,000 connections open at once; 200 https requests in a row to one server in 23 ms (20 seconds before connections were kept).
+
+### HTTP/2
+
+`serve_https` and `http_get` / `http_post` speak HTTP/2 whenever the other side does (browsers, curl and most sites do), and HTTP/1.1 otherwise. Nothing changes in your code: `handle` sees the same requests either way.
+
+- Many requests share one connection at the same time (streams), headers are compressed (HPACK, with its Huffman code), and big answers are sent as fast as the other side's flow-control windows allow.
+- Both sides agree on HTTP/2 during the TLS handshake (ALPN), so it is used over https; plain `serve` stays HTTP/1.1.
+- `http_version()` says which one the last `http_get` / `http_post` used (`"2"` or `"1.1"`), and `use_http2(false)` turns HTTP/2 off.
+- On a 4-core test machine (h2load, 100 connections, 10 requests at a time on each): about 23,000 https requests a second over HTTP/2, against about 5,000 to 14,000 over HTTP/1.1.
+- The `http2` module has the pieces, for other uses: `hpack_encode`, `hpack_decode`, `h2_frame`.
 
 ### https
 
@@ -400,9 +411,10 @@ Modules that come with Slop, built into `slop` itself (nothing to download). Put
 
 | Module | What it has |
 |---|---|
-| `web` | websites: `serve`, `serve_https`, `route`, `html`, `page`, `render`, `form`, `query`, `json_object`, `http_get`, WebSockets (`websocket`, `ws_connect`, `ws_send`, `ws_receive`, `ws_broadcast`) (see Websites) |
+| `web` | websites: `serve`, `serve_https`, `route`, `html`, `page`, `render`, `form`, `query`, `json_object`, `http_get`, HTTP/2, WebSockets (`websocket`, `ws_connect`, `ws_send`, `ws_receive`, `ws_broadcast`) (see Websites) |
 | `crypto` | `sha256`, `sha384`, `sha512`, `sha1` (only where required, such as WebSockets), `hmac`, `hkdf_extract`/`hkdf_expand`, `chacha20_poly1305_seal`/`open`, `aes128_gcm_seal`/`open`, `x25519`, `p256_shared`, `ecdsa_sign`/`ecdsa_verify` (P-256, P-384), `rsa_sign_pss`/`rsa_sign_pkcs1`, `rsa_verify_pss`/`rsa_verify_pkcs1`, `random_bytes`, `to_hex`, `to_bytes` |
-| `tls` | TLS 1.3 connections, certificates and keys (used by `web`): `tls_connect`, `tls_accept`, `parse_cert`, `pem_blocks`, `base64_encode`/`decode` |
+| `tls` | TLS 1.3 connections, certificates and keys (used by `web`): `tls_connect`, `tls_accept` (and `_alpn` forms that agree on a protocol such as HTTP/2), `parse_cert`, `pem_blocks`, `base64_encode`/`decode` |
+| `http2` | HTTP/2 pieces (used by `web`): `hpack_encode`, `hpack_decode`, `hpack_huffman_encode`/`decode`, `h2_frame` |
 | `math` | `PI`, `E`, `gcd`, `lcm`, `is_prime`, `factorial`, `ipow`, `clamp`, `lerp`, `hypot`, `radians`, `min_int`/`max_float`, ... |
 | `lists` | `sum_ints`, `sort_ints`, `sort_floats`, `sort_strings`, `reverse_ints`, `unique_ints`, `index_of_int`, `range_list`, ... |
 | `strings` | `pad_left`, `center`, `title_case`, `capitalize`, `words`, `lines`, `count`, `is_digit`, `trim_left`, `strip_suffix`, ... |

@@ -1,0 +1,54 @@
+# HTTP/2: a site served over https and fetched with http_get, in one
+# program; both sides agree on HTTP/2 during the TLS handshake
+use "web"
+use "time"
+
+fn handle(req: Request) -> Response {
+    if route(req, "GET", "/") {
+        return html(page("Home", "<h1>hello</h1>"))
+    }
+    if route(req, "GET", "/big") {
+        return text(repeat("0123456789", 100000))
+    }
+    if route(req, "POST", "/echo") {
+        return with_header(text("got " + str(len(req.body)) + " bytes, name=" + form(req, "name")), "X-Seen", header(req, "user-agent"))
+    }
+    return not_found()
+}
+
+# header compression (HPACK), both ways, with its Huffman code
+h = hpack_decode(hpack_new(4096), hpack_encode([":status", "200", "content-type", "text/plain", "x-made-by", "slop slop slop"]))
+print(h.ok, join(h.headers, " "))
+print(hpack_huffman_decode(hpack_huffman_encode("www.example.com")), len(hpack_huffman_encode("www.example.com")))
+
+quiet()
+make_cert("localhost", "slop-test-h2-cert.pem", "slop-test-h2-key.pem")
+trust_cert("slop-test-h2-cert.pem")
+port = 28000 + clock_ns() / 1000 % 2000
+server = spawn serve_https_count(port, "slop-test-h2-cert.pem", "slop-test-h2-key.pem", 106)
+base = "https://localhost:" + str(port)
+got = http_get(base + "/")
+tries = 0
+while contains(http_error(), "cannot connect") and tries < 300 {
+    sleep(20)
+    got = http_get(base + "/")
+    tries += 1
+}
+print(http_status(), "HTTP/" + http_version(), contains(got, "<h1>hello</h1>"), http_error())
+print(http_post(base + "/echo", "name=Ada+L"), http_status(), http_version())
+big = http_get(base + "/big")
+print("big", len(big), big == repeat("0123456789", 100000), http_version())
+print(http_post(base + "/echo", repeat("u", 200000)), http_version())
+http_get(base + "/missing")
+print(http_status(), http_version())
+for i in 0..100 {
+    http_get(base + "/")
+}
+print("100 more", http_status(), http_version())
+# HTTP/1.1 still works, and use_http2(false) asks for it
+use_http2(false)
+print(contains(http_get(base + "/"), "hello"), http_status(), http_version())
+use_http2(true)
+join(server)
+remove_file("slop-test-h2-cert.pem")
+remove_file("slop-test-h2-key.pem")

@@ -7199,7 +7199,7 @@ fn use_lines(src: string) -> array[string] {
 
 # the standard library: modules built into slop itself
 fn std_modules() -> array[string] {
-    return ["crypto", "csv", "files", "lists", "math", "matrix", "npu", "random", "strings", "testing", "time", "tls", "web"]
+    return ["crypto", "csv", "files", "lists", "math", "matrix", "npu", "random", "strings", "testing", "time", "tls", "http2", "web"]
 }
 
 fn std_source(name: string) -> string {
@@ -7211,6 +7211,9 @@ fn std_source(name: string) -> string {
     }
     if name == "tls" {
         return embed("std/tls.slop")
+    }
+    if name == "http2" {
+        return embed("std/http2.slop")
     }
     if name == "files" {
         return embed("std/files.slop")
