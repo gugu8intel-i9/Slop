@@ -375,14 +375,55 @@ fn serve_count(port: int, count: int) {
 
 # each server's own state (kept for the whole run): +0 requests answered,
 # +8 the limit (-1: none), +16 its port, +24 a lock, +32 its poller,
-# +40 its table of connections, +48 the table's lock
+# +40 its table of connections, +48 the table's lock, +56 the connections
+# answered by tasks (4096 places, each 0 or the socket + 1)
 fn __web_server(port: int, count: int) -> int {
     s = __alloc_bytes_in(2, 64)
     __memzero(s, 64)
     __store64(s + 8, count)
     __store64(s + 16, port)
     __store64(s + 32, -1)
+    held = __alloc_bytes_in(2, 4096 * 8)
+    __memzero(held, 4096 * 8)
+    __store64(s + 56, held)
     return s
+}
+
+# notes that a task answers c (its place, or -1 when all are taken)
+fn __web_hold(s: int, c: int) -> int {
+    held = __load64(s + 56)
+    at = -1
+    __spin_lock(s + 48)
+    for i in 0..4096 {
+        if at < 0 and __load64(held + i * 8) == 0 {
+            __store64(held + i * 8, c + 1)
+            at = i
+        }
+    }
+    __spin_unlock(s + 48)
+    return at
+}
+
+# the task is about to close its connection
+fn __web_let_go(s: int, at: int) {
+    if at >= 0 {
+        __spin_lock(s + 48)
+        __store64(__load64(s + 56) + at * 8, 0)
+        __spin_unlock(s + 48)
+    }
+}
+
+# the server is done: connections kept open for more requests stop waiting
+fn __web_wake_all(s: int) {
+    held = __load64(s + 56)
+    __spin_lock(s + 48)
+    for i in 0..4096 {
+        v = __load64(held + i * 8)
+        if v != 0 {
+            __socket_shutdown(v - 1)
+        }
+    }
+    __spin_unlock(s + 48)
 }
 
 fn __web_more(s: int) -> bool {
@@ -400,10 +441,11 @@ fn __web_serve_tasks(fd: int, s: int) {
             socket_close(c)
         } else if c >= 0 {
             # each visitor gets its own task, so slow ones don't hold up the rest
-            push(live, async __web_answer(c, s))
+            push(live, async __web_answer(c, s, __web_hold(s, c)))
             live = __web_reap(live)
         }
     }
+    __web_wake_all(s)
     for t in live {
         await t
     }
@@ -673,7 +715,7 @@ fn __web_reply_one(raw: string, scheme: string, keep: bool) -> string {
 
 # answers the requests on one connection until the visitor is done (or
 # idle for 30 seconds), then closes it
-fn __web_answer(c: int, s: int) {
+fn __web_answer(c: int, s: int, at: int) {
     __socket_nodelay(c)
     __socket_timeout(c, 30000)
     raw = ""
@@ -682,6 +724,7 @@ fn __web_answer(c: int, s: int) {
         while need < 0 {
             piece = socket_read(c)
             if piece == "" or len(raw) > 16777216 {
+                __web_let_go(s, at)
                 socket_close(c)
                 return
             }
@@ -700,11 +743,12 @@ fn __web_answer(c: int, s: int) {
             break
         }
     }
+    __web_let_go(s, at)
     socket_close(c)
 }
 
 # the same over TLS
-fn __web_answer_tls(c: int, key: TlsKey, s: int) {
+fn __web_answer_tls(c: int, key: TlsKey, s: int, at: int) {
     __socket_nodelay(c)
     __socket_timeout(c, 30000)
     t = tls_accept(c, key)
@@ -712,6 +756,7 @@ fn __web_answer_tls(c: int, key: TlsKey, s: int) {
         if not __web_quiet and t.err != "the connection closed" {
             print("https handshake failed: " + t.err)
         }
+        __web_let_go(s, at)
         socket_close(c)
         # a failed handshake counts as one visit (for serve_https_count)
         __web_count(s)
@@ -723,6 +768,7 @@ fn __web_answer_tls(c: int, key: TlsKey, s: int) {
         while need < 0 {
             t = tls_recv(t)
             if t.data == "" or len(raw) > 16777216 {
+                __web_let_go(s, at)
                 tls_close(t)
                 return
             }
@@ -741,6 +787,7 @@ fn __web_answer_tls(c: int, key: TlsKey, s: int) {
             break
         }
     }
+    __web_let_go(s, at)
     tls_close(t)
 }
 
@@ -772,15 +819,17 @@ fn serve_https_count(port: int, cert_file: string, key_file: string, count: int)
             if not __web_more(s) {
                 socket_close(c)
             } else {
-                push(live, async __web_answer_tls(c, key, s))
+                push(live, async __web_answer_tls(c, key, s, __web_hold(s, c)))
                 live = __web_reap(live)
             }
         }
     }
+    # no more visitors: stop taking them, and end the connections kept open
+    socket_close(fd)
+    __web_wake_all(s)
     for t in live {
         await t
     }
-    socket_close(fd)
 }
 
 # makes a self-signed certificate and key for trying https on your computer
@@ -921,6 +970,8 @@ fn _web_open(host: string, port: int, secure: bool) -> Tls {
         return t
     }
     __socket_nodelay(fd)
+    # a server that stops answering gives up after a minute
+    __socket_timeout(fd, 60000)
     if secure {
         t = tls_connect(fd, host, __web_insecure)
         if not t.ok {

@@ -522,3 +522,8 @@ fn __socket_nodelay(fd: int) {
     __store64(one, 1)
     __ccall32("setsockopt", fd, 6, 1, one, 4)
 }
+
+# stops fd (a read waiting on it returns at once)
+fn __socket_shutdown(fd: int) {
+    __ccall32("shutdown", fd, 2)
+}

@@ -697,3 +697,12 @@ fn __socket_nodelay(fd: int) {
     # IPPROTO_TCP, TCP_NODELAY
     __syscall(__sock_nr(1), fd, 6, 1, one, 4)
 }
+
+# stops reading from fd: a read waiting on it returns at once
+fn __socket_shutdown(fd: int) {
+    if __arm() {
+        __syscall(210, fd, 0)
+    } else {
+        __syscall(48, fd, 0)
+    }
+}

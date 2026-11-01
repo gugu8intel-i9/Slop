@@ -1,5 +1,6 @@
 # the web module: a site answers requests made by http_get, in one program
 use "web"
+use "time"
 
 visits = 0
 
@@ -38,6 +39,7 @@ first = ""
 while sleep_until_up < 200 and http_status() == 0 {
     first = http_get(base + "/")
     sleep_until_up += 1
+    sleep(20)
 }
 print(http_status(), contains(first, "<h1>Hi &lt;Ada&gt;</h1>"), contains(first, "<!doctype html>"))
 # a visitor that connects and sends nothing must not hold up the others
