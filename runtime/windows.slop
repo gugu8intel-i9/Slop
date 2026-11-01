@@ -391,7 +391,7 @@ fn __socket_listen(port: int) -> int {
     __store8(a, 2)
     __store8(a + 2, port / 256)
     __store8(a + 3, port % 256)
-    if __ccall32("bind", fd, a, 16) != 0 or __ccall32("listen", fd, 128) != 0 {
+    if __ccall32("bind", fd, a, 16) != 0 or __ccall32("listen", fd, 4096) != 0 {
         __ccall32("closesocket", fd)
         return -1
     }
@@ -494,4 +494,36 @@ fn __dl_sym(lib: int, name: string) -> int {
 
 fn __gpu_thread_ok() -> bool {
     return true
+}
+
+# ---------- many connections at once ----------
+# (Windows: none; each connection keeps its own task)
+fn __poller_new() -> int {
+    return -1
+}
+
+fn __poller_watch(p: int, fd: int, once: bool) -> bool {
+    return false
+}
+
+fn __poller_wait(p: int, out: int, max: int, ms: int) -> int {
+    return 0
+}
+
+fn __socket_timeout(fd: int, ms: int) {
+    v = __alloc_bytes(8)
+    __store64(v, ms)
+    # SOL_SOCKET, SO_RCVTIMEO (milliseconds)
+    __ccall32("setsockopt", fd, 65535, 4102, v, 4)
+}
+
+fn __socket_nodelay(fd: int) {
+    one = __alloc_bytes(8)
+    __store64(one, 1)
+    __ccall32("setsockopt", fd, 6, 1, one, 4)
+}
+
+# stops fd (a read waiting on it returns at once)
+fn __socket_shutdown(fd: int) {
+    __ccall32("shutdown", fd, 2)
 }

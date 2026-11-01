@@ -259,7 +259,7 @@ fn __socket_listen(port: int) -> int {
     __store8(a + 1, 2)
     __store8(a + 2, port / 256)
     __store8(a + 3, port % 256)
-    if __ccall32("bind", fd, a, 16) != 0 or __ccall32("listen", fd, 128) != 0 {
+    if __ccall32("bind", fd, a, 16) != 0 or __ccall32("listen", fd, 4096) != 0 {
         __ccall32("close", fd)
         return -1
     }
@@ -1038,4 +1038,59 @@ fn __gpu_matmul(a: int, b: int, c: int, m: int, k: int, n: int) -> bool {
     }
     __ccall("objc_autoreleasePoolPop", pool)
     return used
+}
+
+# ---------- many connections at once (kqueue) ----------
+fn __poller_new() -> int {
+    return __ccall32("kqueue")
+}
+
+# watch fd for reading; once: only until it fires (then watch it again)
+fn __poller_watch(p: int, fd: int, once: bool) -> bool {
+    kev = __alloc_bytes(32)
+    __memzero(kev, 32)
+    __store64(kev, fd)
+    # EVFILT_READ; EV_ADD | EV_ENABLE (| EV_ONESHOT)
+    __store16(kev + 8, 65535)
+    flags = 5
+    if once {
+        flags = 21
+    }
+    __store16(kev + 10, flags)
+    return __ccall32("kevent", p, kev, 1, 0, 0, 0) >= 0
+}
+
+fn __poller_wait(p: int, out: int, max: int, ms: int) -> int {
+    evs = __alloc_bytes(32 * max)
+    ts = __alloc_bytes(16)
+    __store64(ts, ms / 1000)
+    __store64(ts + 8, ms % 1000 * 1000000)
+    n = __ccall32("kevent", p, 0, 0, evs, max, ts)
+    if n < 0 {
+        return 0
+    }
+    for i in 0..n {
+        __store64(out + i * 8, __load64(evs + i * 32))
+    }
+    return n
+}
+
+fn __socket_timeout(fd: int, ms: int) {
+    tv = __alloc_bytes(16)
+    __memzero(tv, 16)
+    __store64(tv, ms / 1000)
+    __store32(tv + 8, ms % 1000 * 1000)
+    # SOL_SOCKET, SO_RCVTIMEO
+    __ccall32("setsockopt", fd, 65535, 4102, tv, 16)
+}
+
+fn __socket_nodelay(fd: int) {
+    one = __alloc_bytes(8)
+    __store64(one, 1)
+    __ccall32("setsockopt", fd, 6, 1, one, 4)
+}
+
+# stops reading from fd: a read waiting on it returns at once
+fn __socket_shutdown(fd: int) {
+    __ccall32("shutdown", fd, 0)
 }

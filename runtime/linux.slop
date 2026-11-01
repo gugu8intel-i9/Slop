@@ -428,7 +428,7 @@ fn __socket_listen(port: int) -> int {
     __store8(a, 2)
     __store8(a + 2, port / 256)
     __store8(a + 3, port % 256)
-    if __syscall(__sock_nr(2), fd, a, 16) < 0 or __syscall(__sock_nr(3), fd, 128) < 0 {
+    if __syscall(__sock_nr(2), fd, a, 16) < 0 or __syscall(__sock_nr(3), fd, 4096) < 0 {
         __os_close(fd)
         return -1
     }
@@ -621,4 +621,88 @@ fn __gpu_thread_ok() -> bool {
     # globals sit just after the main thread's state; other threads' state is elsewhere
     d = addr_of(__main_word) - __data()
     return d >= 0 and d < 1073741824
+}
+
+# ---------- many connections at once (epoll) ----------
+# a poller: tells which sockets have something to read
+fn __poller_new() -> int {
+    if __arm() {
+        return __syscall(20, 0)
+    }
+    return __syscall(291, 0)
+}
+
+# watch fd for reading; once: only until it fires (then watch it again)
+fn __poller_watch(p: int, fd: int, once: bool) -> bool {
+    ev = __alloc_bytes(16)
+    __memzero(ev, 16)
+    # EPOLLIN | EPOLLRDHUP (| EPOLLONESHOT)
+    events = 8193
+    if once {
+        events += 1073741824
+    }
+    __store32(ev, events)
+    # x86-64 packs the event (data at +4); ARM64 does not (data at +8)
+    if __arm() {
+        __store64(ev + 8, fd)
+    } else {
+        __store64(ev + 4, fd)
+    }
+    ctl = 233
+    if __arm() {
+        ctl = 21
+    }
+    # change it, or add it the first time
+    if __syscall(ctl, p, 3, fd, ev) >= 0 {
+        return true
+    }
+    return __syscall(ctl, p, 1, fd, ev) >= 0
+}
+
+# waits up to ms for sockets to read; their numbers go to out; how many
+fn __poller_wait(p: int, out: int, max: int, ms: int) -> int {
+    evs = __alloc_bytes(16 * max)
+    n = 0
+    if __arm() {
+        n = __syscall(22, p, evs, max, ms, 0, 8)
+    } else {
+        n = __syscall(281, p, evs, max, ms, 0, 8)
+    }
+    if n < 0 {
+        return 0
+    }
+    for i in 0..n {
+        if __arm() {
+            __store64(out + i * 8, __load64(evs + i * 16 + 8))
+        } else {
+            __store64(out + i * 8, __load64(evs + i * 12 + 4))
+        }
+    }
+    return n
+}
+
+# reads on fd give up after ms (then return nothing)
+fn __socket_timeout(fd: int, ms: int) {
+    tv = __alloc_bytes(16)
+    __store64(tv, ms / 1000)
+    __store64(tv + 8, ms % 1000 * 1000)
+    # SOL_SOCKET, SO_RCVTIMEO
+    __syscall(__sock_nr(1), fd, 1, 20, tv, 16)
+}
+
+# send small answers at once (no waiting to fill packets)
+fn __socket_nodelay(fd: int) {
+    one = __alloc_bytes(8)
+    __store64(one, 1)
+    # IPPROTO_TCP, TCP_NODELAY
+    __syscall(__sock_nr(1), fd, 6, 1, one, 4)
+}
+
+# stops reading from fd: a read waiting on it returns at once
+fn __socket_shutdown(fd: int) {
+    if __arm() {
+        __syscall(210, fd, 0)
+    } else {
+        __syscall(48, fd, 0)
+    }
 }

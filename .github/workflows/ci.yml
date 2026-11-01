@@ -133,5 +133,19 @@ jobs:
             bin/slop) grep -q "OpenBLAS" matmul.txt ;;
           esac
           SLOP_BLAS=none ${{ matrix.slop }} run examples/matmul.slop 1024 | head -n 1
+      - name: web server under load (keep-alive and new connections, no failures allowed)
+        if: matrix.slop == 'bin/slop' || matrix.slop == 'bin/slop-linux-arm64' || matrix.slop == 'bin/slop-macos-arm64'
+        run: |
+          if ! command -v ab > /dev/null; then sudo apt-get install -y -q apache2-utils > /dev/null; fi
+          printf 'use "web"\nfn handle(req: Request) -> Response {\n    return text("hello")\n}\nquiet()\nserve(18631)\n' > load.slop
+          ${{ matrix.slop }} load.slop load-server
+          ./load-server &
+          sleep 1
+          ab -q -k -n 20000 -c 100 http://127.0.0.1:18631/ | tee ab1.txt | grep -E "Requests per second|Failed requests"
+          ab -q -n 5000 -c 50 http://127.0.0.1:18631/ | tee ab2.txt | grep -E "Requests per second|Failed requests"
+          kill %1
+          grep -q "Failed requests: *0" ab1.txt
+          grep -q "Failed requests: *0" ab2.txt
+          grep -q "Complete requests: *20000" ab1.txt
       - name: https to a real site (system certificates and name lookup)
         run: ${{ matrix.slop }} run examples/fetch.slop https://github.com/

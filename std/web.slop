@@ -37,6 +37,10 @@ __web_status = 0
 __web_error = ""
 __web_insecure = false
 __web_word = 0
+__web_pool_word = 0
+# open connections kept for the next request to the same server
+_web_pool_keys: array[string] = []
+_web_pool_conns: array[Tls] = []
 
 # ---------- answers ----------
 fn html(body: string) -> Response {
@@ -359,21 +363,232 @@ fn serve_count(port: int, count: int) {
     if not __web_quiet {
         print("Serving on http://localhost:" + str(port) + "  (stop with Ctrl+C)")
     }
-    served = 0
+    s = __web_server(port, count)
+    p = __poller_new()
+    if p < 0 {
+        __web_serve_tasks(fd, s)
+    } else {
+        __web_serve_events(fd, p, s)
+    }
+    socket_close(fd)
+}
+
+# each server's own state (kept for the whole run): +0 requests answered,
+# +8 the limit (-1: none), +16 its port, +24 a lock, +32 its poller,
+# +40 its table of connections, +48 the table's lock, +56 the connections
+# answered by tasks (4096 places, each 0 or the socket + 1)
+fn __web_server(port: int, count: int) -> int {
+    s = __alloc_bytes_in(2, 64)
+    __memzero(s, 64)
+    __store64(s + 8, count)
+    __store64(s + 16, port)
+    __store64(s + 32, -1)
+    held = __alloc_bytes_in(2, 4096 * 8)
+    __memzero(held, 4096 * 8)
+    __store64(s + 56, held)
+    return s
+}
+
+# notes that a task answers c (its place, or -1 when all are taken)
+fn __web_hold(s: int, c: int) -> int {
+    held = __load64(s + 56)
+    at = -1
+    __spin_lock(s + 48)
+    for i in 0..4096 {
+        if at < 0 and __load64(held + i * 8) == 0 {
+            __store64(held + i * 8, c + 1)
+            at = i
+        }
+    }
+    __spin_unlock(s + 48)
+    return at
+}
+
+# the task is about to close its connection
+fn __web_let_go(s: int, at: int) {
+    if at >= 0 {
+        __spin_lock(s + 48)
+        __store64(__load64(s + 56) + at * 8, 0)
+        __spin_unlock(s + 48)
+    }
+}
+
+# the server is done: connections kept open for more requests stop waiting
+fn __web_wake_all(s: int) {
+    held = __load64(s + 56)
+    __spin_lock(s + 48)
+    for i in 0..4096 {
+        v = __load64(held + i * 8)
+        if v != 0 {
+            __socket_shutdown(v - 1)
+        }
+    }
+    __spin_unlock(s + 48)
+}
+
+fn __web_more(s: int) -> bool {
+    limit = __load64(s + 8)
+    return limit < 0 or __load64(s) < limit
+}
+
+# one task per connection, which answers its requests one after another
+# (where there is no poller: Windows)
+fn __web_serve_tasks(fd: int, s: int) {
     live: array[task[void]] = []
-    while count < 0 or served < count {
+    while __web_more(s) {
         c = socket_accept(fd)
-        if c >= 0 {
+        if c >= 0 and not __web_more(s) {
+            socket_close(c)
+        } else if c >= 0 {
             # each visitor gets its own task, so slow ones don't hold up the rest
-            push(live, async __web_answer(c))
-            served += 1
+            push(live, async __web_answer(c, s, __web_hold(s, c)))
             live = __web_reap(live)
         }
     }
+    __web_wake_all(s)
     for t in live {
         await t
     }
-    socket_close(fd)
+}
+
+# an event loop: a few worker threads (two per core) wait on one poller that
+# watches every open connection. A worker takes a connection only when a
+# request comes in, answers it, and gives it back. Idle connections (kept
+# open between requests) cost no thread; ones idle for a minute are closed.
+fn __web_serve_events(fd: int, p: int, s: int) {
+    __store64(s + 32, p)
+    # for each socket number: 0 not ours, 1 waiting, 2 being answered; then the time
+    st = __os_alloc(65536 * 16)
+    __store64(s + 40, st)
+    __poller_watch(p, fd, true)
+    workers = __cpu_count() * 2
+    if workers < 8 {
+        workers = 8
+    }
+    if workers > 64 {
+        workers = 64
+    }
+    others: array[task[void]] = []
+    for w in 1..workers {
+        push(others, async __web_worker(fd, s, w))
+    }
+    __web_worker(fd, s, 0)
+    for t in others {
+        await t
+    }
+    # close what is still open
+    for c in 0..65536 {
+        if __load64(st + c * 16) != 0 {
+            socket_close(c)
+        }
+    }
+    socket_close(p)
+    __os_release(st, 65536 * 16)
+}
+
+fn __web_worker(fd: int, s: int, me: int) {
+    p = __load64(s + 32)
+    st = __load64(s + 40)
+    ready = __alloc_bytes(8 * 16)
+    last_sweep = clock_ns()
+    while __web_more(s) {
+        n = __poller_wait(p, ready, 16, 100)
+        for i in 0..n {
+            f = __load64(ready + i * 8)
+            if f == fd {
+                c = socket_accept(fd)
+                # let the next visitor in (another worker may take it)
+                __poller_watch(p, fd, true)
+                if c >= 0 and c < 65536 {
+                    __socket_nodelay(c)
+                    # a request that starts must arrive within 10 seconds
+                    __socket_timeout(c, 10000)
+                    __store64(st + c * 16 + 8, clock_ns())
+                    __store64(st + c * 16, 1)
+                    __poller_watch(p, c, true)
+                } else if c >= 0 {
+                    socket_close(c)
+                }
+            } else if f >= 0 and f < 65536 {
+                mine = false
+                __spin_lock(s + 48)
+                if __load64(st + f * 16) == 1 {
+                    __store64(st + f * 16, 2)
+                    mine = true
+                }
+                __spin_unlock(s + 48)
+                if mine {
+                    __web_conn(f, s)
+                }
+            }
+        }
+        # worker 0 closes connections idle for a minute
+        now = clock_ns()
+        if me == 0 and now - last_sweep > 1000000000 {
+            last_sweep = now
+            __spin_lock(s + 48)
+            for c in 0..65536 {
+                if __load64(st + c * 16) == 1 and now - __load64(st + c * 16 + 8) > 60000000000 {
+                    __store64(st + c * 16, 0)
+                    socket_close(c)
+                }
+            }
+            __spin_unlock(s + 48)
+        }
+    }
+}
+
+# answers the requests that came in on c, then gives it back to the event loop
+fn __web_conn(c: int, s: int) {
+    st = __load64(s + 40)
+    raw = ""
+    while true {
+        need = __web_need(raw)
+        while need < 0 {
+            piece = socket_read(c)
+            if piece == "" or len(raw) > 16777216 {
+                __store64(st + c * 16, 0)
+                socket_close(c)
+                return
+            }
+            raw = raw + piece
+            need = __web_need(raw)
+        }
+        req = slice(raw, 0, need)
+        raw = slice(raw, need, len(raw))
+        keep = __web_keep(req)
+        out = __web_reply(req, "http", keep)
+        if out != "" {
+            socket_write(c, out)
+        }
+        __web_count(s)
+        if not keep or out == "" {
+            __store64(st + c * 16, 0)
+            socket_close(c)
+            return
+        }
+        if raw == "" {
+            # nothing more for now: back to waiting
+            __store64(st + c * 16 + 8, clock_ns())
+            __store64(st + c * 16, 1)
+            __poller_watch(__load64(s + 32), c, true)
+            return
+        }
+    }
+}
+
+fn __web_count(s: int) {
+    __spin_lock(s + 24)
+    __store64(s, __load64(s) + 1)
+    last = __load64(s + 8) >= 0 and __load64(s) == __load64(s + 8)
+    __spin_unlock(s + 24)
+    if last {
+        # the last request: wake the loop that may be waiting for a visitor
+        w = socket_connect("127.0.0.1", __load64(s + 16))
+        if w >= 0 {
+            socket_close(w)
+        }
+    }
 }
 
 # the tasks still running (waits for the oldest when there are too many)
@@ -397,11 +612,12 @@ fn __web_reap(live: array[task[void]]) -> array[task[void]] {
     return keep
 }
 
-# has a whole request (head and body) arrived?
-fn __web_complete(raw: string) -> bool {
+# the length of the first whole request in raw (head and body), or -1 if it
+# has not all arrived yet
+fn __web_need(raw: string) -> int {
     he = find(raw, "\r\n\r\n")
     if he < 0 {
-        return false
+        return -1
     }
     want = 0
     for line in split(slice(raw, 0, he), "\r\n") {
@@ -410,20 +626,47 @@ fn __web_complete(raw: string) -> bool {
             want = to_int(trim(slice(line, c + 1, len(line))))
         }
     }
-    return len(raw) - he - 4 >= want
+    if len(raw) - he - 4 < want {
+        return -1
+    }
+    return he + 4 + want
+}
+
+# does the visitor want the connection kept open after this request?
+# (HTTP/1.1 does unless it says close; HTTP/1.0 only if it asks)
+fn __web_keep(req: string) -> bool {
+    he = find(req, "\r\n\r\n")
+    if he < 0 {
+        return false
+    }
+    lines = split(slice(req, 0, he), "\r\n")
+    keep = ends_with(lines[0], "HTTP/1.1")
+    for i in 1..len(lines) {
+        c = find(lines[i], ":")
+        if c > 0 and lower(trim(slice(lines[i], 0, c))) == "connection" {
+            v = lower(trim(slice(lines[i], c + 1, len(lines[i]))))
+            if contains(v, "close") {
+                keep = false
+            }
+            if contains(v, "keep-alive") {
+                keep = true
+            }
+        }
+    }
+    return keep
 }
 
 # the answer (as bytes to send) for a whole raw request, from handle()
 # handle() runs for one visitor at a time, so it can use globals freely;
 # reading and sending (the slow parts) happen for many visitors at once
-fn __web_reply(raw: string, scheme: string) -> string {
+fn __web_reply(raw: string, scheme: string, keep: bool) -> string {
     __spin_lock(addr_of(__web_word))
-    out = __web_reply_one(raw, scheme)
+    out = __web_reply_one(raw, scheme, keep)
     __spin_unlock(addr_of(__web_word))
     return out
 }
 
-fn __web_reply_one(raw: string, scheme: string) -> string {
+fn __web_reply_one(raw: string, scheme: string, keep: bool) -> string {
     he = find(raw, "\r\n\r\n")
     if he < 0 {
         return ""
@@ -456,7 +699,11 @@ fn __web_reply_one(raw: string, scheme: string) -> string {
         # browsers remember to use https for this site
         extra = "Strict-Transport-Security: max-age=31536000\r\n"
     }
-    out = "HTTP/1.1 " + str(resp.status) + " " + reason(resp.status) + "\r\nContent-Type: " + resp.content_type + "\r\nContent-Length: " + str(len(resp.body)) + "\r\nConnection: close\r\n" + extra + resp.headers + "\r\n"
+    conn = "close"
+    if keep {
+        conn = "keep-alive"
+    }
+    out = "HTTP/1.1 " + str(resp.status) + " " + reason(resp.status) + "\r\nContent-Type: " + resp.content_type + "\r\nContent-Length: " + str(len(resp.body)) + "\r\nConnection: " + conn + "\r\n" + extra + resp.headers + "\r\n"
     if req.method != "HEAD" {
         out = out + resp.body
     }
@@ -466,45 +713,81 @@ fn __web_reply_one(raw: string, scheme: string) -> string {
     return out
 }
 
-# reads one request, answers it with handle(), closes the connection
-fn __web_answer(c: int) {
+# answers the requests on one connection until the visitor is done (or
+# idle for 30 seconds), then closes it
+fn __web_answer(c: int, s: int, at: int) {
+    __socket_nodelay(c)
+    __socket_timeout(c, 30000)
     raw = ""
-    while not __web_complete(raw) and len(raw) < 16777216 {
-        piece = socket_read(c)
-        if piece == "" {
+    while __web_more(s) {
+        need = __web_need(raw)
+        while need < 0 {
+            piece = socket_read(c)
+            if piece == "" or len(raw) > 16777216 {
+                __web_let_go(s, at)
+                socket_close(c)
+                return
+            }
+            raw = raw + piece
+            need = __web_need(raw)
+        }
+        req = slice(raw, 0, need)
+        raw = slice(raw, need, len(raw))
+        keep = __web_keep(req)
+        out = __web_reply(req, "http", keep)
+        if out != "" {
+            socket_write(c, out)
+        }
+        __web_count(s)
+        if not keep or out == "" {
             break
         }
-        raw = raw + piece
     }
-    out = __web_reply(raw, "http")
-    if out != "" {
-        socket_write(c, out)
-    }
+    __web_let_go(s, at)
     socket_close(c)
 }
 
 # the same over TLS
-fn __web_answer_tls(c: int, key: TlsKey) {
+fn __web_answer_tls(c: int, key: TlsKey, s: int, at: int) {
+    __socket_nodelay(c)
+    __socket_timeout(c, 30000)
     t = tls_accept(c, key)
     if not t.ok {
         if not __web_quiet and t.err != "the connection closed" {
             print("https handshake failed: " + t.err)
         }
+        __web_let_go(s, at)
         socket_close(c)
+        # a failed handshake counts as one visit (for serve_https_count)
+        __web_count(s)
         return
     }
     raw = ""
-    while not __web_complete(raw) and len(raw) < 16777216 {
-        t = tls_recv(t)
-        if t.data == "" {
+    while __web_more(s) {
+        need = __web_need(raw)
+        while need < 0 {
+            t = tls_recv(t)
+            if t.data == "" or len(raw) > 16777216 {
+                __web_let_go(s, at)
+                tls_close(t)
+                return
+            }
+            raw = raw + t.data
+            need = __web_need(raw)
+        }
+        req = slice(raw, 0, need)
+        raw = slice(raw, need, len(raw))
+        keep = __web_keep(req)
+        out = __web_reply(req, "https", keep)
+        if out != "" {
+            t = tls_send(t, out)
+        }
+        __web_count(s)
+        if not keep or out == "" {
             break
         }
-        raw = raw + t.data
     }
-    out = __web_reply(raw, "https")
-    if out != "" {
-        t = tls_send(t, out)
-    }
+    __web_let_go(s, at)
     tls_close(t)
 }
 
@@ -528,20 +811,25 @@ fn serve_https_count(port: int, cert_file: string, key_file: string, count: int)
     if not __web_quiet {
         print("Serving on https://localhost:" + str(port) + "  (stop with Ctrl+C)")
     }
-    served = 0
+    s = __web_server(port, count)
     live: array[task[void]] = []
-    while count < 0 or served < count {
+    while __web_more(s) {
         c = socket_accept(fd)
         if c >= 0 {
-            push(live, async __web_answer_tls(c, key))
-            served += 1
-            live = __web_reap(live)
+            if not __web_more(s) {
+                socket_close(c)
+            } else {
+                push(live, async __web_answer_tls(c, key, s, __web_hold(s, c)))
+                live = __web_reap(live)
+            }
         }
     }
+    # no more visitors: stop taking them, and end the connections kept open
+    socket_close(fd)
+    __web_wake_all(s)
     for t in live {
         await t
     }
-    socket_close(fd)
 }
 
 # makes a self-signed certificate and key for trying https on your computer
@@ -553,6 +841,7 @@ fn make_cert(host: string, cert_file: string, key_file: string) {
 # trusts one more certificate for https (for example your own self-signed one)
 fn trust_cert(cert_file: string) {
     tls_trust(cert_file)
+    _web_pool_clear()
 }
 
 # ---------- asking other servers ----------
@@ -577,11 +866,72 @@ fn http_error() -> string {
 # for testing: the newest TLS version to offer (12 or 13) and AES only
 fn https_client_options(max_version: int, aes_only: bool) {
     tls_client_options(max_version, aes_only)
+    _web_pool_clear()
 }
 
 # for testing only: accept any https certificate
 fn https_insecure() {
     __web_insecure = true
+    _web_pool_clear()
+}
+
+# a kept connection to key ("https://host:port"), or one with ok false
+fn _web_pool_take(key: string) -> Tls {
+    __spin_lock(addr_of(__web_pool_word))
+    let found = -1
+    for i in 0..len(_web_pool_keys) {
+        if _web_pool_keys[i] == key {
+            found = i
+        }
+    }
+    let t = __tls_new(-1)
+    t.ok = false
+    if found >= 0 {
+        t = _web_pool_conns[found]
+        let keys: array[string] = []
+        let conns: array[Tls] = []
+        for i in 0..len(_web_pool_keys) {
+            if i != found {
+                push(keys, _web_pool_keys[i])
+                push(conns, _web_pool_conns[i])
+            }
+        }
+        _web_pool_keys = keys
+        _web_pool_conns = conns
+    }
+    __spin_unlock(addr_of(__web_pool_word))
+    return t
+}
+
+# keeps a connection for later (at most 16; the oldest goes)
+fn _web_pool_put(key: string, t: Tls) {
+    __spin_lock(addr_of(__web_pool_word))
+    if len(_web_pool_keys) >= 16 {
+        tls_close(_web_pool_conns[0])
+        let keys: array[string] = []
+        let conns: array[Tls] = []
+        for i in 1..len(_web_pool_keys) {
+            push(keys, _web_pool_keys[i])
+            push(conns, _web_pool_conns[i])
+        }
+        _web_pool_keys = keys
+        _web_pool_conns = conns
+    }
+    push(_web_pool_keys, key)
+    push(_web_pool_conns, t)
+    __spin_unlock(addr_of(__web_pool_word))
+}
+
+fn _web_pool_clear() {
+    __spin_lock(addr_of(__web_pool_word))
+    for t in _web_pool_conns {
+        tls_close(t)
+    }
+    let keys: array[string] = []
+    let conns: array[Tls] = []
+    _web_pool_keys = keys
+    _web_pool_conns = conns
+    __spin_unlock(addr_of(__web_pool_word))
 }
 
 fn __web_fail(why: string) -> string {
@@ -590,91 +940,216 @@ fn __web_fail(why: string) -> string {
     return ""
 }
 
-fn http_request(method: string, url: string, body: string) -> string {
-    __web_status = 0
-    __web_error = ""
-    secure = starts_with(url, "https://")
-    if not secure and not starts_with(url, "http://") {
-        return __web_fail("the address should start with http:// or https://")
-    }
-    rest = slice(url, 7, len(url))
-    port = 80
+# the next piece from a connection (TLS or plain) into t.data; "" when closed
+fn _web_recv(t: Tls, secure: bool) -> Tls {
     if secure {
-        rest = slice(url, 8, len(url))
-        port = 443
+        return tls_recv(t)
     }
-    slash = find(rest, "/")
-    hostport = rest
-    path = "/"
-    if slash >= 0 {
-        hostport = slice(rest, 0, slash)
-        path = slice(rest, slash, len(rest))
-    }
-    host = hostport
-    colon = find(hostport, ":")
-    if colon >= 0 {
-        host = slice(hostport, 0, colon)
-        port = to_int(slice(hostport, colon + 1, len(hostport)))
-    }
-    ip = host
+    t.data = socket_read(t.fd)
+    return t
+}
+
+# a new connection to host:port (TLS for https), or one with ok false
+fn _web_open(host: string, port: int, secure: bool) -> Tls {
+    let t = __tls_new(-1)
+    t.ok = false
+    let ip = host
     if host == "localhost" {
         ip = "127.0.0.1"
     }
     if len(split(ip, ".")) != 4 or find(ip, "-") >= 0 or lower(ip) != upper(ip) {
         ip = __resolve(host)
         if ip == "" {
-            return __web_fail("cannot find the address of " + host)
+            t.err = "cannot find the address of " + host
+            return t
         }
     }
-    fd = socket_connect(ip, port)
+    let fd = socket_connect(ip, port)
     if fd < 0 {
-        return __web_fail("cannot connect to " + host + ":" + str(port))
+        t.err = "cannot connect to " + host + ":" + str(port)
+        return t
     }
-    msg = method + " " + path + " HTTP/1.1\r\nHost: " + hostport + "\r\nConnection: close\r\nUser-Agent: slop\r\nAccept: */*\r\n"
-    if body != "" or method == "POST" {
-        msg = msg + "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " + str(len(body)) + "\r\n"
-    }
-    msg = msg + "\r\n" + body
-    raw = ""
+    __socket_nodelay(fd)
+    # a server that stops answering gives up after a minute
+    __socket_timeout(fd, 60000)
     if secure {
         t = tls_connect(fd, host, __web_insecure)
         if not t.ok {
             socket_close(fd)
-            return __web_fail("https: " + t.err)
+            t.err = "https: " + t.err
         }
-        t = tls_send(t, msg)
-        while true {
-            t = tls_recv(t)
+        return t
+    }
+    t = __tls_new(fd)
+    return t
+}
+
+# is the whole answer here? -1: not yet, else its length (head and body);
+# -2: its end is when the server closes (no length given)
+fn _web_answer_end(raw: string, method: string) -> int {
+    let he = find(raw, "\r\n\r\n")
+    if he < 0 {
+        return -1
+    }
+    let lines = split(slice(raw, 0, he), "\r\n")
+    let parts = split(lines[0], " ")
+    let status = 0
+    if len(parts) > 1 {
+        status = to_int(parts[1])
+    }
+    if method == "HEAD" or status == 204 or status == 304 or (status >= 100 and status < 200) {
+        return he + 4
+    }
+    let length = -1
+    let chunked = false
+    for line in lines {
+        let c = find(line, ":")
+        if c > 0 {
+            let name = lower(trim(slice(line, 0, c)))
+            if name == "content-length" {
+                length = to_int(trim(slice(line, c + 1, len(line))))
+            }
+            if name == "transfer-encoding" and contains(lower(line), "chunked") {
+                chunked = true
+            }
+        }
+    }
+    if chunked {
+        let body = slice(raw, he + 4, len(raw))
+        if starts_with(body, "0\r\n\r\n") {
+            return he + 9
+        }
+        let e = find(body, "\r\n0\r\n\r\n")
+        if e < 0 {
+            return -1
+        }
+        return he + 4 + e + 7
+    }
+    if length >= 0 {
+        if len(raw) - he - 4 < length {
+            return -1
+        }
+        return he + 4 + length
+    }
+    return -2
+}
+
+# may the connection be used again after this answer?
+fn _web_reusable(head: string) -> bool {
+    let lines = split(head, "\r\n")
+    let keep = contains(lines[0], "HTTP/1.1")
+    for line in lines {
+        let c = find(line, ":")
+        if c > 0 and lower(trim(slice(line, 0, c))) == "connection" {
+            let v = lower(line)
+            if contains(v, "close") {
+                keep = false
+            }
+            if contains(v, "keep-alive") {
+                keep = true
+            }
+        }
+    }
+    return keep
+}
+
+# asks a server; connections are kept and used again for the next request to
+# the same server (so https skips its handshake), unless the server says no
+fn http_request(method: string, url: string, body: string) -> string {
+    __web_status = 0
+    __web_error = ""
+    let secure = starts_with(url, "https://")
+    if not secure and not starts_with(url, "http://") {
+        return __web_fail("the address should start with http:// or https://")
+    }
+    let rest = slice(url, 7, len(url))
+    let port = 80
+    if secure {
+        rest = slice(url, 8, len(url))
+        port = 443
+    }
+    let slash = find(rest, "/")
+    let hostport = rest
+    let path = "/"
+    if slash >= 0 {
+        hostport = slice(rest, 0, slash)
+        path = slice(rest, slash, len(rest))
+    }
+    let host = hostport
+    let colon = find(hostport, ":")
+    if colon >= 0 {
+        host = slice(hostport, 0, colon)
+        port = to_int(slice(hostport, colon + 1, len(hostport)))
+    }
+    let key = "http://"
+    if secure {
+        key = "https://"
+    }
+    key = key + lower(host) + ":" + str(port)
+    let msg = method + " " + path + " HTTP/1.1\r\nHost: " + hostport + "\r\nConnection: keep-alive\r\nUser-Agent: slop\r\nAccept: */*\r\n"
+    if body != "" or method == "POST" {
+        msg = msg + "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " + str(len(body)) + "\r\n"
+    }
+    msg = msg + "\r\n" + body
+    let raw = ""
+    let t = __tls_new(-1)
+    let end = -1
+    # a kept connection first; if the server had closed it, a new one
+    for attempt in 0..2 {
+        let reused = false
+        if attempt == 0 {
+            t = _web_pool_take(key)
+            reused = t.ok
+        }
+        if not reused {
+            t = _web_open(host, port, secure)
+            if not t.ok {
+                return __web_fail(t.err)
+            }
+        }
+        if secure {
+            t = tls_send(t, msg)
+        } else {
+            socket_write(t.fd, msg)
+        }
+        raw = ""
+        end = _web_answer_end(raw, method)
+        while end < 0 and t.ok {
+            t = _web_recv(t, secure)
             if t.data == "" {
                 break
             }
             raw = raw + t.data
+            end = _web_answer_end(raw, method)
         }
+        if raw != "" or not reused {
+            break
+        }
+        # a kept connection the server had closed: try once more, fresh
         tls_close(t)
-    } else {
-        socket_write(fd, msg)
-        while true {
-            piece = socket_read(fd)
-            if piece == "" {
-                break
-            }
-            raw = raw + piece
-        }
-        socket_close(fd)
     }
-    he = find(raw, "\r\n\r\n")
+    let he = find(raw, "\r\n\r\n")
     if he < 0 {
+        tls_close(t)
         return __web_fail("no answer from " + host)
     }
-    head = slice(raw, 0, he)
-    out = slice(raw, he + 4, len(raw))
-    lines = split(head, "\r\n")
-    parts = split(lines[0], " ")
+    let head = slice(raw, 0, he)
+    if end >= 0 and len(raw) == end and t.ok and _web_reusable(head) {
+        _web_pool_put(key, t)
+    } else {
+        tls_close(t)
+    }
+    let out = slice(raw, he + 4, len(raw))
+    if end >= 0 {
+        out = slice(raw, he + 4, end)
+    }
+    let lines = split(head, "\r\n")
+    let parts = split(lines[0], " ")
     if len(parts) > 1 {
         __web_status = to_int(parts[1])
     }
     for line in lines {
-        c = find(line, ":")
+        let c = find(line, ":")
         if c > 0 and lower(trim(slice(line, 0, c))) == "transfer-encoding" and contains(lower(line), "chunked") {
             out = __web_unchunk(out)
         }
