@@ -21,3 +21,5 @@ hello everyone / hello everyone
 /echo?room=2 2 hi
 send after close false
 count 1
+/echo 4 last
+server stopped quickly true socket closed true

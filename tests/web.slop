@@ -54,6 +54,10 @@ print("missing", http_status(), contains(missing, "Not found"))
 print(contains(http_get(base + "/files/web.slop"), "use \"web\""), http_status())
 print(http_get(base + "/agent"))
 socket_close(slow)
+# the server stops at once after its last request, though http_get keeps
+# its connection open for more
+stop_start = clock_ns()
 join(server)
+print("stopped quickly", (clock_ns() - stop_start) / 1000000 < 3000)
 print("visits", visits)
 print(url_encode("a b&c/é"), url_decode("a+b%26c"), escape_html("<a href='x'>"))
