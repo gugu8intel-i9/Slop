@@ -6790,7 +6790,13 @@ fn collect_fn(this_struct: string) {
     if this_struct != "" {
         name = this_struct + "_" + name
     }
-    if find_fn(name) >= 0 {
+    # a standard module's on_* function (an event, such as on_websocket) is
+    # a default: the program's own one takes its place
+    let replace = -1
+    let old = find_fn(name)
+    if old >= 0 and starts_with_s(name, "on_") and starts_with_s(g_files[token_file(g_fn_tok[old])], "std/") and not starts_with_s(g_files[token_file(g_pos)], "std/") {
+        replace = old
+    } else if old >= 0 {
         err("function '" + name + "' is defined twice")
     }
     let open_at = g_pos
@@ -6814,6 +6820,14 @@ fn collect_fn(this_struct: string) {
     if is_sym("->") {
         g_pos += 1
         rt = parse_type()
+    }
+    if replace >= 0 {
+        g_fn_ret[replace] = rt
+        g_fn_pnames[replace] = join(pnames, ",")
+        g_fn_ptypes[replace] = join(ptypes, ",")
+        g_fn_tok[replace] = open_at
+        skip_block()
+        return
     }
     push(g_fn_name, name)
     push(g_fn_ret, rt)

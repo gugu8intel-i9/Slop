@@ -279,6 +279,42 @@ serve(8080)    # open http://localhost:8080
 - `slop new mysite --web` starts a website you can build on; `examples/web_server.slop` is a small notes app.
 - `serve_count(port, n)` stops after `n` requests, and `quiet()` turns off the request log.
 
+### WebSockets
+
+A WebSocket stays open, and both sides send messages whenever they like (chats, live updates, games). Return `websocket(req)` for an address, and write `on_websocket`, which runs for each connection:
+
+```slop
+use "web"
+
+fn handle(req: Request) -> Response {
+    if route(req, "GET", "/chat") {
+        return websocket(req)
+    }
+    return not_found()
+}
+
+fn on_websocket(ws: WebSocket) {
+    ws = ws_receive(ws)              # waits for the next message
+    while ws.ok {
+        ws_broadcast(ws.message)     # to everyone connected
+        ws = ws_receive(ws)
+    }
+}
+
+serve(8080)
+```
+
+| To | Use |
+|---|---|
+| receive | `ws = ws_receive(ws)`: then `ws.message` (and `ws.binary` if it was bytes); `ws.ok` is false once the connection has closed |
+| send | `ws_send(ws, text)`, `ws_send_binary(ws, bytes)`, `ws_send_to(id, text)` (`ws.id` names a connection), `ws_broadcast(text)` (to every visitor) |
+| other | `ws_count()` (visitors connected), `ws.path`, `ws_close(ws)` |
+| connect to a server | `ws = ws_connect("ws://host:8080/chat")` or `wss://` (TLS); `ws.err` says why if `ws.ok` is false |
+
+- Works with browsers and other WebSocket software, over `serve` (`ws://`) and `serve_https` (`wss://`). Pings are answered and split messages joined for you; messages can be up to 16 MB.
+- Each connection's `on_websocket` runs in its own task, so many run at once: use `lock()` / `unlock()` around shared globals. Sending works from any task.
+- `examples/chat.slop` is a chat room for the browser.
+
 ### Speed
 
 - Connections stay open between requests (HTTP keep-alive), so a browser or client sends many requests over one.
@@ -334,8 +370,8 @@ Modules that come with Slop, built into `slop` itself (nothing to download). Put
 
 | Module | What it has |
 |---|---|
-| `web` | websites: `serve`, `serve_https`, `route`, `html`, `page`, `render`, `form`, `query`, `json_object`, `http_get` (see Websites) |
-| `crypto` | `sha256`, `sha384`, `sha512`, `hmac`, `hkdf_extract`/`hkdf_expand`, `chacha20_poly1305_seal`/`open`, `aes128_gcm_seal`/`open`, `x25519`, `p256_shared`, `ecdsa_sign`/`ecdsa_verify` (P-256, P-384), `rsa_sign_pss`/`rsa_sign_pkcs1`, `rsa_verify_pss`/`rsa_verify_pkcs1`, `random_bytes`, `to_hex`, `to_bytes` |
+| `web` | websites: `serve`, `serve_https`, `route`, `html`, `page`, `render`, `form`, `query`, `json_object`, `http_get`, WebSockets (`websocket`, `ws_connect`, `ws_send`, `ws_receive`, `ws_broadcast`) (see Websites) |
+| `crypto` | `sha256`, `sha384`, `sha512`, `sha1` (only where required, such as WebSockets), `hmac`, `hkdf_extract`/`hkdf_expand`, `chacha20_poly1305_seal`/`open`, `aes128_gcm_seal`/`open`, `x25519`, `p256_shared`, `ecdsa_sign`/`ecdsa_verify` (P-256, P-384), `rsa_sign_pss`/`rsa_sign_pkcs1`, `rsa_verify_pss`/`rsa_verify_pkcs1`, `random_bytes`, `to_hex`, `to_bytes` |
 | `tls` | TLS 1.3 connections, certificates and keys (used by `web`): `tls_connect`, `tls_accept`, `parse_cert`, `pem_blocks`, `base64_encode`/`decode` |
 | `math` | `PI`, `E`, `gcd`, `lcm`, `is_prime`, `factorial`, `ipow`, `clamp`, `lerp`, `hypot`, `radians`, `min_int`/`max_float`, ... |
 | `lists` | `sum_ints`, `sort_ints`, `sort_floats`, `sort_strings`, `reverse_ints`, `unique_ints`, `index_of_int`, `range_list`, ... |
