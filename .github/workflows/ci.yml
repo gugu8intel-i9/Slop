@@ -38,6 +38,11 @@ jobs:
         run: ${{ matrix.slop }} run tests/run.slop
       - name: gpu for (shows whether the GPU was used)
         run: ${{ matrix.slop }} run examples/gpu.slop | tail -n 1
+      - name: use "gpu" on Apple Silicon really runs on Metal
+        if: matrix.slop == 'bin/slop-macos-arm64'
+        run: |
+          printf 'use "gpu"\nprint(gpu_backend())\n' > gpu-backend.slop
+          bin/slop-macos-arm64 run gpu-backend.slop | grep -x metal
       - name: gpu for through OpenCL (POCL, an OpenCL for the CPU)
         if: matrix.slop == 'bin/slop'
         run: |
@@ -48,6 +53,9 @@ jobs:
           SLOP_OPENCL_CPU=1 bin/slop run examples/gpu.slop | tail -n 1 | tee gpu-name.txt
           grep -v "the CPU cores" gpu-name.txt
           SLOP_OPENCL_CPU=1 bin/slop run tests/matrix.slop | diff - tests/expected/matrix.txt
+          # use "gpu" (raw kernels) really ran on OpenCL
+          printf 'use "gpu"\nprint(gpu_backend())\n' > gpu-backend.slop
+          SLOP_OPENCL_CPU=1 bin/slop run gpu-backend.slop | grep -x opencl
       - name: gpu for through Vulkan (lavapipe, a Vulkan for the CPU)
         if: matrix.slop == 'bin/slop' || matrix.slop == 'bin/slop-linux-arm64'
         run: |
@@ -59,6 +67,9 @@ jobs:
           grep "llvmpipe" gpu-vk-name.txt
           ${{ matrix.slop }} run tests/matrix.slop | diff - tests/expected/matrix.txt
           ${{ matrix.slop }} run examples/matmul.slop 512 | grep "gpu_matmul on llvmpipe"
+          # use "gpu" (raw kernels) really ran on Vulkan
+          printf 'use "gpu"\nprint(gpu_backend())\n' > gpu-backend.slop
+          ${{ matrix.slop }} run gpu-backend.slop | grep -x vulkan
       - name: gpu_matmul through Metal (Apple's MPS when the GPU has it, and Slop's own kernel)
         if: matrix.slop == 'bin/slop-macos-arm64'
         run: |

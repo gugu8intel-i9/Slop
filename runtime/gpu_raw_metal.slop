@@ -1,1 +1,333 @@
-# gpu: low-level GPU control on macOS (Metal), see std/gpu.slop. Functions here are named __gpux_*.
+# gpu_* on macOS (Apple Silicon): raw GPU control through Metal. The same
+# functions as runtime/gpu_raw.slop; std/gpu.slop has the public ones and
+# LOW_LEVEL_GPU.md has the details. It shares Metal's device and queue with
+# gpu for (__gpu_dev, __gpu_queue, __objc) but keeps its own buffers and kernels.
+#
+# A buffer is a handle (1 or more). Its table entry has 48 bytes:
+#   +0 the MTLBuffer    +16 its contents (the CPU and GPU share this memory)
+#   +24 size in bytes   +40 1 while the buffer lives
+# A kernel is a handle (1 or more) for a record of 16 bytes: +0 the pipeline.
+__gpux_api = 0
+__gpux_state = 0
+__gpux_err = 0
+__gpux_errlen = 0
+__gpux_bufs = 0
+__gpux_nbufs = 0
+__gpux_kerns = 0
+__gpux_nkerns = 0
+__gpux_scratch = 0
+
+# the tables are kept for the whole run (bucket 2 is never given back)
+fn __gpux_setup() {
+    __gpux_err = __alloc_bytes_in(2, 1024)
+    __memzero(__gpux_err, 1024)
+    __gpux_bufs = __alloc_bytes_in(2, 48 * 1024)
+    __memzero(__gpux_bufs, 48 * 1024)
+    __gpux_kerns = __alloc_bytes_in(2, 8 * 256)
+    __memzero(__gpux_kerns, 8 * 256)
+    __gpux_scratch = __alloc_bytes_in(2, 64)
+    __memzero(__gpux_scratch, 64)
+}
+
+fn __gpux_clear() {
+    __gpux_errlen = 0
+    if __gpux_err != 0 {
+        __store8(__gpux_err, 0)
+    }
+}
+
+# remembers why the call failed; returns 0 so callers can write: return __gpux_fail(...)
+fn __gpux_fail(msg: string) -> int {
+    if __gpux_err != 0 {
+        n = len(msg)
+        if n > 1023 {
+            n = 1023
+        }
+        __memcpy(__gpux_err, __str_ptr(msg), n)
+        __store8(__gpux_err + n, 0)
+        __gpux_errlen = n
+    }
+    return 0
+}
+
+# a copy of s that lives for the whole run
+fn __gpux_perm(s: string) -> int {
+    n = len(s)
+    p = __alloc_bytes_in(2, n + 1)
+    __memcpy(p, __str_ptr(s), n)
+    __store8(p + n, 0)
+    return p
+}
+
+# the message of an NSError (0: unknown), copied out before its pool is emptied
+fn __gpux_nserror(err: int) -> string {
+    if err == 0 {
+        return "unknown error"
+    }
+    d = __ccall("objc_msgSend", err, __objc("description"))
+    c = __ccall("objc_msgSend", d, __objc("UTF8String"))
+    return __str(c, __strlen(c))
+}
+
+# 0: no GPU here, 1: Metal. Decided once.
+fn __gpux_init() -> int {
+    if __gpux_state != 0 {
+        return __gpux_api
+    }
+    if not __gpu_thread_ok() {
+        return 0
+    }
+    __gpux_state = 1
+    __gpux_setup()
+    if __env("SLOP_GPU") == "none" {
+        return 0
+    }
+    if __gpu_init() {
+        __gpux_api = 1
+    }
+    return __gpux_api
+}
+
+fn __gpux_backend() -> string {
+    if __gpux_init() == 1 {
+        return "metal"
+    }
+    return "none"
+}
+
+fn __gpux_device() -> string {
+    if __gpux_init() == 1 {
+        return __gpu_name()
+    }
+    return ""
+}
+
+# the table entry of a live buffer handle, or 0
+fn __gpux_entry(h: int) -> int {
+    if h < 1 or h > __gpux_nbufs {
+        return 0
+    }
+    e = __gpux_bufs + (h - 1) * 48
+    if __load64(e + 40) == 0 {
+        return 0
+    }
+    return e
+}
+
+# a free table entry (its index), or -1 when the table is full
+fn __gpux_new_entry() -> int {
+    for i in 0..__gpux_nbufs {
+        if __load64(__gpux_bufs + i * 48 + 40) == 0 {
+            return i
+        }
+    }
+    if __gpux_nbufs >= 1024 {
+        return -1
+    }
+    __gpux_nbufs += 1
+    return __gpux_nbufs - 1
+}
+
+fn __gpux_alloc(bytes: int) -> int {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        return __gpux_fail("gpu_alloc: there is no GPU here (Metal needs Apple Silicon, or SLOP_GPU=none)")
+    }
+    if bytes < 1 or bytes > 1073741824 {
+        return __gpux_fail("gpu_alloc: the size must be from 1 to 1073741824 bytes")
+    }
+    i = __gpux_new_entry()
+    if i < 0 {
+        return __gpux_fail("gpu_alloc: too many buffers (at most 1024)")
+    }
+    # MTLResourceStorageModeShared (0): the CPU and GPU see the same memory
+    buf = __ccall("objc_msgSend", __gpu_dev, __objc("newBufferWithLength:options:"), bytes, 0)
+    if buf == 0 {
+        return __gpux_fail("gpu_alloc: the GPU could not make a buffer of " + __int_to_string(bytes) + " bytes")
+    }
+    c = __ccall("objc_msgSend", buf, __objc("contents"))
+    __memzero(c, bytes)
+    e = __gpux_bufs + i * 48
+    __store64(e, buf)
+    __store64(e + 16, c)
+    __store64(e + 24, bytes)
+    __store64(e + 40, 1)
+    return i + 1
+}
+
+fn __gpux_free(h: int) {
+    api = __gpux_init()
+    __gpux_clear()
+    e = __gpux_entry(h)
+    if api == 0 or e == 0 {
+        __gpux_fail("gpu_free: not a live buffer")
+        return
+    }
+    __ccall("objc_msgSend", __load64(e), __objc("release"))
+    __store64(e + 40, 0)
+}
+
+fn __gpux_write(h: int, offset: int, data: string) -> bool {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        __gpux_fail("gpu_write: there is no GPU here (Metal needs Apple Silicon, or SLOP_GPU=none)")
+        return false
+    }
+    e = __gpux_entry(h)
+    if e == 0 {
+        __gpux_fail("gpu_write: not a live buffer")
+        return false
+    }
+    n = len(data)
+    size = __load64(e + 24)
+    if offset < 0 or offset + n > size {
+        __gpux_fail("gpu_write: " + __int_to_string(n) + " bytes at " + __int_to_string(offset) + " do not fit in a buffer of " + __int_to_string(size) + " bytes")
+        return false
+    }
+    if n > 0 {
+        __memcpy(__load64(e + 16) + offset, __str_ptr(data), n)
+    }
+    return true
+}
+
+fn __gpux_read(h: int, offset: int, bytes: int) -> string {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        __gpux_fail("gpu_read: there is no GPU here (Metal needs Apple Silicon, or SLOP_GPU=none)")
+        return ""
+    }
+    e = __gpux_entry(h)
+    if e == 0 {
+        __gpux_fail("gpu_read: not a live buffer")
+        return ""
+    }
+    size = __load64(e + 24)
+    if offset < 0 or bytes < 0 or offset + bytes > size {
+        __gpux_fail("gpu_read: " + __int_to_string(bytes) + " bytes at " + __int_to_string(offset) + " are not all in a buffer of " + __int_to_string(size) + " bytes")
+        return ""
+    }
+    if bytes == 0 {
+        return ""
+    }
+    return __str(__load64(e + 16) + offset, bytes)
+}
+
+fn __gpux_kernel(src: string, entry: string) -> int {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        return __gpux_fail("gpu_kernel: there is no GPU here (Metal needs Apple Silicon, or SLOP_GPU=none)")
+    }
+    if entry == "" {
+        return __gpux_fail("gpu_kernel: the entry name is empty")
+    }
+    if __gpux_nkerns >= 256 {
+        return __gpux_fail("gpu_kernel: too many kernels (at most 256)")
+    }
+    e = __gpux_scratch
+    pool = __ccall("objc_autoreleasePoolPush")
+    __store64(e, 0)
+    lib = __ccall("objc_msgSend", __gpu_dev, __objc("newLibraryWithSource:options:error:"), __gpu_nsstring(src), 0, e)
+    if lib == 0 {
+        msg = __gpux_nserror(__load64(e))
+        __ccall("objc_autoreleasePoolPop", pool)
+        return __gpux_fail("gpu_kernel: Metal could not compile the source: " + msg)
+    }
+    f = __ccall("objc_msgSend", lib, __objc("newFunctionWithName:"), __gpu_nsstring(entry))
+    if f == 0 {
+        __ccall("objc_autoreleasePoolPop", pool)
+        return __gpux_fail("gpu_kernel: the source has no function named " + entry)
+    }
+    __store64(e, 0)
+    pipe = __ccall("objc_msgSend", __gpu_dev, __objc("newComputePipelineStateWithFunction:error:"), f, e)
+    if pipe == 0 {
+        msg = __gpux_nserror(__load64(e))
+        __ccall("objc_autoreleasePoolPop", pool)
+        return __gpux_fail("gpu_kernel: Metal could not make the pipeline: " + msg)
+    }
+    __ccall("objc_autoreleasePoolPop", pool)
+    rec = __alloc_bytes_in(2, 16)
+    __store64(rec, pipe)
+    __store64(__gpux_kerns + __gpux_nkerns * 8, rec)
+    __gpux_nkerns += 1
+    return __gpux_nkerns
+}
+
+fn __gpux_run(k: int, bufs: array[int], threads: int) -> bool {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        __gpux_fail("gpu_run: there is no GPU here (Metal needs Apple Silicon, or SLOP_GPU=none)")
+        return false
+    }
+    if k < 1 or k > __gpux_nkerns {
+        __gpux_fail("gpu_run: not a kernel (gpu_kernel gives the handle)")
+        return false
+    }
+    nb = len(bufs)
+    if nb < 1 or nb > 16 {
+        __gpux_fail("gpu_run: give from 1 to 16 buffers, not " + __int_to_string(nb))
+        return false
+    }
+    if threads < 0 or threads > 1073741824 {
+        __gpux_fail("gpu_run: the number of threads must be from 0 to 1073741824")
+        return false
+    }
+    ea = __alloc_bytes(8 * nb)
+    for i in 0..nb {
+        e = __gpux_entry(bufs[i])
+        if e == 0 {
+            __gpux_fail("gpu_run: buffer number " + __int_to_string(i) + " is not a live buffer")
+            return false
+        }
+        __store64(ea + i * 8, e)
+    }
+    if threads == 0 {
+        return true
+    }
+    pipe = __load64(__load64(__gpux_kerns + (k - 1) * 8))
+    pool = __ccall("objc_autoreleasePoolPush")
+    cmd = __ccall("objc_msgSend", __gpu_queue, __objc("commandBuffer"))
+    enc = __ccall("objc_msgSend", cmd, __objc("computeCommandEncoder"))
+    __ccall("objc_msgSend", enc, __objc("setComputePipelineState:"), pipe)
+    for i in 0..nb {
+        # buffer(i) in the kernel
+        __ccall("objc_msgSend", enc, __objc("setBuffer:offset:atIndex:"), __load64(__load64(ea + i * 8)), 0, i)
+    }
+    w = __ccall("objc_msgSend", pipe, __objc("maxTotalThreadsPerThreadgroup"))
+    if w < 1 {
+        w = 1
+    }
+    if w > 256 {
+        w = 256
+    }
+    # MTLSize structs (width, height, depth), grid then threadgroup, passed by address
+    sz = __alloc_bytes(48)
+    __store64(sz, threads)
+    __store64(sz + 8, 1)
+    __store64(sz + 16, 1)
+    __store64(sz + 24, w)
+    __store64(sz + 32, 1)
+    __store64(sz + 40, 1)
+    __ccall("objc_msgSend", enc, __objc("dispatchThreads:threadsPerThreadgroup:"), sz, sz + 24)
+    __ccall("objc_msgSend", enc, __objc("endEncoding"))
+    __ccall("objc_msgSend", cmd, __objc("commit"))
+    __ccall("objc_msgSend", cmd, __objc("waitUntilCompleted"))
+    st = __ccall("objc_msgSend", cmd, __objc("status"))
+    __ccall("objc_autoreleasePoolPop", pool)
+    if st == 5 {
+        __gpux_fail("gpu_run: the GPU failed to run the kernel")
+        return false
+    }
+    return true
+}
+
+fn __gpux_error() -> string {
+    if __gpux_err == 0 or __gpux_errlen == 0 {
+        return ""
+    }
+    return __str(__gpux_err, __gpux_errlen)
+}
