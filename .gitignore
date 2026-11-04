@@ -12,3 +12,4 @@ tests/*
 !tests/*.*
 !tests/*/
 tests/*.exe
+.build/
