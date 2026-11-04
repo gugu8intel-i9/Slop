@@ -1,1 +1,173 @@
-# cpu: low-level cpu control for macos (see std/cpu.slop). Functions here are named __cpux_*.
+# Slop low-level CPU control for macOS. Facts come from sysctl (through the
+# system library); thread control uses libSystem calls. macOS cannot pin a
+# thread to a core, so pin and unpin report false there. Every function here
+# is raw (__cpux_*); std/cpu.slop wraps them as the public cpu_* functions.
+
+# a numeric sysctl value, or -1 if the key does not exist
+fn __cpux_sysctl_int(name: string) -> int {
+    buf = __alloc_bytes(16)
+    lenp = __alloc_bytes(8)
+    __store64(lenp, 8)
+    if __ccall32("sysctlbyname", __cstr(name), buf, lenp, 0, 0) != 0 {
+        return -1
+    }
+    # the value is 4 or 8 bytes; the buffer was zeroed, so reading 8 is right
+    return __load64(buf)
+}
+
+# a text sysctl value, or "" if the key does not exist
+fn __cpux_sysctl_str(name: string) -> string {
+    buf = __alloc_bytes(256)
+    lenp = __alloc_bytes(8)
+    __store64(lenp, 255)
+    if __ccall32("sysctlbyname", __cstr(name), buf, lenp, 0, 0) != 0 {
+        return ""
+    }
+    return __str(buf, __strlen(buf))
+}
+
+fn __cpux_vendor() -> string {
+    if __arch() == 2 {
+        return "Apple"
+    }
+    return __cpux_sysctl_str("machdep.cpu.vendor")
+}
+
+fn __cpux_model() -> string {
+    return __cpux_sysctl_str("machdep.cpu.brand_string")
+}
+
+fn __cpux_logical() -> int {
+    return __cpu_count()
+}
+
+fn __cpux_physical() -> int {
+    n = __cpux_sysctl_int("hw.physicalcpu")
+    if n < 1 {
+        return __cpu_count()
+    }
+    return n
+}
+
+# the sysctl key that tells whether the processor has a feature ("" if none)
+fn __cpux_key(feature: string) -> string {
+    if __arch() == 2 {
+        if feature == "neon" or feature == "asimd" {
+            return "hw.optional.neon"
+        }
+        if feature == "aes" {
+            return "hw.optional.arm.FEAT_AES"
+        }
+        if feature == "sha2" {
+            return "hw.optional.arm.FEAT_SHA256"
+        }
+        if feature == "crc32" {
+            return "hw.optional.armv8_crc32"
+        }
+        if feature == "atomics" {
+            return "hw.optional.arm.FEAT_LSE"
+        }
+        return ""
+    }
+    if feature == "sse2" {
+        return "hw.optional.sse2"
+    }
+    if feature == "sse4.2" {
+        return "hw.optional.sse4_2"
+    }
+    if feature == "avx" {
+        return "hw.optional.avx1_0"
+    }
+    if feature == "avx2" {
+        return "hw.optional.avx2_0"
+    }
+    if feature == "avx512f" {
+        return "hw.optional.avx512f"
+    }
+    if feature == "fma" {
+        return "hw.optional.fma"
+    }
+    if feature == "aes" {
+        return "hw.optional.aes"
+    }
+    if feature == "sha" {
+        return "hw.optional.sha_ni"
+    }
+    if feature == "popcnt" {
+        return "hw.optional.popcnt"
+    }
+    if feature == "bmi2" {
+        return "hw.optional.bmi2"
+    }
+    return ""
+}
+
+fn __cpux_has(feature: string) -> bool {
+    key = __cpux_key(feature)
+    if key == "" {
+        return false
+    }
+    return __cpux_sysctl_int(key) == 1
+}
+
+fn __cpux_cache_line() -> int {
+    n = __cpux_sysctl_int("hw.cachelinesize")
+    if n < 1 {
+        return 64
+    }
+    return n
+}
+
+fn __cpux_cache_size(level: int) -> int {
+    name = ""
+    if level == 1 {
+        name = "hw.l1dcachesize"
+    } else if level == 2 {
+        name = "hw.l2cachesize"
+    } else if level == 3 {
+        name = "hw.l3cachesize"
+    }
+    if name == "" {
+        return 0
+    }
+    n = __cpux_sysctl_int(name)
+    if n < 0 {
+        return 0
+    }
+    return n
+}
+
+# macOS has no API to pin a thread to a core
+fn __cpux_pin(core: int) -> bool {
+    return false
+}
+
+fn __cpux_unpin() -> bool {
+    return false
+}
+
+fn __cpux_current() -> int {
+    return -1
+}
+
+# PRIO_DARWIN_THREAD (3) with who 0 changes only the calling thread
+fn __cpux_priority(level: string) -> bool {
+    nice = 0
+    if level == "low" {
+        nice = 19
+    } else if level == "high" {
+        nice = -10
+    } else if level != "normal" {
+        return false
+    }
+    return __ccall32("setpriority", 3, 0, nice) == 0
+}
+
+fn __cpux_yield() {
+    __ccall32("sched_yield")
+}
+
+# CLOCK_THREAD_CPUTIME_ID (16); 0 if the clock is not available
+fn __cpux_thread_time_ns() -> int {
+    return __ccall("clock_gettime_nsec_np", 16)
+}

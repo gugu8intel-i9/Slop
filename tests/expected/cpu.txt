@@ -1,1 +1,12 @@
-ok
+cores true true true
+cache line is a power of two true
+L1 data cache is unknown or at least 1 KB true
+sse2 is x86 only true
+neon is ARM only true
+asimd is neon true
+avx2 implies avx true
+unknown feature false
+priority true false
+thread time does not go back true true
+pin true
+unpin true

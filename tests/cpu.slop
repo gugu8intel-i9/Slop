@@ -1,2 +1,41 @@
+# the cpu module: prints only facts that hold on every machine
 use "cpu"
-print("ok")
+
+fn is_pow2(n: int) -> bool {
+    if n < 1 {
+        return false
+    }
+    x = n
+    while x > 1 {
+        if x % 2 != 0 {
+            return false
+        }
+        x = x / 2
+    }
+    return true
+}
+
+print("cores", cpu_logical_cores() >= 1, cpu_physical_cores() >= 1, cpu_physical_cores() <= cpu_logical_cores())
+print("cache line is a power of two", is_pow2(cpu_cache_line()))
+print("L1 data cache is unknown or at least 1 KB", cpu_cache_size(1) == 0 or cpu_cache_size(1) >= 1024)
+print("sse2 is x86 only", cpu_has("sse2") == (arch_name() == "x86-64"))
+print("neon is ARM only", cpu_has("neon") == (arch_name() == "arm64"))
+print("asimd is neon", cpu_has("asimd") == cpu_has("neon"))
+print("avx2 implies avx", not cpu_has("avx2") or cpu_has("avx"))
+print("unknown feature", cpu_has("no-such-feature"))
+print("priority", cpu_priority("normal"), cpu_priority("no-such-level"))
+cpu_yield()
+t1 = cpu_thread_time_ns()
+total = 0
+for i in 0..200000 {
+    total += i
+}
+t2 = cpu_thread_time_ns()
+print("thread time does not go back", t2 >= t1, total > 0)
+
+# pin to core 0 (where supported), check, and unpin
+ok = cpu_pin(0)
+cpu_yield()
+print("pin", (not ok) or cpu_current() == 0)
+u = cpu_unpin()
+print("unpin", (not ok) or u)
