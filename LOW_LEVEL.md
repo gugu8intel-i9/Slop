@@ -8,6 +8,16 @@ The rule is:
 
 That is why these APIs use names like `unsafe_load64`, `unsafe_store64`, `mmio_write32`, `cpu_cycles`, and `gpu_fence`.
 
+## Modules for deeper control
+
+Three modules go further, each optional (`use` it only when you need it):
+
+| Module | What it controls | Guide |
+|---|---|---|
+| `use "cpu"` | chip details and features (`cpu_has("avx2")`), cache sizes, pinning a thread to a core, the core it is on, thread priority, per-thread CPU time | [LOW_LEVEL_CPU.md](LOW_LEVEL_CPU.md) |
+| `use "ram"` | memory straight from the system (normal or huge pages), protection (read-only, executable, none), locking in RAM, access hints, RAM totals, an arena allocator, float loads and stores | [LOW_LEVEL_RAM.md](LOW_LEVEL_RAM.md) |
+| `use "gpu"` | GPU buffers you manage, kernels you write yourself (OpenCL C, Metal, or SPIR-V for Vulkan), launches on the GPU | [LOW_LEVEL_GPU.md](LOW_LEVEL_GPU.md) |
+
 ## What this is for
 
 Use this only for:

@@ -7053,6 +7053,14 @@ fn runtime_source() -> string {
     if g_target != 2 {
         os = os + embed("runtime/vulkan.slop") + embed("runtime/opencl.slop") + embed("runtime/npu_openvino.slop") + embed("runtime/npu_onnx.slop")
     }
+    # low-level control (std/cpu.slop, std/ram.slop, std/gpu.slop)
+    if g_target == 2 {
+        os = os + embed("runtime/cpu_macos.slop") + embed("runtime/ram_macos.slop") + embed("runtime/gpu_raw_metal.slop")
+    } else if g_target == 3 {
+        os = os + embed("runtime/cpu_windows.slop") + embed("runtime/ram_windows.slop") + embed("runtime/gpu_raw.slop")
+    } else {
+        os = os + embed("runtime/cpu_linux.slop") + embed("runtime/ram_linux.slop") + embed("runtime/gpu_raw.slop")
+    }
     return embed("runtime/core.slop") + embed("runtime/numbers.slop") + embed("runtime/math.slop") + os
 }
 
@@ -7199,7 +7207,7 @@ fn use_lines(src: string) -> array[string] {
 
 # the standard library: modules built into slop itself
 fn std_modules() -> array[string] {
-    return ["crypto", "csv", "files", "lists", "math", "matrix", "npu", "random", "strings", "testing", "time", "tls", "http2", "web"]
+    return ["crypto", "csv", "files", "lists", "math", "matrix", "npu", "random", "strings", "testing", "time", "tls", "http2", "web", "cpu", "ram", "gpu"]
 }
 
 fn std_source(name: string) -> string {
@@ -7214,6 +7222,15 @@ fn std_source(name: string) -> string {
     }
     if name == "http2" {
         return embed("std/http2.slop")
+    }
+    if name == "cpu" {
+        return embed("std/cpu.slop")
+    }
+    if name == "ram" {
+        return embed("std/ram.slop")
+    }
+    if name == "gpu" {
+        return embed("std/gpu.slop")
     }
     if name == "files" {
         return embed("std/files.slop")

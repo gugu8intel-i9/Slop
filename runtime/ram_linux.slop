@@ -1,0 +1,185 @@
+# Low-level RAM control for Linux (x86-64 and ARM64), used by std/ram.slop.
+# Every function here is named __ramx_*. Memory comes straight from the kernel.
+
+__ramx_pagesize = 0
+
+# the page size: AT_PAGESZ (type 6) in /proc/self/auxv; 4096 if unknown
+fn __ramx_page_size() -> int {
+    if __ramx_pagesize > 0 {
+        return __ramx_pagesize
+    }
+    auxv = __read_file("/proc/self/auxv")
+    n = len(auxv)
+    p = __str_ptr(auxv)
+    i = 0
+    size = 4096
+    while i + 16 <= n {
+        if __load64(p + i) == 6 and __load64(p + i + 8) > 0 {
+            size = __load64(p + i + 8)
+            break
+        }
+        i += 16
+    }
+    __ramx_pagesize = size
+    return size
+}
+
+# mmap: flags are added to MAP_PRIVATE|MAP_ANONYMOUS; 0 on failure
+fn __ramx_mmap(bytes: int, flags: int) -> int {
+    # PROT_READ|PROT_WRITE
+    p = 0
+    if __arm() {
+        p = __syscall(222, 0, bytes, 3, 34 + flags, -1, 0)
+    } else {
+        p = __syscall(9, 0, bytes, 3, 34 + flags, -1, 0)
+    }
+    if p < 0 {
+        return 0
+    }
+    return p
+}
+
+fn __ramx_map(bytes: int) -> int {
+    return __ramx_mmap(bytes, 0)
+}
+
+# MAP_HUGETLB needs whole huge pages (2 MB here), so it is only tried for such
+# sizes; otherwise transparent huge pages are asked for with madvise. Either
+# way the mapping is exactly `bytes` long, so __ramx_unmap(p, bytes) frees it.
+fn __ramx_map_huge(bytes: int) -> int {
+    if bytes % 2097152 == 0 {
+        # MAP_HUGETLB
+        p = __ramx_mmap(bytes, 262144)
+        if p != 0 {
+            return p
+        }
+    }
+    p = __ramx_mmap(bytes, 0)
+    if p != 0 {
+        # MADV_HUGEPAGE
+        if __arm() {
+            __syscall(233, p, bytes, 14)
+        } else {
+            __syscall(28, p, bytes, 14)
+        }
+    }
+    return p
+}
+
+fn __ramx_unmap(p: int, bytes: int) {
+    if __arm() {
+        __syscall(215, p, bytes)
+    } else {
+        __syscall(11, p, bytes)
+    }
+}
+
+# bits: 1 read, 2 write, 4 execute
+fn __ramx_protect(p: int, bytes: int, bits: int) -> bool {
+    r = 0
+    if __arm() {
+        r = __syscall(226, p, bytes, bits)
+    } else {
+        r = __syscall(10, p, bytes, bits)
+    }
+    return r == 0
+}
+
+fn __ramx_lock(p: int, bytes: int) -> bool {
+    r = 0
+    if __arm() {
+        r = __syscall(228, p, bytes)
+    } else {
+        r = __syscall(149, p, bytes)
+    }
+    return r == 0
+}
+
+fn __ramx_unlock(p: int, bytes: int) -> bool {
+    r = 0
+    if __arm() {
+        r = __syscall(229, p, bytes)
+    } else {
+        r = __syscall(150, p, bytes)
+    }
+    return r == 0
+}
+
+# advice: 0 normal, 1 random, 2 sequential, 3 willneed, 4 dontneed, 5 hugepage
+fn __ramx_advise(p: int, bytes: int, advice: int) -> bool {
+    code = advice
+    if advice == 5 {
+        code = 14
+    }
+    r = 0
+    if __arm() {
+        r = __syscall(233, p, bytes, code)
+    } else {
+        r = __syscall(28, p, bytes, code)
+    }
+    return r == 0
+}
+
+# struct sysinfo: totalram at 32, freeram at 40, mem_unit (u32) at 104
+fn __ramx_sysinfo(buf: int) {
+    if __arm() {
+        __syscall(179, buf)
+    } else {
+        __syscall(99, buf)
+    }
+}
+
+fn __ramx_total() -> int {
+    buf = __alloc_bytes(128)
+    __ramx_sysinfo(buf)
+    unit = __load32(buf + 104)
+    if unit < 1 {
+        unit = 1
+    }
+    return __load64(buf + 32) * unit
+}
+
+# the number after `key` in /proc/meminfo text, or -1
+fn __ramx_meminfo(text: string, key: string) -> int {
+    at = __find(text, key)
+    if at < 0 {
+        return -1
+    }
+    p = __str_ptr(text)
+    n = len(text)
+    i = at + len(key)
+    while i < n and __load8(p + i) == 32 {
+        i += 1
+    }
+    v = 0
+    digits = 0
+    while i < n {
+        c = __load8(p + i)
+        if c < 48 or c > 57 {
+            break
+        }
+        v = v * 10 + c - 48
+        digits += 1
+        i += 1
+    }
+    if digits == 0 {
+        return -1
+    }
+    return v
+}
+
+# MemAvailable from /proc/meminfo (the kernel's estimate of memory that can be
+# used without swapping); the free memory from sysinfo if that is not there
+fn __ramx_available() -> int {
+    kb = __ramx_meminfo(__read_file("/proc/meminfo"), "MemAvailable:")
+    if kb >= 0 {
+        return kb * 1024
+    }
+    buf = __alloc_bytes(128)
+    __ramx_sysinfo(buf)
+    unit = __load32(buf + 104)
+    if unit < 1 {
+        unit = 1
+    }
+    return __load64(buf + 40) * unit
+}

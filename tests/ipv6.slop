@@ -10,9 +10,17 @@ fn handle(req: Request) -> Response {
 fn udp_echo(port: int) -> int {
     fd = udp_open(port)
     socket_timeout(fd, 10000)
-    for i in 0..2 {
+    # answers until "four" comes (the client may send "six" more than once
+    # while it waits for the server to start)
+    n = 0
+    msg = ""
+    while msg != "four" and n < 200 {
         msg = udp_receive(fd)
+        if msg == "" {
+            break
+        }
         udp_reply(fd, msg + " from " + udp_sender(fd))
+        n += 1
     }
     socket_close(fd)
     return 2
@@ -73,6 +81,13 @@ while got == "" and tries < 100 {
 print(got, udp_sender(c6))
 udp_send(c6, "127.0.0.1", port + 2, "four")
 socket_timeout(c6, 5000)
-print(udp_receive(c6), udp_sender(c6))
+# skip late answers to repeated "six" messages
+got = udp_receive(c6)
+skipped = 0
+while starts_with(got, "six") and skipped < 200 {
+    got = udp_receive(c6)
+    skipped += 1
+}
+print(got, udp_sender(c6))
 join(u)
 socket_close(c6)

@@ -1,0 +1,73 @@
+# Tests for the ram module. The output is the same on every machine, so only
+# facts that always hold are printed (not sizes, addresses or lock results).
+use "ram"
+
+page = ram_page_size()
+print(page >= 4096 and page % 4096 == 0)
+print(ram_total() > 0)
+print(ram_available() <= ram_total())
+
+# memory from the OS: aligned, zero-filled, readable and writable
+size = page * 4
+p = ram_alloc(size)
+print(p != 0)
+print(p % page == 0)
+print(unsafe_load64(p + size - 8) == 0)
+
+# typed access: integers and both float sizes
+unsafe_store64(p, 123456789)
+print(unsafe_load64(p))
+ram_store_f64(p + 8, 2.5)
+print(ram_load_f64(p + 8))
+ram_store_f32(p + 16, 0.75)
+print(ram_load_f32(p + 16))
+unsafe_store32(p + 24, 4294967295)
+print(unsafe_load32(p + 24))
+
+# protection: read-only, then back to read-write
+print(ram_protect(p, page, "r"))
+print(unsafe_load64(p) == 123456789)
+print(ram_protect(p, page, "rw"))
+unsafe_store64(p, 987654321)
+print(unsafe_load64(p))
+print(ram_protect(p, page, "bogus"))
+
+# locking may be refused, so only report what always holds
+locked = ram_lock(p, page)
+print(locked == false or ram_unlock(p, page))
+
+# advice
+print(ram_advise(p, page, "willneed"))
+print(ram_advise(p, page, "bogus"))
+
+# fill and compare
+q = ram_alloc(page)
+ram_fill(q, 100, 7)
+print(unsafe_load8(q + 99))
+print(unsafe_load8(q + 100))
+print(ram_equal(q, q + 50, 50))
+print(ram_equal(q, q + 50, 51))
+ram_free(q, page)
+
+# huge pages: a 2 MB request always gets memory
+h = ram_alloc_huge(2097152)
+print(h != 0)
+print(h % page == 0)
+ram_free(h, 2097152)
+
+# arena: a bump allocator in one block
+a = ram_arena(1000)
+print(a != 0)
+x = ram_arena_take(a, 10, 1)
+y = ram_arena_take(a, 8, 64)
+print(y % 64 == 0)
+print(y - x)
+print(ram_arena_used(a))
+print(ram_arena_take(a, 3, 3) == 0)
+print(ram_arena_take(a, 100000, 8) == 0)
+ram_arena_reset(a)
+print(ram_arena_used(a))
+ram_arena_free(a)
+
+ram_free(p, size)
+print("done")

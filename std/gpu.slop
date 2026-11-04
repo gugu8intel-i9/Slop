@@ -1,0 +1,104 @@
+# gpu: raw GPU control, for your own buffers and kernels
+#   use "gpu"
+#
+#   buf = gpu_alloc(4 * n)                       # a buffer on the GPU (0: no GPU)
+#   gpu_write(buf, 0, gpu_pack_f32(xs))          # copy numbers in
+#   k = gpu_kernel(source, "add")                # compile your kernel (0: see gpu_error())
+#   gpu_run(k, [a, b, c, n], threads)            # run it on `threads` work items, and wait
+#   ys = gpu_unpack_f32(gpu_read(c, 0, 4 * n))   # copy numbers out
+#   gpu_free(buf)
+#
+# The kernel source is OpenCL C on OpenCL, Metal Shading Language on macOS,
+# and a SPIR-V binary (as a byte string) on Vulkan. Which one runs is
+# gpu_backend(): "vulkan", "opencl", "metal" or "none". Numbers on the GPU are
+# 32 bits; the pack and unpack helpers make the little-endian bytes.
+# See LOW_LEVEL_GPU.md for a full vector-add example for each backend.
+
+# "vulkan", "opencl", "metal", or "none" when there is no GPU (or SLOP_GPU=none)
+fn gpu_backend() -> string {
+    return __gpux_backend()
+}
+
+# the GPU's name, or "" when there is none
+fn gpu_device() -> string {
+    return __gpux_device()
+}
+
+# a device buffer of this many bytes, zeroed; 0 on failure (see gpu_error)
+fn gpu_alloc(bytes: int) -> int {
+    return __gpux_alloc(bytes)
+}
+
+fn gpu_free(buf: int) {
+    __gpux_free(buf)
+}
+
+# copies the bytes of data into buf at offset; false if they do not fit
+fn gpu_write(buf: int, offset: int, data: string) -> bool {
+    return __gpux_write(buf, offset, data)
+}
+
+# copies bytes bytes out of buf, from offset, as a byte string ("" on failure)
+fn gpu_read(buf: int, offset: int, bytes: int) -> string {
+    return __gpux_read(buf, offset, bytes)
+}
+
+# compiles a kernel named entry; returns its handle (> 0), or 0 with gpu_error()
+fn gpu_kernel(source: string, entry: string) -> int {
+    return __gpux_kernel(source, entry)
+}
+
+# runs kernel k with the buffers in order (kernel arguments 0, 1, ...) on
+# `threads` work items, and waits until they are done
+fn gpu_run(kernel: int, buffers: array[int], threads: int) -> bool {
+    return __gpux_run(kernel, buffers, threads)
+}
+
+# why the last gpu_ call failed ("" after a call that worked)
+fn gpu_error() -> string {
+    return __gpux_error()
+}
+
+# numbers as 32-bit little-endian floats, 4 bytes each
+fn gpu_pack_f32(xs: array[float]) -> string {
+    let n = len(xs)
+    let p = __alloc_bytes(n * 4 + 4)
+    for i in 0..n {
+        __store32(p + i * 4, __f64_to_f32(float_bits(xs[i])))
+    }
+    return __str(p, n * 4)
+}
+
+# the 32-bit floats in s (any leftover bytes are not used)
+fn gpu_unpack_f32(s: string) -> array[float] {
+    let out: array[float] = []
+    let p = __str_ptr(s)
+    for i in 0..len(s) / 4 {
+        push(out, float_from_bits(__f32_to_f64(__load32(p + i * 4))))
+    }
+    return out
+}
+
+# whole numbers as 32-bit little-endian integers, 4 bytes each
+fn gpu_pack_i32(xs: array[int]) -> string {
+    let n = len(xs)
+    let p = __alloc_bytes(n * 4 + 4)
+    for i in 0..n {
+        __store32(p + i * 4, xs[i])
+    }
+    return __str(p, n * 4)
+}
+
+# the 32-bit signed integers in s
+fn gpu_unpack_i32(s: string) -> array[int] {
+    let out: array[int] = []
+    let p = __str_ptr(s)
+    for i in 0..len(s) / 4 {
+        let v = __load32(p + i * 4)
+        if v >= 2147483648 {
+            v -= 4294967296
+        }
+        push(out, v)
+    }
+    return out
+}

@@ -1,0 +1,528 @@
+# gpu_* on Linux and Windows: raw GPU control for your own buffers and kernels.
+# It uses the same drivers as gpu for: Vulkan first, then OpenCL. SLOP_GPU=vulkan
+# or opencl picks one, SLOP_GPU=none turns it off. The public functions are in
+# std/gpu.slop; LOW_LEVEL_GPU.md has the details.
+#
+# A buffer is a handle (1 or more). Its table entry has 48 bytes:
+#   +0 the driver's buffer (cl_mem or VkBuffer)   +8 Vulkan: its memory
+#   +16 Vulkan: the mapped address                  +24 size in bytes
+#   +40 1 while the buffer lives
+# A kernel is a handle (1 or more) for a record of 432 bytes:
+#   +0 the OpenCL kernel, or the Vulkan shader module
+#   +8 the entry name (kept for the whole run)      +16 Vulkan: local size in x
+#   +24 + nb * 24: Vulkan pipeline, layout and set layout for nb buffers
+__gpux_api = 0
+__gpux_state = 0
+__gpux_err = 0
+__gpux_errlen = 0
+__gpux_bufs = 0
+__gpux_nbufs = 0
+__gpux_kerns = 0
+__gpux_nkerns = 0
+__gpux_scratch = 0
+__gpux_zeros = 0
+__gpux_clwrite = 0
+
+# the tables are kept for the whole run (bucket 2 is never given back)
+fn __gpux_setup() {
+    __gpux_err = __alloc_bytes_in(2, 1024)
+    __memzero(__gpux_err, 1024)
+    __gpux_bufs = __alloc_bytes_in(2, 48 * 1024)
+    __memzero(__gpux_bufs, 48 * 1024)
+    __gpux_kerns = __alloc_bytes_in(2, 8 * 256)
+    __memzero(__gpux_kerns, 8 * 256)
+    __gpux_scratch = __alloc_bytes_in(2, 256)
+    __memzero(__gpux_scratch, 256)
+    __gpux_zeros = __alloc_bytes_in(2, 65536)
+    __memzero(__gpux_zeros, 65536)
+}
+
+fn __gpux_clear() {
+    __gpux_errlen = 0
+    if __gpux_err != 0 {
+        __store8(__gpux_err, 0)
+    }
+}
+
+# remembers why the call failed; returns 0 so callers can write: return __gpux_fail(...)
+fn __gpux_fail(msg: string) -> int {
+    if __gpux_err != 0 {
+        n = len(msg)
+        if n > 1023 {
+            n = 1023
+        }
+        __memcpy(__gpux_err, __str_ptr(msg), n)
+        __store8(__gpux_err + n, 0)
+        __gpux_errlen = n
+    }
+    return 0
+}
+
+# a copy of s that lives for the whole run
+fn __gpux_perm(s: string) -> int {
+    n = len(s)
+    p = __alloc_bytes_in(2, n + 1)
+    __memcpy(p, __str_ptr(s), n)
+    __store8(p + n, 0)
+    return p
+}
+
+# 0: no GPU here, 1: Vulkan, 2: OpenCL. Decided once.
+fn __gpux_init() -> int {
+    if __gpux_state != 0 {
+        return __gpux_api
+    }
+    # the C libraries only work on the main thread
+    if not __gpu_thread_ok() {
+        return 0
+    }
+    __gpux_state = 1
+    __gpux_setup()
+    which = __env("SLOP_GPU")
+    if which == "none" {
+        return 0
+    }
+    if which != "opencl" and __vk_init() {
+        __gpux_api = 1
+    } else if which != "vulkan" and __cl_init() and __gpux_cl_extra() {
+        __gpux_api = 2
+    }
+    return __gpux_api
+}
+
+# the one OpenCL function that the gpu for code does not load
+fn __gpux_cl_extra() -> bool {
+    lib = __dl_open("OpenCL")
+    if lib == 0 {
+        return false
+    }
+    f = __dl_sym(lib, "clEnqueueWriteBuffer")
+    if f == 0 {
+        return false
+    }
+    __gpux_clwrite = f
+    return true
+}
+
+fn __gpux_backend() -> string {
+    api = __gpux_init()
+    if api == 1 {
+        return "vulkan"
+    }
+    if api == 2 {
+        return "opencl"
+    }
+    return "none"
+}
+
+fn __gpux_device() -> string {
+    api = __gpux_init()
+    if api == 1 {
+        return __str(__vk_name, __strlen(__vk_name))
+    }
+    if api == 2 {
+        return __cl_name()
+    }
+    return ""
+}
+
+# the table entry of a live buffer handle, or 0
+fn __gpux_entry(h: int) -> int {
+    if h < 1 or h > __gpux_nbufs {
+        return 0
+    }
+    e = __gpux_bufs + (h - 1) * 48
+    if __load64(e + 40) == 0 {
+        return 0
+    }
+    return e
+}
+
+# a free table entry (its index), or -1 when the table is full
+fn __gpux_new_entry() -> int {
+    for i in 0..__gpux_nbufs {
+        if __load64(__gpux_bufs + i * 48 + 40) == 0 {
+            return i
+        }
+    }
+    if __gpux_nbufs >= 1024 {
+        return -1
+    }
+    __gpux_nbufs += 1
+    return __gpux_nbufs - 1
+}
+
+# OpenCL: write n bytes from src into buffer mem at off, and wait
+fn __gpux_cl_write(mem: int, off: int, src: int, n: int) -> bool {
+    return __i32(__ccall_ptr(__gpux_clwrite, __cl_queue, mem, 1, off, n, src, 0, 0, 0)) == 0
+}
+
+fn __gpux_alloc(bytes: int) -> int {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        return __gpux_fail("gpu_alloc: there is no GPU here (none was found, or SLOP_GPU=none)")
+    }
+    if bytes < 1 or bytes > 1073741824 {
+        return __gpux_fail("gpu_alloc: the size must be from 1 to 1073741824 bytes")
+    }
+    i = __gpux_new_entry()
+    if i < 0 {
+        return __gpux_fail("gpu_alloc: too many buffers (at most 1024)")
+    }
+    e = __gpux_bufs + i * 48
+    if api == 1 {
+        tmp = __alloc_bytes(48)
+        if not __vk_make(bytes, tmp) {
+            return __gpux_fail("gpu_alloc: Vulkan could not make a buffer of " + __int_to_string(bytes) + " bytes")
+        }
+        # host visible and coherent, so the memory is also the CPU's view
+        __memzero(__load64(tmp + 32), bytes)
+        __store64(e, __load64(tmp + 16))
+        __store64(e + 8, __load64(tmp + 24))
+        __store64(e + 16, __load64(tmp + 32))
+    } else {
+        __store32(__gpux_scratch, 0)
+        mem = __ccall_ptr(__cl_fn(9), __cl_ctx, 1, bytes, 0, __gpux_scratch)
+        if mem == 0 {
+            return __gpux_fail("gpu_alloc: OpenCL could not make a buffer of " + __int_to_string(bytes) + " bytes (error " + __int_to_string(__i32(__load32(__gpux_scratch))) + ")")
+        }
+        off = 0
+        while off < bytes {
+            c = bytes - off
+            if c > 65536 {
+                c = 65536
+            }
+            if not __gpux_cl_write(mem, off, __gpux_zeros, c) {
+                __ccall_ptr(__cl_fn(13), mem)
+                return __gpux_fail("gpu_alloc: OpenCL could not clear the new buffer")
+            }
+            off += c
+        }
+        __store64(e, mem)
+        __store64(e + 8, 0)
+        __store64(e + 16, 0)
+    }
+    __store64(e + 24, bytes)
+    __store64(e + 40, 1)
+    return i + 1
+}
+
+fn __gpux_free(h: int) {
+    api = __gpux_init()
+    __gpux_clear()
+    e = __gpux_entry(h)
+    if api == 0 or e == 0 {
+        __gpux_fail("gpu_free: not a live buffer")
+        return
+    }
+    if api == 1 {
+        __ccall_ptr(__vk_fn(11), __vk_dev, __load64(e), 0)
+        __ccall_ptr(__vk_fn(12), __vk_dev, __load64(e + 8), 0)
+    } else {
+        __ccall_ptr(__cl_fn(13), __load64(e))
+    }
+    __store64(e + 40, 0)
+}
+
+fn __gpux_write(h: int, offset: int, data: string) -> bool {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        __gpux_fail("gpu_write: there is no GPU here (none was found, or SLOP_GPU=none)")
+        return false
+    }
+    e = __gpux_entry(h)
+    if e == 0 {
+        __gpux_fail("gpu_write: not a live buffer")
+        return false
+    }
+    n = len(data)
+    size = __load64(e + 24)
+    if offset < 0 or offset + n > size {
+        __gpux_fail("gpu_write: " + __int_to_string(n) + " bytes at " + __int_to_string(offset) + " do not fit in a buffer of " + __int_to_string(size) + " bytes")
+        return false
+    }
+    if n == 0 {
+        return true
+    }
+    if api == 1 {
+        __memcpy(__load64(e + 16) + offset, __str_ptr(data), n)
+        return true
+    }
+    if not __gpux_cl_write(__load64(e), offset, __str_ptr(data), n) {
+        __gpux_fail("gpu_write: OpenCL could not copy the data to the GPU")
+        return false
+    }
+    return true
+}
+
+fn __gpux_read(h: int, offset: int, bytes: int) -> string {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        __gpux_fail("gpu_read: there is no GPU here (none was found, or SLOP_GPU=none)")
+        return ""
+    }
+    e = __gpux_entry(h)
+    if e == 0 {
+        __gpux_fail("gpu_read: not a live buffer")
+        return ""
+    }
+    size = __load64(e + 24)
+    if offset < 0 or bytes < 0 or offset + bytes > size {
+        __gpux_fail("gpu_read: " + __int_to_string(bytes) + " bytes at " + __int_to_string(offset) + " are not all in a buffer of " + __int_to_string(size) + " bytes")
+        return ""
+    }
+    if bytes == 0 {
+        return ""
+    }
+    if api == 1 {
+        return __str(__load64(e + 16) + offset, bytes)
+    }
+    tmp = __alloc_bytes(bytes)
+    if __i32(__ccall_ptr(__cl_fn(12), __cl_queue, __load64(e), 1, offset, bytes, tmp, 0, 0, 0)) != 0 {
+        __gpux_fail("gpu_read: OpenCL could not copy the data back")
+        return ""
+    }
+    return __str(tmp, bytes)
+}
+
+# the local size in x that the SPIR-V shader declares (64 when it does not say)
+fn __gpux_spv_local_x(spv: string) -> int {
+    p = __str_ptr(spv)
+    n = len(spv)
+    pos = 20
+    while pos + 4 <= n {
+        w = __load32(p + pos)
+        wc = w / 65536
+        if wc == 0 {
+            return 64
+        }
+        # OpenExecutionMode (16) with LocalSize (17): x is the next word
+        if w % 65536 == 16 and pos + 16 <= n {
+            if __load32(p + pos + 8) == 17 {
+                x = __load32(p + pos + 12)
+                if x > 0 {
+                    return x
+                }
+                return 64
+            }
+        }
+        pos += wc * 4
+    }
+    return 64
+}
+
+fn __gpux_kernel(src: string, entry: string) -> int {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        return __gpux_fail("gpu_kernel: there is no GPU here (none was found, or SLOP_GPU=none)")
+    }
+    if entry == "" {
+        return __gpux_fail("gpu_kernel: the entry name is empty")
+    }
+    if __gpux_nkerns >= 256 {
+        return __gpux_fail("gpu_kernel: too many kernels (at most 256)")
+    }
+    rec = __alloc_bytes_in(2, 432)
+    __memzero(rec, 432)
+    __store64(rec + 8, __gpux_perm(entry))
+    t = __gpux_scratch
+    if api == 1 {
+        if len(src) < 4 or len(src) % 4 != 0 {
+            return __gpux_fail("gpu_kernel: on Vulkan the source must be SPIR-V bytes (a compiled shader)")
+        }
+        # SPIR-V starts with the magic number 0x07230203
+        if __load32(__str_ptr(src)) != 119734787 {
+            return __gpux_fail("gpu_kernel: on Vulkan the source must be SPIR-V bytes (a compiled shader)")
+        }
+        smi = __vk_struct(40)
+        __store32(smi, 16)
+        __store64(smi + 24, len(src))
+        __store64(smi + 32, __str_ptr(src))
+        r = __i32(__ccall_ptr(__vk_fn(13), __vk_dev, smi, 0, t))
+        if r != 0 {
+            return __gpux_fail("gpu_kernel: the Vulkan driver refused the SPIR-V (VkResult " + __int_to_string(r) + ")")
+        }
+        __store64(rec, __load64(t))
+        __store64(rec + 16, __gpux_spv_local_x(src))
+    } else {
+        __store64(t + 16, __cstr(src))
+        __store64(t + 24, len(src))
+        __store64(t + 32, __cl_dev)
+        prog = __ccall_ptr(__cl_fn(4), __cl_ctx, 1, t + 16, t + 24, t)
+        if prog == 0 {
+            return __gpux_fail("gpu_kernel: OpenCL could not take the source (error " + __int_to_string(__i32(__load32(t))) + ")")
+        }
+        if __i32(__ccall_ptr(__cl_fn(5), prog, 1, t + 32, __cstr("-w"), 0, 0)) != 0 {
+            # CL_PROGRAM_BUILD_LOG
+            __store64(t + 40, 0)
+            __ccall_ptr(__cl_fn(6), prog, __cl_dev, 4483, 0, 0, t + 40)
+            logn = __load64(t + 40)
+            msg = "the driver could not build it"
+            if logn > 1 and logn < 65536 {
+                buf = __alloc_bytes(logn + 1)
+                __ccall_ptr(__cl_fn(6), prog, __cl_dev, 4483, logn, buf, 0)
+                msg = __str(buf, __strlen(buf))
+            }
+            return __gpux_fail("gpu_kernel: the OpenCL build failed: " + msg)
+        }
+        kern = __ccall_ptr(__cl_fn(7), prog, __cstr(entry), t)
+        if kern == 0 {
+            return __gpux_fail("gpu_kernel: OpenCL has no kernel named " + entry + " (error " + __int_to_string(__i32(__load32(t))) + ")")
+        }
+        __store64(rec, kern)
+    }
+    __store64(__gpux_kerns + __gpux_nkerns * 8, rec)
+    __gpux_nkerns += 1
+    return __gpux_nkerns
+}
+
+# the Vulkan pipeline of a kernel for nb buffers (made once for each count)
+fn __gpux_vk_pipe(rec: int, nb: int) -> int {
+    k = rec + 24 + nb * 24
+    if __load64(k) != 0 {
+        return k
+    }
+    t = __gpux_scratch
+    binds = __vk_struct(24 * nb)
+    for i in 0..nb {
+        __store32(binds + i * 24, i)
+        __store32(binds + i * 24 + 4, 7)
+        __store32(binds + i * 24 + 8, 1)
+        __store32(binds + i * 24 + 12, 32)
+    }
+    dli = __vk_struct(32)
+    __store32(dli, 32)
+    __store32(dli + 20, nb)
+    __store64(dli + 24, binds)
+    if __i32(__ccall_ptr(__vk_fn(14), __vk_dev, dli, 0, t)) != 0 {
+        __gpux_fail("gpu_run: the Vulkan driver could not make the layout for " + __int_to_string(nb) + " buffers")
+        return 0
+    }
+    setlayout = __load64(t)
+    __store64(t + 8, setlayout)
+    pli = __vk_struct(48)
+    __store32(pli, 30)
+    __store32(pli + 20, 1)
+    __store64(pli + 24, t + 8)
+    if __i32(__ccall_ptr(__vk_fn(15), __vk_dev, pli, 0, t)) != 0 {
+        __gpux_fail("gpu_run: the Vulkan driver could not make the pipeline layout")
+        return 0
+    }
+    layout = __load64(t)
+    cpi = __vk_struct(96)
+    __store32(cpi, 29)
+    __store32(cpi + 24, 18)
+    __store32(cpi + 44, 32)
+    __store64(cpi + 48, __load64(rec))
+    __store64(cpi + 56, __load64(rec + 8))
+    __store64(cpi + 72, layout)
+    __store32(cpi + 88, -1)
+    if __i32(__ccall_ptr(__vk_fn(16), __vk_dev, 0, 1, cpi, 0, t)) != 0 {
+        __gpux_fail("gpu_run: the Vulkan driver refused the kernel (is the entry name right?)")
+        return 0
+    }
+    __store64(k + 8, layout)
+    __store64(k + 16, setlayout)
+    __store64(k, __load64(t))
+    return k
+}
+
+fn __gpux_run_vk(rec: int, ea: int, nb: int, threads: int) -> bool {
+    k = __gpux_vk_pipe(rec, nb)
+    if k == 0 {
+        return false
+    }
+    lx = __load64(rec + 16)
+    groups = (threads + lx - 1) / lx
+    if groups > 65535 {
+        __gpux_fail("gpu_run: " + __int_to_string(threads) + " threads is more than one run takes (at most " + __int_to_string(65535 * lx) + " for this kernel)")
+        return false
+    }
+    # the descriptor blocks __vk_dispatch expects: the buffer at +16
+    all = __alloc_bytes(40 * nb)
+    for i in 0..nb {
+        __store64(all + i * 40 + 16, __load64(__load64(ea + i * 8)))
+    }
+    r = __vk_dispatch(k, all, nb, groups, 1)
+    if r == 1 {
+        return true
+    }
+    if r == 0 {
+        __gpux_fail("gpu_run: the Vulkan driver could not set up the buffers")
+        return false
+    }
+    __gpux_fail("gpu_run: the GPU failed to run the kernel")
+    return false
+}
+
+fn __gpux_run_cl(rec: int, ea: int, nb: int, threads: int) -> bool {
+    kern = __load64(rec)
+    t = __gpux_scratch
+    for i in 0..nb {
+        __store64(t + 64, __load64(__load64(ea + i * 8)))
+        if __i32(__ccall_ptr(__cl_fn(8), kern, i, 8, t + 64)) != 0 {
+            __gpux_fail("gpu_run: OpenCL refused buffer " + __int_to_string(i) + " for the kernel")
+            return false
+        }
+    }
+    __store64(t + 80, threads)
+    if __i32(__ccall_ptr(__cl_fn(10), __cl_queue, kern, 1, 0, t + 80, 0, 0, 0, 0)) != 0 {
+        __gpux_fail("gpu_run: OpenCL could not start the kernel")
+        return false
+    }
+    if __i32(__ccall_ptr(__cl_fn(11), __cl_queue)) != 0 {
+        __gpux_fail("gpu_run: OpenCL failed while the kernel ran")
+        return false
+    }
+    return true
+}
+
+fn __gpux_run(k: int, bufs: array[int], threads: int) -> bool {
+    api = __gpux_init()
+    __gpux_clear()
+    if api == 0 {
+        __gpux_fail("gpu_run: there is no GPU here (none was found, or SLOP_GPU=none)")
+        return false
+    }
+    if k < 1 or k > __gpux_nkerns {
+        __gpux_fail("gpu_run: not a kernel (gpu_kernel gives the handle)")
+        return false
+    }
+    nb = len(bufs)
+    if nb < 1 or nb > 16 {
+        __gpux_fail("gpu_run: give from 1 to 16 buffers, not " + __int_to_string(nb))
+        return false
+    }
+    if threads < 0 or threads > 1073741824 {
+        __gpux_fail("gpu_run: the number of threads must be from 0 to 1073741824")
+        return false
+    }
+    ea = __alloc_bytes(8 * nb)
+    for i in 0..nb {
+        e = __gpux_entry(bufs[i])
+        if e == 0 {
+            __gpux_fail("gpu_run: buffer number " + __int_to_string(i) + " is not a live buffer")
+            return false
+        }
+        __store64(ea + i * 8, e)
+    }
+    if threads == 0 {
+        return true
+    }
+    rec = __load64(__gpux_kerns + (k - 1) * 8)
+    if api == 1 {
+        return __gpux_run_vk(rec, ea, nb, threads)
+    }
+    return __gpux_run_cl(rec, ea, nb, threads)
+}
+
+fn __gpux_error() -> string {
+    if __gpux_err == 0 or __gpux_errlen == 0 {
+        return ""
+    }
+    return __str(__gpux_err, __gpux_errlen)
+}

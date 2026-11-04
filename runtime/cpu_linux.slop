@@ -1,0 +1,305 @@
+# Slop low-level CPU control for Linux. Features and topology come from
+# /proc and /sys; thread control uses system calls (x86-64 and ARM64 number
+# them differently: __arm() tells which). Every function here is raw (__cpux_*);
+# std/cpu.slop wraps them as the public cpu_* functions.
+
+# the text after the first colon of a line, trimmed
+fn __cpux_after(line: string) -> string {
+    i = __find(line, ":")
+    if i < 0 {
+        return ""
+    }
+    return __trim(__slice(line, i + 1, len(line)))
+}
+
+# the value of the first line of text that starts with key ("" if none)
+fn __cpux_field(text: string, key: string) -> string {
+    for line in __split(text, "\n") {
+        if __starts_with(line, key) {
+            return __cpux_after(line)
+        }
+    }
+    return ""
+}
+
+# /proc/cpuinfo (read on each call: it is small)
+fn __cpux_cpuinfo() -> string {
+    return __read_file("/proc/cpuinfo")
+}
+
+# a hexadecimal number, ignoring anything that is not a hex digit ("0x41" is 65)
+fn __cpux_hex(s: string) -> int {
+    v = 0
+    for i in 0..len(s) {
+        c = __byte_at(s, i)
+        d = -1
+        if c >= 48 and c <= 57 {
+            d = c - 48
+        } else if c >= 97 and c <= 102 {
+            d = c - 87
+        } else if c >= 65 and c <= 70 {
+            d = c - 55
+        }
+        if d >= 0 {
+            v = v * 16 + d
+        }
+    }
+    return v
+}
+
+fn __cpux_vendor() -> string {
+    text = __cpux_cpuinfo()
+    if __arm() {
+        # ARM cpuinfo has no vendor name: the implementer code says who made the core
+        code = __cpux_hex(__cpux_field(text, "CPU implementer"))
+        if code == 65 {
+            return "ARM"
+        }
+        if code == 66 {
+            return "Broadcom"
+        }
+        if code == 67 {
+            return "Cavium"
+        }
+        if code == 70 {
+            return "Fujitsu"
+        }
+        if code == 78 {
+            return "NVIDIA"
+        }
+        if code == 81 {
+            return "Qualcomm"
+        }
+        if code == 97 {
+            return "Apple"
+        }
+        if code == 192 {
+            return "Ampere"
+        }
+        return ""
+    }
+    return __cpux_field(text, "vendor_id")
+}
+
+fn __cpux_model() -> string {
+    text = __cpux_cpuinfo()
+    name = __cpux_field(text, "model name")
+    if name == "" {
+        # some ARM boards (a Raspberry Pi, say) name the board here
+        name = __cpux_field(text, "Model")
+    }
+    return name
+}
+
+fn __cpux_logical() -> int {
+    return __cpu_count()
+}
+
+# distinct (physical id, core id) pairs in cpuinfo; the logical count if unknown
+fn __cpux_physical() -> int {
+    keys: array[string] = []
+    phys = ""
+    for line in __split(__cpux_cpuinfo(), "\n") {
+        if __starts_with(line, "physical id") {
+            phys = __cpux_after(line)
+        } else if __starts_with(line, "core id") {
+            key = phys + "/" + __cpux_after(line)
+            found = false
+            for k in keys {
+                if k == key {
+                    found = true
+                }
+            }
+            if not found {
+                push(keys, key)
+            }
+        }
+    }
+    if len(keys) == 0 {
+        return __cpu_count()
+    }
+    return len(keys)
+}
+
+# the name in /proc/cpuinfo for a feature ("" if this file does not show it)
+fn __cpux_proc_flag(feature: string) -> string {
+    if __arm() {
+        if feature == "neon" or feature == "asimd" {
+            return "asimd"
+        }
+        if feature == "aes" or feature == "sha2" or feature == "crc32" or feature == "atomics" or feature == "sve" {
+            return feature
+        }
+        return ""
+    }
+    if feature == "sse4.2" {
+        return "sse4_2"
+    }
+    if feature == "sha" {
+        return "sha_ni"
+    }
+    if feature == "sse2" or feature == "avx" or feature == "avx2" or feature == "avx512f" or feature == "fma" or feature == "aes" or feature == "popcnt" or feature == "bmi2" {
+        return feature
+    }
+    return ""
+}
+
+fn __cpux_has(feature: string) -> bool {
+    if __arm() and (feature == "neon" or feature == "asimd") {
+        # Advanced SIMD (NEON) is part of every AArch64 core
+        return true
+    }
+    name = __cpux_proc_flag(feature)
+    if name == "" {
+        return false
+    }
+    # x86 lists "flags", ARM lists "Features" (only that one: under an
+    # emulator, /proc/cpuinfo can show the host's x86 flags)
+    text = __cpux_cpuinfo()
+    flags = ""
+    if __arm() {
+        flags = __cpux_field(text, "Features")
+    } else {
+        flags = __cpux_field(text, "flags")
+    }
+    return __contains(" " + flags + " ", " " + name + " ")
+}
+
+# one field of /sys/devices/system/cpu/cpu0/cache/index<i> ("" if there is none)
+fn __cpux_cache(i: int, what: string) -> string {
+    return __trim(__read_file("/sys/devices/system/cpu/cpu0/cache/index" + __int_to_string(i) + "/" + what))
+}
+
+# bytes from sysfs text such as "32K", "8192K" or "16M" (0 if unknown)
+fn __cpux_bytes(s: string) -> int {
+    n = len(s)
+    if n == 0 {
+        return 0
+    }
+    u = __byte_at(s, n - 1)
+    mult = 1
+    if u == 75 {
+        mult = 1024
+    } else if u == 77 {
+        mult = 1048576
+    } else if u == 71 {
+        mult = 1073741824
+    }
+    if mult > 1 {
+        return __to_int(__slice(s, 0, n - 1)) * mult
+    }
+    return __to_int(s)
+}
+
+fn __cpux_cache_line() -> int {
+    for i in 0..16 {
+        if __cpux_cache(i, "level") == "1" and __cpux_cache(i, "type") == "Data" {
+            line = __to_int(__cpux_cache(i, "coherency_line_size"))
+            if line > 0 {
+                return line
+            }
+        }
+    }
+    return 64
+}
+
+fn __cpux_cache_size(level: int) -> int {
+    if level < 1 {
+        return 0
+    }
+    for i in 0..16 {
+        if __to_int(__cpux_cache(i, "level")) == level {
+            t = __cpux_cache(i, "type")
+            if t == "Data" or t == "Unified" {
+                return __cpux_bytes(__cpux_cache(i, "size"))
+            }
+        }
+    }
+    return 0
+}
+
+# sched_setaffinity on the calling thread (pid 0) with a 1024-bit mask
+fn __cpux_setaffinity(mask: int) -> int {
+    if __arm() {
+        return __syscall(122, 0, 128, mask)
+    }
+    return __syscall(203, 0, 128, mask)
+}
+
+fn __cpux_pin(core: int) -> bool {
+    if core < 0 or core >= 1024 {
+        return false
+    }
+    mask = __alloc_bytes(128)
+    bit = 1
+    for i in 0..core % 8 {
+        bit = bit * 2
+    }
+    __store8(mask + core / 8, bit)
+    return __cpux_setaffinity(mask) == 0
+}
+
+# every core again: the kernel keeps only the cores this process may use
+fn __cpux_unpin() -> bool {
+    mask = __alloc_bytes(128)
+    for i in 0..128 {
+        __store8(mask + i, 255)
+    }
+    return __cpux_setaffinity(mask) == 0
+}
+
+fn __cpux_current() -> int {
+    b = __alloc_bytes(16)
+    r = 0
+    if __arm() {
+        r = __syscall(168, b, b + 8, 0)
+    } else {
+        r = __syscall(309, b, b + 8, 0)
+    }
+    if r != 0 {
+        return -1
+    }
+    return __load32(b)
+}
+
+# nice values: "low" 19, "normal" 0, "high" -10 (raising needs privileges)
+fn __cpux_priority(level: string) -> bool {
+    nice = 0
+    if level == "low" {
+        nice = 19
+    } else if level == "high" {
+        nice = -10
+    } else if level != "normal" {
+        return false
+    }
+    tid = 0
+    if __arm() {
+        tid = __syscall(178)
+        return __syscall(140, 0, tid, nice) == 0
+    }
+    tid = __syscall(186)
+    return __syscall(141, 0, tid, nice) == 0
+}
+
+fn __cpux_yield() {
+    if __arm() {
+        __syscall(124)
+    } else {
+        __syscall(24)
+    }
+}
+
+# CLOCK_THREAD_CPUTIME_ID (3); -1 if the clock is not available
+fn __cpux_thread_time_ns() -> int {
+    ts = __alloc_bytes(16)
+    r = 0
+    if __arm() {
+        r = __syscall(113, 3, ts)
+    } else {
+        r = __syscall(228, 3, ts)
+    }
+    if r != 0 {
+        return -1
+    }
+    return __load64(ts) * 1000000000 + __load64(ts + 8)
+}

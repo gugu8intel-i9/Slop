@@ -1,0 +1,221 @@
+# ram: low-level RAM control (optional; see LOW_LEVEL_RAM.md)
+#   use "ram"
+#   p = ram_alloc(ram_page_size())    # one page, zero-filled, from the OS
+#   unsafe_store64(p, 42)
+#   print(unsafe_load64(p))
+#   ram_free(p, ram_page_size())
+
+# ---------- the machine ----------
+
+fn ram_page_size() -> int {
+    return __ramx_page_size()
+}
+
+# bytes of physical RAM in the machine
+fn ram_total() -> int {
+    return __ramx_total()
+}
+
+# bytes that can be used right now without swapping
+fn ram_available() -> int {
+    return __ramx_available()
+}
+
+# ---------- memory from the operating system ----------
+
+# zero-filled, page-aligned memory straight from the OS; 0 on failure
+fn ram_alloc(bytes: int) -> int {
+    if bytes <= 0 {
+        return 0
+    }
+    return __ramx_map(bytes)
+}
+
+# gives memory from ram_alloc back; pass the same bytes that were asked for
+fn ram_free(addr: int, bytes: int) {
+    if addr != 0 and bytes > 0 {
+        __ramx_unmap(addr, bytes)
+    }
+}
+
+# like ram_alloc, but asks for huge pages (fewer, larger pages: fewer TLB
+# misses). Never fails only because huge pages are not there: it falls back
+# to normal pages. Free it with ram_free and the same bytes.
+fn ram_alloc_huge(bytes: int) -> int {
+    if bytes <= 0 {
+        return 0
+    }
+    return __ramx_map_huge(bytes)
+}
+
+# "none", "r", "rw", "rx" or "rwx": what the program may do with the memory.
+# Do not touch memory that is not readable or writable: that crashes.
+fn ram_protect(addr: int, bytes: int, mode: string) -> bool {
+    bits = -1
+    if mode == "none" {
+        bits = 0
+    } else if mode == "r" {
+        bits = 1
+    } else if mode == "rw" {
+        bits = 3
+    } else if mode == "rx" {
+        bits = 5
+    } else if mode == "rwx" {
+        bits = 7
+    }
+    if bits < 0 or addr == 0 or bytes <= 0 {
+        return false
+    }
+    return __ramx_protect(addr, bytes, bits)
+}
+
+# keeps the pages in RAM (not swapped out). May be refused: returns false.
+fn ram_lock(addr: int, bytes: int) -> bool {
+    if addr == 0 or bytes <= 0 {
+        return false
+    }
+    return __ramx_lock(addr, bytes)
+}
+
+fn ram_unlock(addr: int, bytes: int) -> bool {
+    if addr == 0 or bytes <= 0 {
+        return false
+    }
+    return __ramx_unlock(addr, bytes)
+}
+
+# a hint about how the memory will be used: "normal", "random", "sequential",
+# "willneed", "dontneed" or "hugepage". False if the system does not do it.
+fn ram_advise(addr: int, bytes: int, how: string) -> bool {
+    code = -1
+    if how == "normal" {
+        code = 0
+    } else if how == "random" {
+        code = 1
+    } else if how == "sequential" {
+        code = 2
+    } else if how == "willneed" {
+        code = 3
+    } else if how == "dontneed" {
+        code = 4
+    } else if how == "hugepage" {
+        code = 5
+    }
+    if code < 0 or addr == 0 or bytes <= 0 {
+        return false
+    }
+    return __ramx_advise(addr, bytes, code)
+}
+
+# ---------- bytes and words ----------
+
+# sets bytes bytes starting at addr to the value byte (0 to 255)
+fn ram_fill(addr: int, bytes: int, byte: int) {
+    if bytes <= 0 {
+        return
+    }
+    b = byte & 255
+    if b == 0 {
+        ram_zero(addr, bytes)
+        return
+    }
+    # eight copies of the byte in one 64-bit word
+    word = b * 72340172838076673
+    i = 0
+    while i + 8 <= bytes {
+        unsafe_store64(addr + i, word)
+        i += 8
+    }
+    while i < bytes {
+        unsafe_store8(addr + i, b)
+        i += 1
+    }
+}
+
+# true if the two blocks hold the same bytes
+fn ram_equal(a: int, b: int, bytes: int) -> bool {
+    if bytes <= 0 {
+        return true
+    }
+    return __memeq(a, b, bytes)
+}
+
+# floats are 64-bit (f64) or 32-bit (f32) numbers in memory
+fn ram_load_f64(addr: int) -> float {
+    return float_from_bits(unsafe_load64(addr))
+}
+
+fn ram_store_f64(addr: int, v: float) {
+    unsafe_store64(addr, float_bits(v))
+}
+
+fn ram_load_f32(addr: int) -> float {
+    return float_from_bits(__f32_to_f64(unsafe_load32(addr)))
+}
+
+fn ram_store_f32(addr: int, v: float) {
+    unsafe_store32(addr, __f64_to_f32(float_bits(v)))
+}
+
+# ---------- arenas ----------
+# An arena is one ram_alloc block. Its first 32 bytes are a header:
+#   +0 capacity (bytes that can be taken), +8 bytes used so far,
+#   +16 size of the whole block (what ram_arena_free gives back).
+# Taking memory is a pointer bump, so it is very fast. Nothing is freed one
+# piece at a time: use ram_arena_reset to start over, or ram_arena_free.
+
+# an arena holding bytes bytes; 0 on failure
+fn ram_arena(bytes: int) -> int {
+    if bytes <= 0 {
+        return 0
+    }
+    total = bytes + 32
+    p = ram_alloc(total)
+    if p == 0 {
+        return 0
+    }
+    unsafe_store64(p, bytes)
+    unsafe_store64(p + 8, 0)
+    unsafe_store64(p + 16, total)
+    return p
+}
+
+# bytes from the arena, starting at a multiple of align (a power of two);
+# the address, or 0 if the arena is full. The memory is not cleared.
+fn ram_arena_take(arena: int, bytes: int, align: int) -> int {
+    if arena == 0 or bytes < 0 {
+        return 0
+    }
+    a = align
+    if a < 1 {
+        a = 1
+    }
+    if (a & (a - 1)) != 0 {
+        return 0
+    }
+    start = arena + 32
+    cur = start + unsafe_load64(arena + 8)
+    at = (cur + a - 1) & (0 - a)
+    used = at - start + bytes
+    if used > unsafe_load64(arena) {
+        return 0
+    }
+    unsafe_store64(arena + 8, used)
+    return at
+}
+
+fn ram_arena_used(arena: int) -> int {
+    return unsafe_load64(arena + 8)
+}
+
+# forgets everything taken so far (the memory itself is kept)
+fn ram_arena_reset(arena: int) {
+    unsafe_store64(arena + 8, 0)
+}
+
+# gives the whole arena back to the operating system
+fn ram_arena_free(arena: int) {
+    if arena != 0 {
+        ram_free(arena, unsafe_load64(arena + 16))
+    }
+}

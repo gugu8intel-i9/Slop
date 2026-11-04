@@ -1,0 +1,92 @@
+# Low-level RAM control for Windows (x86-64 and ARM64), used by std/ram.slop.
+# Every function here is named __ramx_*. Calls go through KERNEL32.
+
+# SYSTEM_INFO.dwPageSize (at offset 4)
+fn __ramx_page_size() -> int {
+    info = __alloc_bytes(64)
+    __ccall("GetSystemInfo", info)
+    n = __load32(info + 4)
+    if n < 1 {
+        return 4096
+    }
+    return n
+}
+
+# MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE; 0 on failure
+fn __ramx_map(bytes: int) -> int {
+    return __ccall("VirtualAlloc", 0, bytes, 12288, 4)
+}
+
+# large pages need a privilege most programs do not have: normal memory
+fn __ramx_map_huge(bytes: int) -> int {
+    return __ramx_map(bytes)
+}
+
+fn __ramx_unmap(p: int, bytes: int) {
+    # MEM_RELEASE (the size must be 0)
+    __ccall32("VirtualFree", p, 0, 32768)
+}
+
+# bits: 1 read, 2 write, 4 execute; mapped to PAGE_* values
+fn __ramx_protect(p: int, bytes: int, bits: int) -> bool {
+    prot = 0
+    if bits == 0 {
+        prot = 1
+    } else if bits == 1 {
+        prot = 2
+    } else if bits == 3 {
+        prot = 4
+    } else if bits == 5 {
+        prot = 32
+    } else if bits == 7 {
+        prot = 64
+    } else {
+        return false
+    }
+    old = __alloc_bytes(8)
+    return __ccall32("VirtualProtect", p, bytes, prot, old) != 0
+}
+
+fn __ramx_lock(p: int, bytes: int) -> bool {
+    return __ccall32("VirtualLock", p, bytes) != 0
+}
+
+fn __ramx_unlock(p: int, bytes: int) -> bool {
+    return __ccall32("VirtualUnlock", p, bytes) != 0
+}
+
+# advice: 3 willneed (PrefetchVirtualMemory), 4 dontneed (MEM_RESET: the
+# contents may be dropped); the other advice values are not supported here
+fn __ramx_advise(p: int, bytes: int, advice: int) -> bool {
+    if advice == 3 {
+        # WIN32_MEMORY_RANGE_ENTRY: address, size; the process is the current one (-1)
+        entry = __alloc_bytes(16)
+        __store64(entry, p)
+        __store64(entry + 8, bytes)
+        return __ccall32("PrefetchVirtualMemory", -1, 1, entry, 0) != 0
+    }
+    if advice == 4 {
+        # MEM_RESET
+        return __ccall("VirtualAlloc", p, bytes, 524288, 4) != 0
+    }
+    return false
+}
+
+# MEMORYSTATUSEX: dwLength (must be 64), ullTotalPhys at 8, ullAvailPhys at 16
+fn __ramx_total() -> int {
+    buf = __alloc_bytes(64)
+    __store32(buf, 64)
+    if __ccall32("GlobalMemoryStatusEx", buf) == 0 {
+        return 0
+    }
+    return __load64(buf + 8)
+}
+
+fn __ramx_available() -> int {
+    buf = __alloc_bytes(64)
+    __store32(buf, 64)
+    if __ccall32("GlobalMemoryStatusEx", buf) == 0 {
+        return 0
+    }
+    return __load64(buf + 16)
+}

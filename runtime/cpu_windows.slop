@@ -1,0 +1,210 @@
+# Slop low-level CPU control for Windows. Everything comes from KERNEL32:
+# IsProcessorFeaturePresent for features, GetLogicalProcessorInformation for
+# cores and caches, the environment for the vendor and name, and thread calls.
+# Every function here is raw (__cpux_*); std/cpu.slop wraps them as cpu_*.
+
+# the text of an environment variable ("" if it is not set)
+fn __cpux_env(name: string) -> string {
+    buf = __alloc_bytes(512)
+    n = __ccall32("GetEnvironmentVariableA", __cstr(name), buf, 511)
+    if n <= 0 or n > 511 {
+        return ""
+    }
+    return __str(buf, n)
+}
+
+# PROCESSOR_IDENTIFIER looks like "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel"
+fn __cpux_vendor() -> string {
+    parts = __split(__cpux_env("PROCESSOR_IDENTIFIER"), ",")
+    if len(parts) < 2 {
+        return ""
+    }
+    return __trim(parts[len(parts) - 1])
+}
+
+fn __cpux_model() -> string {
+    parts = __split(__cpux_env("PROCESSOR_IDENTIFIER"), ",")
+    if len(parts) < 2 {
+        return ""
+    }
+    return __trim(parts[0])
+}
+
+fn __cpux_logical() -> int {
+    return __cpu_count()
+}
+
+# the SYSTEM_LOGICAL_PROCESSOR_INFORMATION records (32 bytes each) in fresh
+# memory; the byte count is stored at lenp. 0 if there are none.
+fn __cpux_lpi(lenp: int) -> int {
+    __store32(lenp, 0)
+    __ccall32("GetLogicalProcessorInformation", 0, lenp)
+    n = __load32(lenp)
+    if n < 32 {
+        return 0
+    }
+    p = __alloc_bytes(n)
+    if __ccall32("GetLogicalProcessorInformation", p, lenp) == 0 {
+        return 0
+    }
+    return p
+}
+
+# Relationship (at +8) 0 is a physical core
+fn __cpux_physical() -> int {
+    lenp = __alloc_bytes(8)
+    p = __cpux_lpi(lenp)
+    if p == 0 {
+        return __cpu_count()
+    }
+    count = __load32(lenp) / 32
+    cores = 0
+    for i in 0..count {
+        if __load32(p + i * 32 + 8) == 0 {
+            cores += 1
+        }
+    }
+    if cores < 1 {
+        return __cpu_count()
+    }
+    return cores
+}
+
+fn __cpux_cache_line() -> int {
+    lenp = __alloc_bytes(8)
+    p = __cpux_lpi(lenp)
+    if p == 0 {
+        return 64
+    }
+    count = __load32(lenp) / 32
+    for i in 0..count {
+        # RelationCache (2): CACHE_DESCRIPTOR at +16: Level, LineSize (+18), Size (+20), Type (+24)
+        rec = p + i * 32
+        if __load32(rec + 8) == 2 and __load8(rec + 16) == 1 and __load32(rec + 24) == 2 {
+            line = __load16(rec + 18)
+            if line > 0 {
+                return line
+            }
+        }
+    }
+    return 64
+}
+
+# type 0 is unified, 2 is data
+fn __cpux_cache_size(level: int) -> int {
+    if level < 1 {
+        return 0
+    }
+    lenp = __alloc_bytes(8)
+    p = __cpux_lpi(lenp)
+    if p == 0 {
+        return 0
+    }
+    count = __load32(lenp) / 32
+    for i in 0..count {
+        rec = p + i * 32
+        t = __load32(rec + 24)
+        if __load32(rec + 8) == 2 and __load8(rec + 16) == level and (t == 0 or t == 2) {
+            return __load32(rec + 20)
+        }
+    }
+    return 0
+}
+
+# IsProcessorFeaturePresent ids; -1 if Windows has no id for the feature
+fn __cpux_pf_id(feature: string) -> int {
+    if __arch() == 2 {
+        if feature == "neon" or feature == "asimd" {
+            return 19
+        }
+        if feature == "aes" or feature == "sha2" {
+            return 30
+        }
+        if feature == "crc32" {
+            return 31
+        }
+        if feature == "atomics" {
+            return 34
+        }
+        return -1
+    }
+    if feature == "sse2" {
+        return 10
+    }
+    if feature == "sse4.2" {
+        return 38
+    }
+    if feature == "avx" {
+        return 39
+    }
+    if feature == "avx2" {
+        return 40
+    }
+    if feature == "avx512f" {
+        return 41
+    }
+    return -1
+}
+
+fn __cpux_has(feature: string) -> bool {
+    id = __cpux_pf_id(feature)
+    if id < 0 {
+        return false
+    }
+    return __ccall32("IsProcessorFeaturePresent", id) != 0
+}
+
+# a mask with one bit for the core (cores 0 to 63)
+fn __cpux_pin(core: int) -> bool {
+    if core < 0 or core >= 64 {
+        return false
+    }
+    mask = 1
+    for i in 0..core {
+        mask = mask * 2
+    }
+    h = __ccall("GetCurrentThread")
+    return __ccall("SetThreadAffinityMask", h, mask) != 0
+}
+
+# the process's own mask: every core it may use
+fn __cpux_unpin() -> bool {
+    pm = __alloc_bytes(16)
+    ph = __ccall("GetCurrentProcess")
+    if __ccall32("GetProcessAffinityMask", ph, pm, pm + 8) == 0 {
+        return false
+    }
+    th = __ccall("GetCurrentThread")
+    return __ccall("SetThreadAffinityMask", th, __load64(pm)) != 0
+}
+
+fn __cpux_current() -> int {
+    return __ccall32("GetCurrentProcessorNumber")
+}
+
+fn __cpux_priority(level: string) -> bool {
+    p = 0
+    if level == "low" {
+        p = -2
+    } else if level == "high" {
+        p = 2
+    } else if level != "normal" {
+        return false
+    }
+    th = __ccall("GetCurrentThread")
+    return __ccall32("SetThreadPriority", th, p) != 0
+}
+
+fn __cpux_yield() {
+    __ccall32("SwitchToThread")
+}
+
+# GetThreadTimes: kernel and user time are FILETIMEs (100 ns units)
+fn __cpux_thread_time_ns() -> int {
+    t = __alloc_bytes(32)
+    th = __ccall("GetCurrentThread")
+    if __ccall32("GetThreadTimes", th, t, t + 8, t + 16, t + 24) == 0 {
+        return -1
+    }
+    return (__load64(t + 16) + __load64(t + 24)) * 100
+}

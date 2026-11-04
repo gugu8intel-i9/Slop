@@ -169,7 +169,7 @@ Types: `int`, `float`, `bool`, `string`, `array[T]`, `thread[T]` and your struct
 | Programs | `exit(code)`, `exec(path, args)`, `run(path, args)` (returns the output), `run_status()`, `clock_ns()`, `env(name)`, `program_path()`, `input_ended()` |
 | Network | TCP: `socket_listen`, `socket_accept`, `socket_connect(ip, port)`, `socket_read`, `socket_write`, `socket_close`, `socket_timeout(fd, ms)`; UDP: `udp_open(port)`, `udp_send(fd, host, port, data)`, `udp_receive(fd)`, `udp_reply(fd, data)`, `udp_sender(fd)`, `udp_sender_port(fd)`; `is_ip(text)`. IPv4 and IPv6 (see Networking below), or `use "web"` |
 | Packing | `slop_pack(list)`, `slop_unpack(packed)` |
-| Low level | see [LOW_LEVEL.md](LOW_LEVEL.md) |
+| Low level | see [LOW_LEVEL.md](LOW_LEVEL.md); `use "cpu"`, `use "ram"`, `use "gpu"` for deeper control of the processor, memory and GPU |
 
 ## How it is fast and small
 
@@ -210,7 +210,7 @@ Run `bin/slop run examples/benchmark.slop` to time a few more workloads on your 
 | `tests/` | the test suite (`bin/slop run tests/run.slop`) |
 | [LEARN_SLOP_IN_10_MINUTES.md](LEARN_SLOP_IN_10_MINUTES.md) | a short tutorial |
 | [SLOP_CHEATSHEET.md](SLOP_CHEATSHEET.md) | one-page reference |
-| [LOW_LEVEL.md](LOW_LEVEL.md) | raw memory and CPU access |
+| [LOW_LEVEL.md](LOW_LEVEL.md) | raw memory and CPU access, and the `cpu`, `ram` and `gpu` modules ([CPU](LOW_LEVEL_CPU.md), [RAM](LOW_LEVEL_RAM.md), [GPU](LOW_LEVEL_GPU.md)) |
 
 After changing `compiler.slop` or `runtime/`, rebuild the compilers (from any system) and run the tests:
 
@@ -415,6 +415,9 @@ Modules that come with Slop, built into `slop` itself (nothing to download). Put
 | `crypto` | `sha256`, `sha384`, `sha512`, `sha1` (only where required, such as WebSockets), `hmac`, `hkdf_extract`/`hkdf_expand`, `chacha20_poly1305_seal`/`open`, `aes128_gcm_seal`/`open`, `x25519`, `p256_shared`, `ecdsa_sign`/`ecdsa_verify` (P-256, P-384), `rsa_sign_pss`/`rsa_sign_pkcs1`, `rsa_verify_pss`/`rsa_verify_pkcs1`, `random_bytes`, `to_hex`, `to_bytes` |
 | `tls` | TLS 1.3 connections, certificates and keys (used by `web`): `tls_connect`, `tls_accept` (and `_alpn` forms that agree on a protocol such as HTTP/2), `parse_cert`, `pem_blocks`, `base64_encode`/`decode` |
 | `http2` | HTTP/2 pieces (used by `web`): `hpack_encode`, `hpack_decode`, `hpack_huffman_encode`/`decode`, `h2_frame` |
+| `cpu` | low-level processor control: `cpu_has`, `cpu_model`, `cpu_cache_size`, `cpu_pin`, `cpu_current`, `cpu_priority`, `cpu_thread_time_ns` (see LOW_LEVEL_CPU.md) |
+| `ram` | low-level memory control: `ram_alloc`, `ram_alloc_huge`, `ram_protect`, `ram_lock`, `ram_advise`, `ram_total`, `ram_arena` (see LOW_LEVEL_RAM.md) |
+| `gpu` | low-level GPU control: `gpu_alloc`, `gpu_write`, `gpu_read`, `gpu_kernel`, `gpu_run`, `gpu_backend` (see LOW_LEVEL_GPU.md) |
 | `math` | `PI`, `E`, `gcd`, `lcm`, `is_prime`, `factorial`, `ipow`, `clamp`, `lerp`, `hypot`, `radians`, `min_int`/`max_float`, ... |
 | `lists` | `sum_ints`, `sort_ints`, `sort_floats`, `sort_strings`, `reverse_ints`, `unique_ints`, `index_of_int`, `range_list`, ... |
 | `strings` | `pad_left`, `center`, `title_case`, `capitalize`, `words`, `lines`, `count`, `is_digit`, `trim_left`, `strip_suffix`, ... |

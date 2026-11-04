@@ -1,0 +1,86 @@
+# cpu: low-level cpu control (optional; see LOW_LEVEL_CPU.md)
+#   use "cpu"
+#
+#   print(cpu_vendor(), cpu_model())            # "GenuineIntel", "Intel(R) Core(TM) ..."
+#   print(cpu_logical_cores(), cpu_physical_cores())
+#   print(cpu_has("avx2"))                      # true or false
+#   print(cpu_cache_line(), cpu_cache_size(1))  # bytes
+#   if cpu_pin(0) {                             # this thread runs on core 0 only
+#       print(cpu_current())                    # 0
+#       cpu_unpin()
+#   }
+#   print(cpu_thread_time_ns())                 # CPU time of this thread, in ns
+#
+# Everything here is best effort: unknown answers are "" (text), 0 or -1
+# (numbers), or false (yes/no). Pinning and priorities can fail without
+# privileges. See LOW_LEVEL_CPU.md for what each system supports.
+
+# the vendor ("GenuineIntel", "AuthenticAMD", "ARM", "Apple"), or ""
+fn cpu_vendor() -> string {
+    return __cpux_vendor()
+}
+
+# the processor's name for people, or ""
+fn cpu_model() -> string {
+    return __cpux_model()
+}
+
+# the number of logical cores (hardware threads) this program may use
+fn cpu_logical_cores() -> int {
+    return __cpux_logical()
+}
+
+# the number of physical cores; the logical count when it is not known
+fn cpu_physical_cores() -> int {
+    return __cpux_physical()
+}
+
+# true when the processor has the feature: "sse2", "sse4.2", "avx", "avx2",
+# "avx512f", "fma", "aes", "sha", "popcnt", "bmi2" (x86); "neon" (or "asimd"),
+# "aes", "sha2", "crc32", "atomics", "sve" (ARM). Other names are false.
+fn cpu_has(feature: string) -> bool {
+    return __cpux_has(feature)
+}
+
+# the cache line size in bytes (64 when it is not known)
+fn cpu_cache_line() -> int {
+    return __cpux_cache_line()
+}
+
+# the size in bytes of cache level 1 (data), 2 or 3; 0 when it is not known
+fn cpu_cache_size(level: int) -> int {
+    return __cpux_cache_size(level)
+}
+
+# pin the calling thread to one logical core. False when it cannot be done
+# (macOS cannot pin threads; a core outside the allowed set fails).
+fn cpu_pin(core: int) -> bool {
+    return __cpux_pin(core)
+}
+
+# let the calling thread run on any core again
+fn cpu_unpin() -> bool {
+    return __cpux_unpin()
+}
+
+# the logical core the calling thread is running on now; -1 if not known
+fn cpu_current() -> int {
+    return __cpux_current()
+}
+
+# the calling thread's priority: "low", "normal" or "high". False if it could
+# not be set (raising the priority may need privileges) or the name is unknown.
+fn cpu_priority(level: string) -> bool {
+    return __cpux_priority(level)
+}
+
+# give up the rest of this thread's time slice
+fn cpu_yield() {
+    __cpux_yield()
+}
+
+# CPU time used by the calling thread, in nanoseconds (-1 if not known;
+# macOS returns 0 when it is not known)
+fn cpu_thread_time_ns() -> int {
+    return __cpux_thread_time_ns()
+}
