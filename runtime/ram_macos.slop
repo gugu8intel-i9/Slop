@@ -1,1 +1,85 @@
-# ram: low-level ram control for macos (see std/ram.slop). Functions here are named __ramx_*.
+# Low-level RAM control for macOS (Intel and Apple Silicon), used by std/ram.slop.
+# Every function here is named __ramx_*. Calls go through the system library.
+
+# the page size: 16384 on Apple Silicon, 4096 on Intel
+fn __ramx_page_size() -> int {
+    n = __ccall("getpagesize")
+    if n < 1 {
+        return 4096
+    }
+    return n
+}
+
+# mmap anonymous, read-write, private; 0 on failure
+fn __ramx_map(bytes: int) -> int {
+    # PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON
+    p = __ccall("mmap", 0, bytes, 3, 4098, -1, 0)
+    if p == -1 {
+        return 0
+    }
+    return p
+}
+
+# macOS has no huge page request for ordinary memory: normal pages
+fn __ramx_map_huge(bytes: int) -> int {
+    return __ramx_map(bytes)
+}
+
+fn __ramx_unmap(p: int, bytes: int) {
+    __ccall("munmap", p, bytes)
+}
+
+# bits: 1 read, 2 write, 4 execute
+fn __ramx_protect(p: int, bytes: int, bits: int) -> bool {
+    return __ccall32("mprotect", p, bytes, bits) == 0
+}
+
+fn __ramx_lock(p: int, bytes: int) -> bool {
+    return __ccall32("mlock", p, bytes) == 0
+}
+
+fn __ramx_unlock(p: int, bytes: int) -> bool {
+    return __ccall32("munlock", p, bytes) == 0
+}
+
+# advice: 0 normal, 1 random, 2 sequential, 3 willneed, 4 dontneed;
+# macOS has no huge page advice (5 is refused)
+fn __ramx_advise(p: int, bytes: int, advice: int) -> bool {
+    if advice > 4 {
+        return false
+    }
+    return __ccall32("madvise", p, bytes, advice) == 0
+}
+
+# reads an unsigned 32-bit sysctl value; -1 if it cannot be read
+fn __ramx_sysctl32(name: string) -> int {
+    buf = __alloc_bytes(16)
+    __store64(buf + 8, 4)
+    if __ccall32("sysctlbyname", __cstr(name), buf, buf + 8, 0, 0) != 0 {
+        return -1
+    }
+    return __load32(buf)
+}
+
+# "hw.memsize" is a 64-bit sysctl
+fn __ramx_total() -> int {
+    buf = __alloc_bytes(16)
+    __store64(buf + 8, 8)
+    if __ccall32("sysctlbyname", __cstr("hw.memsize"), buf, buf + 8, 0, 0) != 0 {
+        return 0
+    }
+    return __load64(buf)
+}
+
+# free pages plus speculative pages (read ahead, not yet used), in bytes
+fn __ramx_available() -> int {
+    pages_free = __ramx_sysctl32("vm.page_free_count")
+    pages_spec = __ramx_sysctl32("vm.page_speculative_count")
+    if pages_free < 0 {
+        return 0
+    }
+    if pages_spec < 0 {
+        pages_spec = 0
+    }
+    return (pages_free + pages_spec) * __ramx_page_size()
+}
