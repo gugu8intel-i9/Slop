@@ -1,0 +1,130 @@
+# more shortcuts: float math in float registers, functions that call
+# themselves turned into loops, loop variables kept in registers
+
+# ---- float expressions ----
+fn poly(x: float, y: float) -> float {
+    return 2.0 * x * y + x * 2.0 - (x - y) / (y + 0.5) * -x + -(y * y)
+}
+
+g = 1.25
+
+fn mix(a: float, n: int) -> float {
+    return float(n) / 3.0 + a * g - float(7) * (a + (a - (a * (a + 1.0))))
+}
+
+print(poly(1.5, -0.25), poly(-3.0, 4.0), poly(0.0, 0.0))
+print(mix(0.5, 4), mix(-2.0, -9))
+zero = 0.0
+nan = zero / zero
+inf = 1.0 / zero
+print(nan * 2.0 < 1.0, nan * 2.0 >= 1.0, 1.0 + 1.0 > 1.5, inf - 1.0 > 1.0e300, 2.0 * inf)
+
+# many float variables (more than there are float registers), kept across calls
+fn helper(x: float) -> float {
+    s = 0.0
+    for i in 0..10 {
+        s = s + x * float(i)
+    }
+    return s
+}
+
+fn many(x: float) -> float {
+    a = x + 1.0
+    b = a * 2.0
+    c = b - 0.5
+    d = c / 4.0
+    e = d + a
+    f = e * e
+    h = f - b
+    k = h + c
+    m = k * 0.5
+    p = m + helper(a)
+    q = p + helper(b) + a + b + c + d + e + f + h + k + m
+    return q
+}
+print(many(1.0), many(-0.75))
+
+# ---- functions that call themselves ----
+fn sum_to(n: int, acc: int) -> int {
+    if n == 0 {
+        return acc
+    }
+    return sum_to(n - 1, acc + n)
+}
+
+fn count(n: int) -> int {
+    if n <= 0 {
+        return 0
+    }
+    return 1 + count(n - 1)
+}
+
+fn fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn tri(a: int, b: int) -> int {
+    if a <= 0 {
+        return b
+    }
+    if a % 2 == 0 {
+        return a * 3 + tri(a - 1, b + 1)
+    }
+    return tri(a - 2, b * 2) - 1
+}
+
+fn halve(x: float, steps: int) -> float {
+    if steps == 0 {
+        return x
+    }
+    return halve(x / 2.0, steps - 1)
+}
+
+fn even(n: int) -> bool {
+    if n == 0 {
+        return true
+    }
+    if n == 1 {
+        return false
+    }
+    return even(n - 2)
+}
+
+# strings inside a function that loops back to itself
+fn words_len(n: int, total: int) -> int {
+    s = "word" + str(n)
+    if n == 0 {
+        return total + len(s)
+    }
+    return words_len(n - 1, total + len(s))
+}
+
+print(sum_to(1000000, 0), count(100000), fib(25), tri(9, 1), tri(20, 3))
+print(halve(1000.0, 5), even(100001), even(5000), words_len(200000, 0))
+
+# ---- loops ----
+fn loops(n: int) -> int {
+    total = 0
+    for i in 0..n {
+        for j in 0..i {
+            total += i * j
+        }
+    }
+    for i in 0..n {
+        i = i * 2
+        total += i
+    }
+    k = 0
+    while k < n or total < 0 {
+        k += 1
+        if k % 3 == 0 {
+            continue
+        }
+        total += k
+    }
+    return total
+}
+print(loops(10), loops(0), loops(57))

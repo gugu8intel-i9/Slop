@@ -92,10 +92,48 @@ let g_bounds_lbl: int = 0
 let g_reg_owner: array[int] = [-1, -1, -1, -1]
 let g_reg_used: array[int] = [0, 0, 0, 0]
 let g_noreg: array[string] = []
+# float locals live in xmm8-xmm15 (d8-d15 on ARM) when free; such a local's
+# "offset" is 200000 + register number. They are saved by the function that
+# uses them, so they survive calls.
+let g_xreg_owner: array[int] = [-1, -1, -1, -1, -1, -1, -1, -1]
+let g_xreg_used: array[int] = [0, 0, 0, 0, 0, 0, 0, 0]
+# which float register holds rax's value right now (valid while g_f_end == g_code_len)
+let g_f_reg: int = 0
+# where the last copy of xmm0/d0 into rax starts (it can be dropped when unused)
+let g_f_mov_at: int = -1
+let g_fc_bits: array[int] = []
+let g_fc_offs: array[int] = []
 let g_noreg_at: array[int] = []
 # token range of the function being compiled (for g_noreg)
 let g_body_from: int = 0
 let g_body_to: int = 0
+# how hot each name is in the function being compiled (uses, weighted by
+# loop depth); only the hottest whole-number locals get registers
+let g_wt_name: array[string] = []
+let g_wt_val: array[int] = []
+let g_wt_cut: int = 0
+# calls of the function to itself at the end of a return become a jump back
+# to its start (g_self_lbl); `return x + f(...)` keeps x in a hidden local
+# (g_acc_off) that every return adds in.
+let g_self_lbl: int = -1
+let g_self_reset: int = -1
+let g_self_name: string = ""
+let g_acc_off: int = 0
+let g_use_acc: bool = false
+let g_tail_at: int = -1
+# one level of `f(...)` inside f can be compiled in place (g_inline_ok)
+let g_inline_ok: bool = false
+let g_inline_depth: int = 0
+let g_body_open: int = 0
+let g_param_base: int = 0
+let g_nparams: int = 0
+let g_force_reg: bool = false
+# tokens turned into ";" for a while (to stop an expression early)
+let g_semis: array[int] = []
+# inside an in-place copy whose result is added to the caller's hidden sum:
+# its returns add to that sum directly
+let g_inl_acc: bool = false
+let g_inline_max: int = 4
 
 # ---------- generated program memory map ----------
 # The program is code + read-only data, followed by a zeroed data area that
@@ -1202,6 +1240,31 @@ fn ro_offset(s: string) -> int {
     return off
 }
 
+fn fx_mov_len() -> int {
+    if arm() {
+        return 4
+    }
+    return 5
+}
+
+# offset of an 8-byte constant in the read-only data
+fn ro_const8(bits: int) -> int {
+    for i in 0..len(g_fc_bits) {
+        if g_fc_bits[i] == bits {
+            return g_fc_offs[i]
+        }
+    }
+    let off = len(g_ro)
+    let v = bits
+    for k in 0..8 {
+        push(g_ro, v & 255)
+        v = v >> 8
+    }
+    push(g_fc_bits, bits)
+    push(g_fc_offs, off)
+    return off
+}
+
 fn e_string_literal(s: string) {
     g_lit_start = g_code_len
     e_push_imm(len(s))
@@ -1449,12 +1512,15 @@ fn e_f_load2() {
 }
 
 fn e_f_result() {
+    g_f_mov_at = g_code_len
     if arm() {
         a32(2657484800)
-        return
+    } else {
+        emit4(102, 72, 15, 126)
+        emit(192)
     }
-    emit4(102, 72, 15, 126)
-    emit(192)
+    g_f_end = g_code_len
+    g_f_reg = 0
 }
 
 # rax = rax OP rcx; op: 0 add, 1 sub, 6 mul, 7 div
@@ -1491,6 +1557,11 @@ fn e_f_op(op: int) {
 # rax = (rax OP rcx) as 0/1; op is "<", "<=", ">", ">=", "==" or "!="
 fn e_f_cmp(op: string) {
     e_f_load2()
+    e_f_cmp_regs(op)
+}
+
+# rax = (xmm0/d0 OP xmm1/d1) as 0/1
+fn e_f_cmp_regs(op: string) {
     if arm() {
         a32(509681664)
         let cond = 0
@@ -1820,7 +1891,59 @@ fn is_reg_local(off: int) -> bool {
     return off >= 100000
 }
 
+fn is_xreg_local(off: int) -> bool {
+    return off >= 200000
+}
+
+# int register r = float register x (bits copied)
+fn fx_to_gpr(r: int, x: int) {
+    if arm() {
+        a32(2657484800 + x * 32 + ar(r))
+        return
+    }
+    let p = 72
+    if x >= 8 {
+        p += 4
+    }
+    if r >= 8 {
+        p += 1
+    }
+    emit4(102, p, 15, 126)
+    emit(192 + x % 8 * 8 + r % 8)
+}
+
+# float register d = float register s
+fn fx_copy(d: int, s: int) {
+    if d == s {
+        return
+    }
+    if arm() {
+        a32(509624320 + s * 32 + d)
+        return
+    }
+    emit(102)
+    if d >= 8 or s >= 8 {
+        let p = 64
+        if d >= 8 {
+            p += 4
+        }
+        if s >= 8 {
+            p += 1
+        }
+        emit(p)
+    }
+    emit3(15, 40, 192 + d % 8 * 8 + s % 8)
+}
+
 fn loc_load(r: int, off: int) {
+    if is_xreg_local(off) {
+        fx_to_gpr(r, off - 200000)
+        if r == 0 {
+            g_f_end = g_code_len
+            g_f_reg = off - 200000
+        }
+        return
+    }
     if is_reg_local(off) {
         e_mov_rr(r, off - 100000)
     } else {
@@ -1829,6 +1952,14 @@ fn loc_load(r: int, off: int) {
 }
 
 fn loc_store(off: int, r: int) {
+    if is_xreg_local(off) {
+        if r == 0 and g_f_end == g_code_len {
+            fx_copy(off - 200000, g_f_reg)
+        } else {
+            fx_from_gpr(off - 200000, r)
+        }
+        return
+    }
     if is_reg_local(off) {
         e_mov_rr(off - 100000, r)
     } else {
@@ -1837,6 +1968,9 @@ fn loc_store(off: int, r: int) {
 }
 
 fn loc_inc(off: int) {
+    if is_xreg_local(off) {
+        err("internal: float register variable used as a counter")
+    }
     if is_reg_local(off) {
         e_alu_imm(0, off - 100000, 1)
     } else {
@@ -1845,6 +1979,11 @@ fn loc_inc(off: int) {
 }
 
 fn loc_set0(off: int) {
+    if is_xreg_local(off) {
+        e_mov_imm(1, 0)
+        fx_from_gpr(off - 200000, 1)
+        return
+    }
     if is_reg_local(off) {
         e_mov_imm(off - 100000, 0)
     } else {
@@ -1854,6 +1993,11 @@ fn loc_set0(off: int) {
 
 # compare rax with a local
 fn e_cmp_rax_loc(off: int) {
+    if is_xreg_local(off) {
+        fx_to_gpr(1, off - 200000)
+        e_alu(2, 0, 1)
+        return
+    }
     if is_reg_local(off) {
         e_alu(2, 0, off - 100000)
     } else {
@@ -1922,6 +2066,18 @@ fn e_frame_prologue() {
     e_lea_data(1, a_bump())
     e_load_slot()
     e_store(5, -8, 0)
+}
+
+# give back everything allocated since the prologue, keeping the frame
+fn e_frame_wipe() {
+    e_cur_bucket_rcx()
+    e_load(7, 5, -8)
+    e_lea_data(6, a_bump())
+    e_load_idx(2, 6, 1)
+    e_store_idx(6, 1, 7)
+    e_mov_rr(1, 2)
+    e_alu(1, 1, 7)
+    e_memzero()
 }
 
 # memory-frame epilogue: wipe and give back everything allocated since the prologue
@@ -2148,7 +2304,7 @@ fn e_func_enter() -> array[int] {
         a32(3506438144 + 28 * 32 + 28)
         a32(3510632448 + 28 * 32 + 28)
         push(marks, g_code_len)
-        for k in 0..4 {
+        for k in 0..5 {
             a32(3573751839)
         }
         return marks
@@ -2159,7 +2315,7 @@ fn e_func_enter() -> array[int] {
     push(marks, g_code_len)
     emit32(0)
     push(marks, g_code_len)
-    for k in 0..7 {
+    for k in 0..12 {
         emit(144)
     }
     return marks
@@ -2219,9 +2375,114 @@ fn e_func_leave(marks: array[int], frame: int, used: array[int]) {
             push(saves, b)
         }
     }
-    for i in 0..7 {
+    for b in nop_bytes(5) {
+        push(saves, b)
+    }
+    for i in 0..12 {
         g_code[marks[1] + i] = saves[i]
     }
+}
+
+# ARM: d/x register t <-> [x29 + disp]; is_d picks the float register file
+fn a_ldst_fp(load: bool, t: int, disp: int) {
+    if disp >= -256 and disp < 256 {
+        let imm9 = disp
+        if imm9 < 0 {
+            imm9 += 512
+        }
+        if load {
+            a32(4232052736 + imm9 * 4096 + 29 * 32 + t)
+        } else {
+            a32(4227858432 + imm9 * 4096 + 29 * 32 + t)
+        }
+        return
+    }
+    a_mov_imm(17, disp)
+    a_rrr(2332033024, 17, 29, 17)
+    if load {
+        a32(4248829952 + 17 * 32 + t)
+    } else {
+        a32(4244635648 + 17 * 32 + t)
+    }
+}
+
+# float register x <-> [rbp + disp]
+fn fx_frame(load: bool, x: int, disp: int) {
+    if arm() {
+        a_ldst_fp(load, x, disp)
+        return
+    }
+    emit(242)
+    if x >= 8 {
+        emit(68)
+    }
+    if load {
+        emit2(15, 16)
+    } else {
+        emit2(15, 17)
+    }
+    e_modrm_mem(x, 5, disp)
+}
+
+# Save the float registers the function used: the prologue jumps to code
+# placed after the function that stores them, then comes back. They are
+# loaded again at the end of the function. Returns the frame slots used.
+fn fx_save_slots() -> array[int] {
+    let slots: array[int] = []
+    for x in 0..8 {
+        if g_xreg_used[x] == 1 {
+            g_frame += 8
+            push(slots, -g_frame)
+        } else {
+            push(slots, 0)
+        }
+    }
+    return slots
+}
+
+fn fx_restore(slots: array[int]) {
+    for x in 0..8 {
+        if g_xreg_used[x] == 1 {
+            fx_frame(true, x + 8, slots[x])
+        }
+    }
+}
+
+fn fx_save_stub(marks: array[int], slots: array[int]) {
+    let any = g_cur_framed and not g_cur_raw
+    for x in 0..8 {
+        if g_xreg_used[x] == 1 {
+            any = true
+        }
+    }
+    if not any {
+        return
+    }
+    let stub = g_code_len
+    for x in 0..8 {
+        if g_xreg_used[x] == 1 {
+            fx_frame(false, x + 8, slots[x])
+        }
+    }
+    if g_cur_framed and not g_cur_raw {
+        e_frame_prologue()
+    }
+    if arm() {
+        let at = marks[1] + 16
+        let back = (at + 4 - g_code_len) / 4
+        a32(335544320 + (back + 67108864) % 67108864)
+        patch32(at, 335544320 + (stub - at) / 4)
+        return
+    }
+    let at = marks[1] + 7
+    emit(233)
+    emit32(at + 5 - (g_code_len + 4))
+    g_code[at] = 233
+    let rel = stub - (at + 5)
+    g_code[at + 1] = rel % 256
+    g_code[at + 2] = rel / 256 % 256
+    g_code[at + 3] = rel / 65536 % 256
+    g_code[at + 4] = rel / 16777216 % 256
 }
 
 # 1..7 byte no-op instructions
@@ -2333,6 +2594,19 @@ fn add_local(name: string, t: string) -> int {
             if g_noreg[ni] == name and at >= g_body_from and at <= g_body_to {
                 promote = false
             }
+        }
+        if promote and t == "float" {
+            for x in 0..8 {
+                let xo = g_xreg_owner[x]
+                if xo < 0 or xo >= g_lc_n {
+                    g_xreg_owner[x] = g_lc_n
+                    g_xreg_used[x] = 1
+                    return set_local(name, t, 200008 + x)
+                }
+            }
+        }
+        if t != "float" and g_wt_cut > 0 and wt_of(name) < g_wt_cut and name != "#acc" and not g_force_reg {
+            promote = false
         }
         let k = 0
         while promote and k < 4 {
@@ -2680,6 +2954,10 @@ fn simple_float_operand(level: int) -> bool {
             if g_lc_type[li] == "float" {
                 g_simple_kind = 2
                 g_simple_val = g_lc_off[li]
+                if is_xreg_local(g_simple_val) {
+                    g_simple_kind = 0
+                    return false
+                }
                 if is_reg_local(g_simple_val) {
                     g_simple_kind = 4
                     g_simple_val -= 100000
@@ -2738,6 +3016,421 @@ fn e_simple_to_rcx() {
 # rax = rax OP rcx
 fn e_op_rcx(op: int) {
     e_alu(op, 0, 1)
+}
+
+# ---------- float expressions kept in float registers ----------
+# An expression made only of float variables, float numbers, + - * /,
+# unary minus and brackets is worked out in xmm0..xmm5 (d0..d5 on ARM)
+# without passing every step through rax and the stack.
+let g_fq_ops: int = 0
+# which float variable each float register holds as-is ("" when none)
+let g_fx_rv: array[string] = ["", "", "", "", "", "", "", ""]
+
+# float variable at token p: 1 local, 2 global, 0 neither
+fn fq_var(p: int) -> int {
+    if g_tk_kind[p] != 1 {
+        return 0
+    }
+    let ns = tk_at(p + 1)
+    if kind_at(p + 1) == 5 and (ns == "(" or ns == "[" or ns == ".") {
+        return 0
+    }
+    let name = g_tk_text[p]
+    let li = find_local(name)
+    if li >= 0 {
+        if g_lc_type[li] == "float" {
+            return 1
+        }
+        return 0
+    }
+    let gi = find_global(name)
+    if gi >= 0 and g_gl_type[gi] == "float" {
+        return 2
+    }
+    return 0
+}
+
+# float(n) of a whole-number variable or number: float ( n )
+fn fq_int_conv(p: int) -> bool {
+    if g_tk_kind[p] != 1 or g_tk_text[p] != "float" or not is_sym_at(p + 1, "(") or not is_sym_at(p + 3, ")") {
+        return false
+    }
+    if find_local("float") >= 0 or find_global("float") >= 0 or find_fn("float") >= 0 {
+        return false
+    }
+    if not fq_after_ok(p + 4) {
+        return false
+    }
+    let q = p + 2
+    if g_tk_kind[q] == 3 {
+        return true
+    }
+    if g_tk_kind[q] != 1 {
+        return false
+    }
+    let li = find_local(g_tk_text[q])
+    if li >= 0 {
+        return g_lc_type[li] == "int"
+    }
+    let gi = find_global(g_tk_text[q])
+    return gi >= 0 and g_gl_type[gi] == "int"
+}
+
+fn fq_after_ok(p: int) -> bool {
+    let ns = tk_at(p)
+    if kind_at(p) == 5 and (ns == "(" or ns == "[" or ns == "." or ns == "%") {
+        return false
+    }
+    return true
+}
+
+# checks: return the token after the part, or -1 when it does not qualify
+fn fq_atom(p: int, d: int) -> int {
+    if g_tk_kind[p] == 7 {
+        if fq_after_ok(p + 1) {
+            return p + 1
+        }
+        return -1
+    }
+    if fq_var(p) > 0 {
+        return p + 1
+    }
+    if fq_int_conv(p) {
+        return p + 4
+    }
+    if is_sym_at(p, "(") {
+        let q = fq_add(p + 1, d)
+        if q < 0 or not is_sym_at(q, ")") or not fq_after_ok(q + 1) {
+            return -1
+        }
+        return q + 1
+    }
+    return -1
+}
+
+fn fq_un(p: int, d: int) -> int {
+    if is_sym_at(p, "-") {
+        return fq_un(p + 1, d)
+    }
+    return fq_atom(p, d)
+}
+
+fn fq_mul(p: int, d: int) -> int {
+    let q = fq_un(p, d)
+    while q >= 0 and (is_sym_at(q, "*") or is_sym_at(q, "/")) {
+        if d + 1 > 5 {
+            return -1
+        }
+        g_fq_ops += 1
+        q = fq_un(q + 1, d + 1)
+    }
+    if q >= 0 and not fq_after_ok(q) {
+        return -1
+    }
+    return q
+}
+
+fn fq_add(p: int, d: int) -> int {
+    let q = fq_mul(p, d)
+    while q >= 0 and (is_sym_at(q, "+") or is_sym_at(q, "-")) {
+        if d + 1 > 5 {
+            return -1
+        }
+        g_fq_ops += 1
+        q = fq_mul(q + 1, d + 1)
+    }
+    return q
+}
+
+# float register d = int register r (bits copied)
+fn fx_from_gpr(d: int, r: int) {
+    if arm() {
+        a32(2657550336 + ar(r) * 32 + d)
+        return
+    }
+    emit(102)
+    let x = 72
+    if r >= 8 {
+        x += 1
+    }
+    if d >= 8 {
+        x += 4
+    }
+    emit3(x, 15, 110)
+    emit(192 + d % 8 * 8 + r % 8)
+}
+
+# ARM: d = [x29 + disp]
+fn a_ldr_d(d: int, disp: int) {
+    if disp >= 0 and disp < 32768 and disp % 8 == 0 {
+        a32(4248829952 + disp / 8 * 1024 + 29 * 32 + d)
+        return
+    }
+    if disp >= -256 and disp < 256 {
+        let imm9 = disp
+        if imm9 < 0 {
+            imm9 += 512
+        }
+        a32(4232052736 + imm9 * 4096 + 29 * 32 + d)
+        return
+    }
+    e_load(1, 5, disp)
+    fx_from_gpr(d, 1)
+}
+
+# float register d = the number or variable at g_pos
+fn fx_load_atom(d: int) {
+    g_fx_rv[d] = ""
+    if fq_int_conv(g_pos) {
+        let q = g_pos + 2
+        if g_tk_kind[q] == 3 {
+            e_mov_imm(1, g_tk_num[q])
+        } else {
+            let li = find_local(g_tk_text[q])
+            if li >= 0 {
+                loc_load(1, g_lc_off[li])
+            } else {
+                e_load_abs(1, g_gl_addr[find_global(g_tk_text[q])])
+            }
+        }
+        # cvtsi2sd / scvtf
+        if arm() {
+            a32(2657222656 + 32 + d)
+        } else {
+            emit4(242, 72, 15, 42)
+            emit(192 + d * 8 + 1)
+        }
+        g_pos += 4
+        return
+    }
+    if kind() == 7 {
+        let v = g_tk_num[g_pos]
+        if v == 0 and not arm() {
+            emit4(102, 15, 87, 192 + d * 9)
+        } else if not arm() {
+            emit3(242, 15, 16)
+            emit(5 + d * 8)
+            fixup(1, ro_const8(v))
+            emit32(0)
+        } else {
+            e_mov_imm(1, v)
+            fx_from_gpr(d, 1)
+        }
+        g_pos += 1
+        return
+    }
+    let name = tk()
+    g_fx_rv[d] = name
+    let li = find_local(name)
+    if li >= 0 {
+        let off = g_lc_off[li]
+        if is_xreg_local(off) {
+            fx_copy(d, off - 200000)
+        } else if is_reg_local(off) {
+            fx_from_gpr(d, off - 100000)
+        } else {
+            if arm() {
+                a_ldr_d(d, off)
+            } else {
+                emit3(242, 15, 16)
+                e_modrm_mem(d, 5, off)
+            }
+        }
+    } else {
+        e_load_abs(1, g_gl_addr[find_global(name)])
+        fx_from_gpr(d, 1)
+    }
+    g_pos += 1
+}
+
+# float register d = d OP s; op is "+", "-", "*" or "/"
+fn fx_op(op: string, d: int, s: int) {
+    g_fx_rv[d] = ""
+    if arm() {
+        let base = 509618176
+        if op == "-" {
+            base = 509622272
+        }
+        if op == "*" {
+            base = 509609984
+        }
+        if op == "/" {
+            base = 509614080
+        }
+        a32(base + s * 65536 + d * 32 + d)
+        return
+    }
+    emit(242)
+    if s >= 8 {
+        emit(65)
+    }
+    emit3(15, fx_code(op), 192 + d * 8 + s % 8)
+}
+
+fn fx_code(op: string) -> int {
+    if op == "-" {
+        return 92
+    }
+    if op == "*" {
+        return 89
+    }
+    if op == "/" {
+        return 94
+    }
+    return 88
+}
+
+# right-hand operand of op into register d: a plain stack variable is used
+# straight from memory on x86
+fn fx_rhs(op: string, d: int, is_add: bool) {
+    let single = fq_var(g_pos) == 1 and not arm()
+    if single and is_add and (is_sym_at(g_pos + 1, "*") or is_sym_at(g_pos + 1, "/")) {
+        single = false
+    }
+    if fq_var(g_pos) > 0 and g_fx_rv[d - 1] == tk() and not (is_add and (is_sym_at(g_pos + 1, "*") or is_sym_at(g_pos + 1, "/"))) {
+        # x * x: the value is already in the register
+        g_pos += 1
+        fx_op(op, d - 1, d - 1)
+        return
+    }
+    if fq_var(g_pos) == 1 and not (is_add and (is_sym_at(g_pos + 1, "*") or is_sym_at(g_pos + 1, "/"))) {
+        let xo = g_lc_off[find_local(tk())]
+        if is_xreg_local(xo) {
+            g_pos += 1
+            fx_op(op, d - 1, xo - 200000)
+            return
+        }
+    }
+    if op == "*" and not is_add and is_two(g_pos) {
+        g_pos += 1
+        fx_op("+", d - 1, d - 1)
+        return
+    }
+    if kind() == 7 and not arm() and not (is_add and (is_sym_at(g_pos + 1, "*") or is_sym_at(g_pos + 1, "/"))) {
+        # a number straight from read-only data
+        g_fx_rv[d - 1] = ""
+        emit3(242, 15, fx_code(op))
+        emit(5 + (d - 1) * 8)
+        fixup(1, ro_const8(g_tk_num[g_pos]))
+        emit32(0)
+        g_pos += 1
+        return
+    }
+    if single {
+        let off = g_lc_off[find_local(tk())]
+        if not is_reg_local(off) {
+            g_fx_rv[d - 1] = ""
+            emit3(242, 15, fx_code(op))
+            e_modrm_mem(d - 1, 5, off)
+            g_pos += 1
+            return
+        }
+    }
+    if is_add {
+        fx_mul(d)
+    } else {
+        fx_un(d)
+    }
+    fx_op(op, d - 1, d)
+}
+
+fn fx_un(d: int) {
+    if is_sym("-") {
+        g_pos += 1
+        fx_un(d)
+        g_fx_rv[d] = ""
+        if arm() {
+            a32(509689856 + d * 32 + d)
+        } else {
+            # flip the sign bit
+            emit4(102, 72, 15, 126)
+            emit(192 + d * 8 + 1)
+            emit4(72, 15, 186, 249)
+            emit(63)
+            fx_from_gpr(d, 1)
+        }
+        return
+    }
+    if is_sym("(") {
+        g_pos += 1
+        fx_add(d)
+        g_pos += 1
+        return
+    }
+    fx_load_atom(d)
+}
+
+fn is_two(p: int) -> bool {
+    return g_tk_kind[p] == 7 and g_tk_num[p] == 4611686018427387904
+}
+
+fn fx_mul(d: int) {
+    if is_two(g_pos) and is_sym_at(g_pos + 1, "*") {
+        # 2.0 * x is worked out as x + x (the same number, and faster)
+        g_pos += 2
+        fx_un(d)
+        fx_op("+", d, d)
+    } else {
+        fx_un(d)
+    }
+    while is_sym("*") or is_sym("/") {
+        let op = tk()
+        g_pos += 1
+        fx_rhs(op, d + 1, false)
+    }
+}
+
+fn fx_add(d: int) {
+    fx_mul(d)
+    while is_sym("+") or is_sym("-") {
+        let op = tk()
+        g_pos += 1
+        fx_rhs(op, d + 1, true)
+    }
+}
+
+fn fq_is_cmp(p: int) -> bool {
+    return is_sym_at(p, "<") or is_sym_at(p, "<=") or is_sym_at(p, ">") or is_sym_at(p, ">=")
+}
+
+# a < b with float sides worked out in float registers; result 0/1 in rax
+fn fq_cmp_try() -> bool {
+    g_fq_ops = 0
+    let q = fq_add(g_pos, 0)
+    if q < 0 or not fq_is_cmp(q) {
+        return false
+    }
+    let r = fq_add(q + 1, 1)
+    if r < 0 or fq_is_cmp(r) or is_sym_at(r, "<<") or is_sym_at(r, ">>") {
+        return false
+    }
+    fx_add(0)
+    let op = tk()
+    g_pos += 1
+    fx_add(1)
+    e_f_cmp_regs(op)
+    return true
+}
+
+# try the fast path at level 9 (+ -) or 10 (* /); the result ends up in rax
+fn fq_try(level: int) -> bool {
+    g_fq_ops = 0
+    let q = 0
+    if level == 9 {
+        q = fq_add(g_pos, 0)
+    } else {
+        q = fq_mul(g_pos, 0)
+    }
+    if q < 0 or g_fq_ops == 0 {
+        return false
+    }
+    if level == 9 {
+        fx_add(0)
+    } else {
+        fx_mul(0)
+    }
+    e_f_result()
+    return true
 }
 
 fn gen_expr() -> string {
@@ -2967,6 +3660,45 @@ fn gen_equality() -> string {
     return t
 }
 
+# n < 2 with n in a register: cmp straight on the register
+fn reg_cmp_try() -> bool {
+    if kind() != 1 or kind_at(g_pos + 1) != 5 {
+        return false
+    }
+    let op = tk_at(g_pos + 1)
+    if op != "<" and op != ">" and op != "<=" and op != ">=" {
+        return false
+    }
+    let li = find_local(tk())
+    if li < 0 or g_lc_type[li] != "int" {
+        return false
+    }
+    let off = g_lc_off[li]
+    if not is_reg_local(off) or is_xreg_local(off) {
+        return false
+    }
+    let q = g_pos + 2
+    let nt = tk_at(q + 1)
+    if kind_at(q + 1) == 5 and (binop_prec(nt) > 7 or nt == "(" or nt == "[" or nt == "." or nt == "<" or nt == ">" or nt == "<=" or nt == ">=") {
+        return false
+    }
+    let reg = off - 100000
+    if g_tk_kind[q] == 3 and fits32(g_tk_num[q]) {
+        e_alu_imm(2, reg, g_tk_num[q])
+    } else if g_tk_kind[q] == 1 {
+        let lj = find_local(tk_at(q))
+        if lj < 0 or g_lc_type[lj] != "int" or not is_reg_local(g_lc_off[lj]) or is_xreg_local(g_lc_off[lj]) {
+            return false
+        }
+        e_alu(2, reg, g_lc_off[lj] - 100000)
+    } else {
+        return false
+    }
+    g_pos = q + 1
+    e_setcc_rax(compare_cc(op))
+    return true
+}
+
 fn compare_cc(op: string) -> int {
     if op == "<" {
         return 12
@@ -2981,6 +3713,12 @@ fn compare_cc(op: string) -> int {
 }
 
 fn gen_compare() -> string {
+    if fq_cmp_try() {
+        return "bool"
+    }
+    if reg_cmp_try() {
+        return "bool"
+    }
     let t = gen_shift()
     while is_sym("<") or is_sym(">") or is_sym("<=") or is_sym(">=") {
         let op = tk()
@@ -3014,6 +3752,9 @@ fn gen_shift() -> string {
 }
 
 fn gen_additive() -> string {
+    if fq_try(9) {
+        return "float"
+    }
     let t = gen_multiplicative()
     while is_sym("+") or is_sym("-") {
         let op = tk()
@@ -3041,6 +3782,9 @@ fn gen_additive() -> string {
 }
 
 fn gen_multiplicative() -> string {
+    if fq_try(10) {
+        return "float"
+    }
     let t = gen_unary()
     while is_sym("*") or is_sym("/") or is_sym("%") {
         let op = tk()
@@ -4478,6 +5222,9 @@ fn gen_join(pre: string) -> string {
 
 # pos is at '('. pre is the type of an argument already pushed (pipes and methods), or ""
 fn gen_call(name: string, pre: string) -> string {
+    if pre == "" and g_inline_ok and g_inline_depth < g_inline_max and g_self_lbl >= 0 and name == g_self_name and find_local(name) < 0 {
+        return gen_inline_self(false)
+    }
     if pre == "" {
         if name == "push" {
             return gen_push_builtin()
@@ -6475,6 +7222,54 @@ fn cond_is_and_chain() -> bool {
     }
     return false
 }
+# the condition again at the bottom of a loop: jump to l_true when it holds
+fn gen_cond_back(l_true: int, l_false: int) {
+    g_cmp_end = -1
+    if cond_is_and_chain() {
+        g_and_jump = l_false
+    }
+    gen_expr()
+    if g_cmp_end == g_code_len {
+        g_code_len = g_cmp_at
+        e_jcc(g_cmp_cc, l_true)
+    } else {
+        e_jnz_rax(l_true)
+    }
+}
+
+# can the loop condition at g_pos be compiled a second time? (plain values,
+# operators and calls only)
+fn cond_repeatable() -> bool {
+    let i = g_pos
+    let depth = 0
+    while true {
+        let k = g_tk_kind[i]
+        let t = g_tk_text[i]
+        if k == 6 {
+            return false
+        }
+        if k == 5 {
+            if t == "{" and depth == 0 {
+                return true
+            }
+            if t == "(" or t == "[" {
+                depth += 1
+            }
+            if t == ")" or t == "]" {
+                depth -= 1
+            }
+            if t == "{" or t == "}" or t == "|" or t == "=>" {
+                return false
+            }
+        }
+        if k == 2 and t != "and" and t != "or" and t != "not" and t != "true" and t != "false" {
+            return false
+        }
+        i += 1
+    }
+    return false
+}
+
 fn gen_cond(l_false: int) {
     g_cmp_end = -1
     if cond_is_and_chain() {
@@ -6538,6 +7333,13 @@ fn store_var(name: string, t: string, declare: bool) {
 fn store_local(off: int, t: string) {
     let w = words(t)
     if w == 1 {
+        if is_xreg_local(off) and g_f_end == g_code_len and g_f_reg == 0 and g_f_mov_at >= 0 and g_code_len - g_f_mov_at == fx_mov_len() {
+            # the value is in xmm0/d0: skip the copy into rax
+            g_code_len = g_f_mov_at
+            g_f_end = -1
+            fx_copy(off - 200000, 0)
+            return
+        }
         loc_store(off, 0)
     } else {
         for i in 0..w {
@@ -6621,6 +7423,17 @@ fn gen_assign() {
         if not use_simple {
             need_int(gen_expr(), op)
             e_mov_rr(1, 0)
+        }
+        if li >= 0 and use_simple and is_reg_local(g_lc_off[li]) and not is_xreg_local(g_lc_off[li]) and (g_simple_kind == 1 or g_simple_kind == 4) {
+            # k += 1 straight on the register
+            let reg = g_lc_off[li] - 100000
+            if g_simple_kind == 1 {
+                e_alu_imm(opc, reg, g_simple_val)
+            } else {
+                e_alu(opc, reg, g_simple_val)
+            }
+            g_pos += 1
+            return
         }
         if li >= 0 {
             loc_load(0, g_lc_off[li])
@@ -6747,6 +7560,24 @@ fn push_loop(l_break: int, l_cont: int) {
 fn gen_while() {
     let l_top = new_label()
     let l_end = new_label()
+    if cond_repeatable() {
+        # test once on entry, then at the bottom of each pass
+        let cond_at = g_pos
+        let l_body = new_label()
+        let l_cont = new_label()
+        gen_cond(l_end)
+        place(l_body)
+        push_loop(l_end, l_cont)
+        gen_block()
+        g_loop_n -= 1
+        let after = g_pos
+        place(l_cont)
+        g_pos = cond_at
+        gen_cond_back(l_body, l_end)
+        g_pos = after
+        place(l_end)
+        return
+    }
     place(l_top)
     gen_cond(l_end)
     push_loop(l_end, l_top)
@@ -6754,6 +7585,40 @@ fn gen_while() {
     g_loop_n -= 1
     e_jmp(l_top)
     place(l_end)
+}
+
+# is the loop variable assigned (or its address taken) in the loop body?
+# g_pos is at the start of the range
+fn for_var_written(var: string) -> bool {
+    let i = g_pos
+    while not (g_tk_kind[i] == 5 and g_tk_text[i] == "{") {
+        i += 1
+    }
+    let depth = 0
+    let n = len(g_tk_text)
+    while i < n {
+        if g_tk_kind[i] == 5 {
+            if g_tk_text[i] == "{" {
+                depth += 1
+            }
+            if g_tk_text[i] == "}" {
+                depth -= 1
+                if depth == 0 {
+                    return false
+                }
+            }
+        }
+        if g_tk_kind[i] == 1 and g_tk_text[i] == var {
+            if g_tk_kind[i + 1] == 5 and is_assign_op(g_tk_text[i + 1]) {
+                return true
+            }
+            if i > 1 and g_tk_text[i - 1] == "(" and g_tk_text[i - 2] == "addr_of" {
+                return true
+            }
+        }
+        i += 1
+    }
+    return true
 }
 
 fn gen_for() {
@@ -6764,7 +7629,14 @@ fn gen_for() {
     let l_next = new_label()
     let l_end = new_label()
     let it_t = gen_expr()
-    let idx = add_local("#i", "int")
+    let alias = is_sym("..") and not for_var_written(var)
+    let idx = 0
+    if alias {
+        idx = add_local(var, "int")
+    } else {
+        idx = add_local(var, "int")
+        g_lc_name[g_lc_n - 1] = "#i"
+    }
     let lim = add_local("", "int")
     let var_off = 0
     let src = 0
@@ -6775,7 +7647,11 @@ fn gen_for() {
         loc_store(idx, 0)
         need_int(gen_expr(), "..")
         e_store(5, lim, 0)
-        var_off = add_local(var, "int")
+        if alias {
+            var_off = idx
+        } else {
+            var_off = add_local(var, "int")
+        }
     } else {
         if it_t == "string" {
             mode = 2
@@ -6803,7 +7679,7 @@ fn gen_for() {
         e_alu_mem(2, 5, src + 8)
     }
     e_jcc(13, l_end)
-    if mode == 0 {
+    if mode == 0 and not alias {
         loc_store(var_off, 0)
     }
     if mode == 1 {
@@ -6896,9 +7772,48 @@ fn gen_return() {
         e_jmp(g_cur_epi)
         return
     }
+    if g_self_lbl >= 0 and find_local(g_self_name) < 0 {
+        let form = tail_form(g_pos)
+        if form == 1 {
+            gen_self_jump()
+            return
+        }
+        if form == 2 {
+            # x first (stopping before the + of the call), added to the hidden sum
+            let plus = g_tail_at - 1
+            if g_inline_ok and g_inline_depth < g_inline_max and kind() == 1 and tk() == g_self_name and is_sym_at(g_pos + 1, "(") and close_of(g_pos + 1) == plus - 1 {
+                # x is itself a call of f: its copy adds straight to the sum
+                let tail = g_tail_at
+                g_pos += 1
+                gen_inline_self(true)
+                g_tail_at = tail
+                gen_self_jump()
+                return
+            }
+            g_tk_text[plus] = ";"
+            push(g_semis, plus)
+            let tail2 = g_tail_at
+            let xt = gen_expr()
+            g_tail_at = tail2
+            pop(g_semis)
+            g_tk_text[plus] = "+"
+            need_int(xt, "+")
+            acc_add_rax(true)
+            gen_self_jump()
+            return
+        }
+    }
     g_lit_end = -1
     let start = g_code_len
     let t = coerce(gen_expr(), g_cur_ret)
+    if g_self_lbl >= 0 and g_inl_acc {
+        acc_add_rax(true)
+        e_jmp(g_cur_epi)
+        return
+    }
+    if g_self_lbl >= 0 and g_use_acc and t == "int" {
+        acc_add_rax(false)
+    }
     if t != g_cur_ret {
         err("should return " + g_cur_ret + ", not " + t)
     }
@@ -7107,18 +8022,22 @@ fn begin_function(label: int, no_frame: bool) -> array[int] {
     place(label)
     # frame size and saved registers are filled in once the body is compiled
     let marks = e_func_enter()
+    # the memory-frame prologue, when needed, runs from the stub after the
+    # function (see fx_save_stub)
     let pro_at = g_code_len
-    if not no_frame {
-        e_frame_prologue()
-    }
     push(marks, pro_at)
     push(marks, g_code_len)
     for k in 0..4 {
         g_reg_owner[k] = -1
         g_reg_used[k] = 0
     }
+    for k in 0..8 {
+        g_xreg_owner[k] = -1
+        g_xreg_used[k] = 0
+    }
     g_body_from = 0
     g_body_to = len(g_tk_text)
+    g_wt_cut = 0
     g_lc_n = 0
     g_frame = 8
     g_loop_n = 0
@@ -7129,12 +8048,21 @@ fn begin_function(label: int, no_frame: bool) -> array[int] {
 }
 
 fn end_function(marks: array[int]) {
+    if g_self_lbl >= 0 and g_lbl[g_self_reset] == -2 {
+        if g_cur_framed and not g_cur_raw {
+            place(g_self_reset)
+            e_frame_wipe()
+            e_jmp(g_self_lbl)
+        } else {
+            g_lbl[g_self_reset] = g_lbl[g_self_lbl]
+        }
+    }
     place(g_cur_epi)
+    let slots = fx_save_slots()
+    fx_restore(slots)
     if not g_cur_raw {
         if g_cur_framed {
             e_frame_epilogue()
-        } else {
-            e_patch_skip(marks[2], marks[3])
         }
     }
     let size = g_frame
@@ -7142,6 +8070,7 @@ fn end_function(marks: array[int]) {
         size += 16 - size % 16
     }
     e_func_leave(marks, size, g_reg_used)
+    fx_save_stub(marks, slots)
 }
 
 # g_body_from/to = tokens of the function whose header starts at p
@@ -7166,12 +8095,516 @@ fn fn_body_range(p: int) {
         i += 1
     }
 }
+fn wt_index(name: string) -> int {
+    for i in 0..len(g_wt_name) {
+        if g_wt_name[i] == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn wt_in(xs: array[string], name: string) -> bool {
+    for x in xs {
+        if x == name {
+            return true
+        }
+    }
+    return false
+}
+
+fn wt_of(name: string) -> int {
+    let i = wt_index(name)
+    if i < 0 {
+        return 0
+    }
+    return g_wt_val[i]
+}
+
+# weigh the names of the function body g_body_from..g_body_to
+fn weigh_names(params: string) {
+    g_wt_name = []
+    g_wt_val = []
+    let skip: array[string] = []
+    let braces: array[int] = []
+    let depth = 0
+    let pending = false
+    let i = g_body_from
+    while i <= g_body_to {
+        let k = g_tk_kind[i]
+        let t = g_tk_text[i]
+        if k == 2 and (t == "while" or t == "for") {
+            pending = true
+        }
+        if k == 5 and t == "{" {
+            if pending {
+                push(braces, 1)
+                depth += 1
+                pending = false
+            } else {
+                push(braces, 0)
+            }
+        }
+        if k == 5 and t == "}" and len(braces) > 0 {
+            if braces[len(braces) - 1] == 1 {
+                depth -= 1
+            }
+            pop(braces)
+        }
+        if k == 1 {
+            # names that are clearly not whole numbers do not compete
+            let nt = g_tk_text[i + 1]
+            let n2 = i + 2
+            let other = false
+            if g_tk_kind[i + 1] == 5 and (nt == "=" or nt == ":") {
+                if g_tk_kind[n2] == 1 and wt_in(skip, g_tk_text[n2]) and not (g_tk_kind[n2 + 1] == 5 and g_tk_text[n2 + 1] == "(") {
+                    other = true
+                }
+                if g_tk_kind[n2] == 7 or g_tk_kind[n2] == 4 or (g_tk_kind[n2] == 1 and (g_tk_text[n2] == "float" or g_tk_text[n2] == "string" or g_tk_text[n2] == "array")) or (g_tk_kind[n2] == 5 and g_tk_text[n2] == "[") {
+                    other = true
+                }
+            }
+            if other {
+                push(skip, t)
+            }
+            let w = 1
+            let d = depth
+            if d > 5 {
+                d = 5
+            }
+            for q in 0..d {
+                w = w * 8
+            }
+            let wi = wt_index(t)
+            if wi < 0 {
+                push(g_wt_name, t)
+                push(g_wt_val, w)
+            } else {
+                g_wt_val[wi] += w
+            }
+        }
+        i += 1
+    }
+    if params != "" {
+        for pn in split(params, ",") {
+            push(skip, pn)
+        }
+    }
+    for sn in skip {
+        let si = wt_index(sn)
+        if si >= 0 {
+            g_wt_val[si] = 0
+        }
+    }
+    # the cut: the 4th largest weight
+    let top = [0, 0, 0, 0]
+    for v in g_wt_val {
+        let x = v
+        for j in 0..4 {
+            if x > top[j] {
+                let tmp = top[j]
+                top[j] = x
+                x = tmp
+            }
+        }
+    }
+    g_wt_cut = top[3]
+}
+
+# end of the return expression starting at token r
+fn ret_expr_end(r: int) -> int {
+    let i = r
+    let depth = 0
+    while true {
+        let k = g_tk_kind[i]
+        let t = g_tk_text[i]
+        if k == 6 {
+            return i
+        }
+        if depth == 0 and i > r and g_tk_line[i] != g_tk_line[i - 1] {
+            return i
+        }
+        if k == 5 {
+            if t == "(" or t == "[" or t == "{" {
+                depth += 1
+            }
+            if t == ")" or t == "]" or t == "}" {
+                if depth == 0 {
+                    return i
+                }
+                depth -= 1
+            }
+        }
+        i += 1
+    }
+    return i
+}
+
+# What kind of return starts at token r? 0 other, 1 `return f(...)`,
+# 2 `return x + f(...)` (g_tail_at = the token of f)
+fn tail_form(r: int) -> int {
+    g_tail_at = -1
+    let e = ret_expr_end(r)
+    if e - r < 3 or not is_sym_at(e - 1, ")") {
+        return 0
+    }
+    # find the ( that matches the last )
+    let i = e - 1
+    let depth = 0
+    while i >= r {
+        if is_sym_at(i, ")") or is_sym_at(i, "]") {
+            depth += 1
+        }
+        if is_sym_at(i, "(") or is_sym_at(i, "[") {
+            depth -= 1
+            if depth == 0 {
+                break
+            }
+        }
+        i -= 1
+    }
+    let m = i - 1
+    if m < r or g_tk_kind[m] != 1 or g_tk_text[m] != g_self_name or not is_sym_at(m + 1, "(") {
+        return 0
+    }
+    g_tail_at = m
+    if m == r {
+        return 1
+    }
+    if m - 1 <= r or not is_sym_at(m - 1, "+") or g_cur_ret != "int" {
+        return 0
+    }
+    # x must be a sum of terms: nothing that binds more loosely than +
+    let d = 0
+    for j in r..m - 1 {
+        let t = g_tk_text[j]
+        let k = g_tk_kind[j]
+        if k == 5 and (t == "(" or t == "[") {
+            d += 1
+        }
+        if k == 5 and (t == ")" or t == "]") {
+            d -= 1
+        }
+        if d == 0 {
+            if k == 5 and binop_prec(t) > 0 and binop_prec(t) < 9 {
+                return 0
+            }
+            if k == 5 and (t == "|>" or t == "&&" or t == "||" or t == "!" or t == "..") {
+                return 0
+            }
+            if k == 2 and (t == "and" or t == "or" or t == "not") {
+                return 0
+            }
+        }
+    }
+    return 2
+}
+
+# may the function at body tokens g_body_from..g_body_to loop back to itself?
+fn plan_self_loop(f: int) {
+    g_self_lbl = -1
+    g_use_acc = false
+    g_inline_ok = false
+    g_self_name = g_fn_name[f]
+    if starts_with_s(g_self_name, "__") {
+        return
+    }
+    let rt = g_fn_ret[f]
+    if rt != "int" and rt != "bool" and rt != "float" {
+        return
+    }
+    if g_fn_ptypes[f] != "" {
+        for pt in split(g_fn_ptypes[f], ",") {
+            if pt != "int" and pt != "bool" and pt != "float" {
+                return
+            }
+        }
+    }
+    let any = false
+    let open = g_body_from
+    while not is_sym_at(open, "{") {
+        open += 1
+    }
+    for i in open..g_body_to {
+        if g_tk_kind[i] == 2 and (g_tk_text[i] == "fn" or g_tk_text[i] == "spawn") {
+            return
+        }
+        if g_tk_kind[i] == 2 and g_tk_text[i] == "return" {
+            let saved = g_cur_ret
+            g_cur_ret = rt
+            let form = tail_form(i + 1)
+            g_cur_ret = saved
+            if form > 0 {
+                any = true
+            }
+            if form == 2 {
+                g_use_acc = true
+            }
+        }
+    }
+    if any {
+        g_self_lbl = new_label()
+        g_self_reset = new_label()
+        g_body_open = open
+        g_inline_ok = self_inline_ok(open)
+        # small bodies with one or two calls of f go three copies deep
+        g_inline_max = 1
+        let calls = 0
+        for i in open..g_body_to {
+            if g_tk_kind[i] == 1 and g_tk_text[i] == g_self_name and is_sym_at(i + 1, "(") {
+                calls += 1
+            }
+        }
+        if calls <= 2 and g_body_to - open <= 60 {
+            g_inline_max = 3
+        }
+    }
+}
+
+# Can the body (from its { at `open`) be compiled a second time in place of a
+# call? Small, and only numbers: no strings, arrays, fields or other calls.
+fn self_inline_ok(open: int) -> bool {
+    if g_body_to - open > 160 {
+        return false
+    }
+    for i in open..g_body_to {
+        let k = g_tk_kind[i]
+        let t = g_tk_text[i]
+        if k == 4 {
+            return false
+        }
+        if k == 5 and (t == "[" or t == "." or t == "|>" or t == "..") {
+            return false
+        }
+        if k == 2 and t != "if" and t != "else" and t != "return" and t != "while" and t != "and" and t != "or" and t != "not" and t != "true" and t != "false" and t != "let" {
+            return false
+        }
+        if k == 1 and is_sym_at(i + 1, "(") and t != g_self_name {
+            return false
+        }
+    }
+    return true
+}
+
+# f(...) inside f, compiled in place: the arguments become fresh variables
+# with the parameter names, then the body runs again with its returns going
+# to the end of this copy. The value is left in rax.
+fn gen_inline_self(into_acc: bool) -> string {
+    expect("(")
+    let n = g_nparams
+    let k = 0
+    while not is_sym(")") {
+        if k >= n {
+            err("too many arguments for " + g_self_name)
+        }
+        let pt = g_lc_type[g_param_base + k]
+        let t = coerce(gen_expr(), pt)
+        if t != pt {
+            err("argument " + str(k + 1) + " of " + g_self_name + " should be " + pt + ", not " + t)
+        }
+        k += 1
+        if is_sym(",") {
+            g_pos += 1
+        }
+        if not is_sym(")") {
+            e_push(0)
+        }
+    }
+    if k != n {
+        err(g_self_name + " needs " + str(n) + " arguments, got " + str(k))
+    }
+    let after = g_pos + 1
+    let s_lbl = g_self_lbl
+    let s_reset = g_self_reset
+    let s_acc = g_acc_off
+    let s_base = g_param_base
+    let s_epi = g_cur_epi
+    let s_n = g_lc_n
+    let s_loops = g_loop_n
+    let s_inl = g_inl_acc
+    let base = g_lc_n
+    g_force_reg = true
+    for i in 0..n {
+        add_local(g_lc_name[s_base + i], g_lc_type[s_base + i])
+    }
+    let i = n - 1
+    while i >= 0 {
+        if i < n - 1 {
+            e_pop(0)
+        }
+        loc_store(g_lc_off[base + i], 0)
+        i -= 1
+    }
+    if g_use_acc and not into_acc {
+        g_acc_off = add_local("#acc", "int")
+        loc_set0(g_acc_off)
+    }
+    g_inl_acc = into_acc
+    g_force_reg = false
+    g_param_base = base
+    g_self_lbl = new_label()
+    g_self_reset = g_self_lbl
+    g_cur_epi = new_label()
+    place(g_self_lbl)
+    g_inline_depth += 1
+    g_pos = g_body_open
+    for sp in g_semis {
+        g_tk_text[sp] = "+"
+    }
+    gen_block()
+    for sp in g_semis {
+        g_tk_text[sp] = ";"
+    }
+    g_inline_depth -= 1
+    place(g_cur_epi)
+    g_cur_epi = s_epi
+    g_self_lbl = s_lbl
+    g_self_reset = s_reset
+    g_acc_off = s_acc
+    g_inl_acc = s_inl
+    g_param_base = s_base
+    g_lc_n = s_n
+    g_loop_n = s_loops
+    g_pos = after
+    return g_cur_ret
+}
+
+# the ) that matches the ( at p
+fn close_of(p: int) -> int {
+    let depth = 0
+    let i = p
+    let n = len(g_tk_text)
+    while i < n {
+        if is_sym_at(i, "(") or is_sym_at(i, "[") {
+            depth += 1
+        }
+        if is_sym_at(i, ")") or is_sym_at(i, "]") {
+            depth -= 1
+            if depth == 0 {
+                return i
+            }
+        }
+        i += 1
+    }
+    return -1
+}
+
+# into_acc: acc += rax; else rax += acc
+fn acc_add_rax(into_acc: bool) {
+    let off = g_acc_off
+    if is_reg_local(off) and not is_xreg_local(off) {
+        if into_acc {
+            e_alu(0, off - 100000, 0)
+        } else {
+            e_alu(0, 0, off - 100000)
+        }
+        return
+    }
+    if into_acc {
+        e_mov_rr(1, 0)
+        loc_load(0, off)
+        e_op_rcx(0)
+        loc_store(off, 0)
+    } else {
+        loc_load(1, off)
+        e_op_rcx(0)
+    }
+}
+
+# the self call at g_tail_at: new parameter values, then back to the start
+fn gen_self_jump() {
+    g_pos = g_tail_at + 2
+    let n = 0
+    while not is_sym(")") {
+        if n >= g_nparams {
+            err("too many arguments for " + g_self_name)
+        }
+        let pt = g_lc_type[g_param_base + n]
+        let t = coerce(gen_expr(), pt)
+        if t != pt {
+            err("argument " + str(n + 1) + " of " + g_self_name + " should be " + pt + ", not " + t)
+        }
+        n += 1
+        if is_sym(",") {
+            g_pos += 1
+        }
+        if not is_sym(")") {
+            e_push(0)
+        }
+    }
+    g_pos += 1
+    if n != g_nparams {
+        err(g_self_name + " needs " + str(g_nparams) + " arguments, got " + str(n))
+    }
+    let i = n - 1
+    while i >= 0 {
+        if i < n - 1 {
+            e_pop(0)
+        }
+        loc_store(g_lc_off[g_param_base + i], 0)
+        i -= 1
+    }
+    e_jmp(g_self_reset)
+}
+
+fn g_fn_nparams_ok(f: int, n: int) -> bool {
+    return n > 0
+}
+
+# hot whole-number and float parameters move into registers on entry
+fn promote_params() {
+    for p in 0..g_lc_n {
+        let name = g_lc_name[p]
+        let t = g_lc_type[p]
+        if t != "int" and t != "bool" and t != "float" {
+            continue
+        }
+        let ok = true
+        for ni in 0..len(g_noreg) {
+            let at = g_noreg_at[ni]
+            if g_noreg[ni] == name and at >= g_body_from and at <= g_body_to {
+                ok = false
+            }
+        }
+        if not ok or wt_of(name) < 2 {
+            continue
+        }
+        let off = g_lc_off[p]
+        if t == "float" {
+            for x in 0..8 {
+                if ok and g_xreg_owner[x] < 0 {
+                    g_xreg_owner[x] = p
+                    g_xreg_used[x] = 1
+                    fx_frame(true, x + 8, off)
+                    g_lc_off[p] = 200008 + x
+                    ok = false
+                }
+            }
+            continue
+        }
+        if g_wt_cut > 0 and wt_of(name) < g_wt_cut {
+            continue
+        }
+        let regs = local_regs()
+        for k in 0..4 {
+            if ok and g_reg_owner[k] < 0 {
+                g_reg_owner[k] = p
+                g_reg_used[k] = 1
+                e_load(regs[k], 5, off)
+                g_lc_off[p] = 100000 + regs[k]
+                ok = false
+            }
+        }
+    }
+}
+
 fn compile_fn(f: int) {
     g_fn_state[f] = 2
     g_pos = g_fn_tok[f]
     let name = g_fn_name[f]
     let marks = begin_function(g_fn_label[f], starts_with_s(name, "__"))
     fn_body_range(g_pos)
+    weigh_names("")
     g_in_top = false
     g_cur_ret = g_fn_ret[f]
     # parameters sit above the return address, last one first
@@ -7204,6 +8637,7 @@ fn compile_fn(f: int) {
         }
     }
     g_lc_n = len(pnames)
+    promote_params()
     # skip the parameter list and return type
     let depth = 0
     let scanning = true
@@ -7222,8 +8656,28 @@ fn compile_fn(f: int) {
     while not is_sym("{") {
         g_pos += 1
     }
+    g_self_lbl = -1
+    g_param_base = 0
+    g_nparams = len(pnames)
+    g_inline_depth = 0
+    g_inl_acc = false
+    if g_fn_nparams_ok(f, len(pnames)) {
+        plan_self_loop(f)
+    }
+    if g_self_lbl >= 0 {
+        if g_use_acc {
+            g_acc_off = add_local("#acc", "int")
+            loc_set0(g_acc_off)
+        }
+        place(g_self_lbl)
+    }
     gen_block()
+    if g_self_lbl >= 0 {
+        g_lbl[g_self_reset] = -2
+    }
     end_function(marks)
+    g_self_lbl = -1
+    g_inline_ok = false
 }
 
 # code outside of functions runs first, in order; its variables are globals
@@ -7384,6 +8838,12 @@ fn e_ccall_any(name: string, n: int, by_ptr: bool) {
         if n > 16 {
             err("__ccall takes at most 16 arguments")
         }
+        # the system library may change xmm8-xmm15, which hold float variables
+        e_alu_imm(1, 4, 64)
+        for x in 0..8 {
+            emit4(242, 68, 15, 17)
+            e_modrm_mem(x, 4, x * 8)
+        }
         # arguments after the sixth go on the stack, the 7th lowest
         if n > 6 and (n - 6) % 2 == 1 {
             e_alu_imm(1, 4, 8)
@@ -7409,6 +8869,19 @@ fn e_ccall_any(name: string, n: int, by_ptr: bool) {
         emit2(255, 21)
         fixup(3, idx)
         emit32(0)
+    }
+    if g_target != 3 {
+        let adj = 0
+        if n > 6 {
+            adj = (n - 6) * 8
+            if (n - 6) % 2 == 1 {
+                adj += 8
+            }
+        }
+        for x in 0..8 {
+            emit4(242, 68, 15, 16)
+            e_modrm_mem(x, 4, adj + x * 8)
+        }
     }
     e_mov_rr(4, 5)
     e_pop(5)
