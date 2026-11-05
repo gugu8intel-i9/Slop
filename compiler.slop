@@ -75,6 +75,12 @@ let g_lit_start: int = -1
 let g_lit_end: int = -1
 let g_cmp_end: int = -1
 let g_cmp_at: int = -1
+let g_and_jump: int = -1
+let g_f_end: int = -1
+let g_base_start: int = -1
+let g_base_end: int = -1
+let g_base_off: int = 0
+let g_f_keep: bool = false
 let g_cmp_cc: int = 0
 let g_place_perm: bool = false
 let g_simple_kind: int = 0
@@ -86,6 +92,10 @@ let g_bounds_lbl: int = 0
 let g_reg_owner: array[int] = [-1, -1, -1, -1]
 let g_reg_used: array[int] = [0, 0, 0, 0]
 let g_noreg: array[string] = []
+let g_noreg_at: array[int] = []
+# token range of the function being compiled (for g_noreg)
+let g_body_from: int = 0
+let g_body_to: int = 0
 
 # ---------- generated program memory map ----------
 # The program is code + read-only data, followed by a zeroed data area that
@@ -672,6 +682,8 @@ fn new_label() -> int {
 
 fn place(l: int) {
     g_lbl[l] = g_code_len
+    # code can jump here, so xmm0 may not match rax any more
+    g_f_end = -1
 }
 
 # records a spot to fill in once addresses are known (see resolve_fixups)
@@ -1501,14 +1513,23 @@ fn e_f_cmp(op: string) {
         a32(2594113504 + (cond ^ 1) * 4096)
         return
     }
-    if op == "<" or op == "<=" {
-        # compare the other way round so NaN gives false
-        emit4(102, 15, 46, 200)
-        if op == "<" {
-            emit3(15, 151, 192)
+    if op == "<" or op == "<=" or op == ">" or op == ">=" {
+        # < and <= compare the other way round so NaN gives false
+        if op == "<" or op == "<=" {
+            emit4(102, 15, 46, 200)
         } else {
-            emit3(15, 147, 192)
+            emit4(102, 15, 46, 193)
         }
+        # remember the flags so a condition can jump on them directly
+        g_cmp_at = g_code_len
+        g_cmp_cc = 3
+        if op == "<" or op == ">" {
+            g_cmp_cc = 7
+        }
+        emit3(15, 144 + g_cmp_cc, 192)
+        emit3(15, 182, 192)
+        g_cmp_end = g_code_len
+        return
     } else {
         emit4(102, 15, 46, 193)
         if op == ">" {
@@ -2307,8 +2328,9 @@ fn add_local(name: string, t: string) -> int {
     if (t == "int" or t == "bool" or t == "float") and name != "" {
         let regs = local_regs()
         let promote = true
-        for nr in g_noreg {
-            if nr == name {
+        for ni in 0..len(g_noreg) {
+            let at = g_noreg_at[ni]
+            if g_noreg[ni] == name and at >= g_body_from and at <= g_body_to {
                 promote = false
             }
         }
@@ -2632,6 +2654,51 @@ fn simple_operand(level: int) -> bool {
 }
 
 # rax = rax OP simple operand. op: 0 add, 1 sub, 2 cmp, 3 and, 4 or, 5 xor, 6 imul
+# like simple_operand, but for a float right-hand side (local, global or literal)
+fn simple_float_operand(level: int) -> bool {
+    g_simple_kind = 0
+    let k = kind()
+    let nxt = g_pos + 1
+    if kind_at(nxt) == 5 {
+        let ns = tk_at(nxt)
+        if ns == "(" or ns == "[" or ns == "." {
+            return false
+        }
+        if binop_prec(ns) > level {
+            return false
+        }
+    }
+    if k == 7 {
+        g_simple_kind = 1
+        g_simple_val = g_tk_num[g_pos]
+        return true
+    }
+    if k == 1 {
+        let name = tk()
+        let li = find_local(name)
+        if li >= 0 {
+            if g_lc_type[li] == "float" {
+                g_simple_kind = 2
+                g_simple_val = g_lc_off[li]
+                if is_reg_local(g_simple_val) {
+                    g_simple_kind = 4
+                    g_simple_val -= 100000
+                }
+                return true
+            }
+            return false
+        }
+        let gi = find_global(name)
+        if gi >= 0 {
+            if g_gl_type[gi] == "float" {
+                g_simple_kind = 3
+                g_simple_val = g_gl_addr[gi]
+                return true
+            }
+        }
+    }
+    return false
+}
 fn e_op_simple(op: int) {
     if g_simple_kind == 4 {
         e_alu(op, 0, g_simple_val)
@@ -2696,10 +2763,10 @@ fn gen_or() -> string {
     let l_end = new_label()
     while is_kw("or") or is_sym("||") {
         g_pos += 1
-        e_jnz_rax(l_true)
+        e_jtrue(l_true)
         gen_and()
     }
-    e_jnz_rax(l_true)
+    e_jtrue(l_true)
     e_mov_imm(0, 0)
     e_jmp(l_end)
     place(l_true)
@@ -2709,18 +2776,30 @@ fn gen_or() -> string {
 }
 
 fn gen_and() -> string {
+    let tgt = g_and_jump
+    g_and_jump = -1
     let t = gen_bitor()
     if not is_kw("and") and not is_sym("&&") {
         return t
+    }
+    if tgt >= 0 {
+        # inside an if/while condition: each false part jumps straight out
+        while is_kw("and") or is_sym("&&") {
+            g_pos += 1
+            e_jfalse(tgt)
+            g_cmp_end = -1
+            gen_bitor()
+        }
+        return "bool"
     }
     let l_false = new_label()
     let l_end = new_label()
     while is_kw("and") or is_sym("&&") {
         g_pos += 1
-        e_jz_rax(l_false)
+        e_jfalse(l_false)
         gen_bitor()
     }
-    e_jz_rax(l_false)
+    e_jfalse(l_false)
     e_mov_imm(0, 1)
     e_jmp(l_end)
     place(l_false)
@@ -2761,11 +2840,18 @@ fn gen_num_rhs(op: string, level: int, opcode: int, t: string) -> string {
         e_op_simple(opcode)
         return "int"
     }
-    e_push(0)
-    let rt = gen_level(level + 1)
-    need_num(rt, op)
-    e_mov_rr(1, 0)
-    e_pop(0)
+    let rt = "float"
+    if t == "float" and simple_float_operand(level) {
+        let keep = g_f_end == g_code_len
+        e_simple_to_rcx()
+        g_f_keep = keep
+    } else {
+        e_push(0)
+        rt = gen_level(level + 1)
+        need_num(rt, op)
+        e_mov_rr(1, 0)
+        e_pop(0)
+    }
     if t == "float" or rt == "float" {
         if t != "float" {
             e_f_from_int(0)
@@ -3041,7 +3127,10 @@ fn gen_unary() -> string {
 fn e_var_addr(name: string) -> string {
     let li = find_local(name)
     if li >= 0 {
+        g_base_start = g_code_len
+        g_base_off = g_lc_off[li]
         e_lea(0, 5, g_lc_off[li])
+        g_base_end = g_code_len
         return g_lc_type[li]
     }
     let gi = find_global(name)
@@ -3092,6 +3181,21 @@ fn e_var_value(name: string) -> string {
 
 # postfix chains: calls, a[i], s[i], x.field, x.method()
 # while `addr` is true the place's address is in rax instead of its value
+# index -> rax, array address -> rcx. When rax is just the address of a
+# local, skip saving it on the stack and load it again afterwards.
+fn gen_index_base() {
+    if g_base_end == g_code_len and not is_reg_local(g_base_off) {
+        let off = g_base_off
+        g_code_len = g_base_start
+        g_base_end = -1
+        need_int(gen_expr(), "[]")
+        e_lea(1, 5, off)
+        return
+    }
+    e_push(0)
+    need_int(gen_expr(), "[]")
+    e_pop(1)
+}
 fn gen_postfix() -> string {
     let t = ""
     let addr = false
@@ -3166,9 +3270,7 @@ fn gen_postfix() -> string {
                         }
                         g_pos += 1
                     } else {
-                        e_push(0)
-                        need_int(gen_expr(), "[]")
-                        e_pop(1)
+                        gen_index_base()
                     }
                     expect("]")
                     e_index(t)
@@ -3256,9 +3358,7 @@ fn gen_place() -> string {
                 err("cannot assign into a value of type " + t)
             }
             g_pos += 1
-            e_push(0)
-            need_int(gen_expr(), "[]")
-            e_pop(1)
+            gen_index_base()
             expect("]")
             e_index(t)
             g_place_perm = true
@@ -6317,8 +6417,69 @@ fn sx_kernel(var: string, body_start: int) -> string {
 
 let g_show_gpu = false
 
+# jump to l if rax (or the last compare) is false / true
+fn e_jfalse(l: int) {
+    if g_cmp_end == g_code_len {
+        g_code_len = g_cmp_at
+        g_cmp_end = -1
+        e_jcc(invert_cc(g_cmp_cc), l)
+    } else {
+        e_jz_rax(l)
+    }
+}
+fn e_jtrue(l: int) {
+    if g_cmp_end == g_code_len {
+        g_code_len = g_cmp_at
+        g_cmp_end = -1
+        e_jcc(g_cmp_cc, l)
+    } else {
+        e_jnz_rax(l)
+    }
+}
+# true when the condition at g_pos has no top-level 'or' or pipe,
+# so every part of an 'and' chain can jump straight to the false label
+fn cond_is_and_chain() -> bool {
+    let i = g_pos
+    let depth = 0
+    let n = 0
+    while n < 400 {
+        let k = kind_at(i)
+        if k == 6 {
+            return false
+        }
+        let s = tk_at(i)
+        if k == 5 {
+            if s == "(" or s == "[" {
+                depth += 1
+            }
+            if s == ")" or s == "]" {
+                depth -= 1
+                if depth < 0 {
+                    return true
+                }
+            }
+            if depth == 0 {
+                if s == "{" {
+                    return true
+                }
+                if s == "||" or s == "|>" {
+                    return false
+                }
+            }
+        }
+        if k == 2 and depth == 0 and s == "or" {
+            return false
+        }
+        i += 1
+        n += 1
+    }
+    return false
+}
 fn gen_cond(l_false: int) {
     g_cmp_end = -1
+    if cond_is_and_chain() {
+        g_and_jump = l_false
+    }
     let t = gen_expr()
     if t != "bool" and t != "int" {
         err("a condition must be true/false, not " + t)
@@ -6956,6 +7117,8 @@ fn begin_function(label: int, no_frame: bool) -> array[int] {
         g_reg_owner[k] = -1
         g_reg_used[k] = 0
     }
+    g_body_from = 0
+    g_body_to = len(g_tk_text)
     g_lc_n = 0
     g_frame = 8
     g_loop_n = 0
@@ -6981,11 +7144,34 @@ fn end_function(marks: array[int]) {
     e_func_leave(marks, size, g_reg_used)
 }
 
+# g_body_from/to = tokens of the function whose header starts at p
+fn fn_body_range(p: int) {
+    let i = p
+    let depth = 0
+    let n = len(g_tk_text)
+    while i < n {
+        if g_tk_kind[i] == 5 {
+            if g_tk_text[i] == "{" {
+                depth += 1
+            }
+            if g_tk_text[i] == "}" {
+                depth -= 1
+                if depth == 0 {
+                    g_body_from = p
+                    g_body_to = i
+                    return
+                }
+            }
+        }
+        i += 1
+    }
+}
 fn compile_fn(f: int) {
     g_fn_state[f] = 2
     g_pos = g_fn_tok[f]
     let name = g_fn_name[f]
     let marks = begin_function(g_fn_label[f], starts_with_s(name, "__"))
+    fn_body_range(g_pos)
     g_in_top = false
     g_cur_ret = g_fn_ret[f]
     # parameters sit above the return address, last one first
@@ -7383,6 +7569,7 @@ fn compile_program(main_src: string) {
     while ti + 2 < len(g_tk_text) {
         if g_tk_text[ti] == "addr_of" and g_tk_text[ti + 1] == "(" {
             push(g_noreg, g_tk_text[ti + 2])
+            push(g_noreg_at, ti)
         }
         ti += 1
     }
