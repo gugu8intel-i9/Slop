@@ -1,0 +1,77 @@
+# code paths the compiler takes shortcuts on: float compares in conditions,
+# and/or chains, simple float operands, array indexes
+
+fn classify(a: float, b: float) -> string {
+    r = ""
+    if a < b { r += "<" }
+    if a <= b { r += "L" }
+    if a > b { r += ">" }
+    if a >= b { r += "G" }
+    if a == b { r += "=" }
+    if a != b { r += "!" }
+    if not (a < b) { r += "n" }
+    return r
+}
+
+zero = 0.0
+nan = zero / zero
+print(classify(1.0, 2.0), classify(2.0, 1.0), classify(1.5, 1.5))
+print(classify(nan, 1.0), classify(1.0, nan), classify(nan, nan))
+
+fn chains(a: int, b: float) -> int {
+    n = 0
+    if a > 0 and b > 0.5 and a < 10 { n += 1 }
+    if a > 0 and (b < 0.5 or a == 3) { n += 10 }
+    if a < 0 or b >= 2.0 { n += 100 }
+    if (a > 0 and b > 0.5) or a == -7 { n += 1000 }
+    ok = a > 1 and b < 3.0
+    if ok { n += 10000 }
+    return n
+}
+print(chains(3, 1.0), chains(3, 0.25), chains(-7, 0.0), chains(20, 2.5), chains(1, nan))
+
+# a register-held x, y next to float math
+fn steps(cx: float, cy: float) -> int {
+    x = 0.0
+    y = 0.0
+    k = 0
+    while k < 50 and x * x + y * y < 4.0 {
+        t = x * x - y * y + cx
+        y = 2.0 * x * y + cy
+        x = t
+        k += 1
+    }
+    return k
+}
+print(steps(0.1, 0.2), steps(1.0, 1.0), steps(-0.75, 0.1))
+
+h = 0.5
+q = 3.0 * h - h / 4.0 + h * h - 1.0
+print(q, q > 0.3 and q < 0.4)
+
+fn grid(n: int) -> float {
+    a: array[float] = []
+    c: array[float] = []
+    for i in 0..n * n {
+        push(a, float(i % 7))
+        push(c, 0.0)
+    }
+    for i in 0..n {
+        for j in 0..n {
+            c[i * n + j] = c[i * n + j] + a[j * n + i] * 2.0
+        }
+    }
+    total = 0.0
+    for i in 0..n * n {
+        total += c[i]
+    }
+    return total
+}
+print(grid(5), grid(9))
+while_count = 0
+i = 0
+while i < 100 and i * i < 50 {
+    while_count += 1
+    i += 1
+}
+print(while_count)
