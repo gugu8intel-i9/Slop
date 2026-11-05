@@ -23,6 +23,10 @@ __vk_np = 0
 __vk_bufs = 0
 __vk_nbufs = 0
 __vk_backs = 0
+# device buffers kept between gpu for runs (40 bytes each, the same layout
+# as __vk_make fills: +8 room, +16 buffer, +24 memory, +32 where the CPU
+# sees it); places 0-31 for the lists, 32 for the numbers
+__vk_keep = 0
 
 fn __vk_fn(i: int) -> int {
     return __load64(__vk_fns + i * 8)
@@ -198,6 +202,8 @@ fn __vk_init() -> bool {
     __memzero(__vk_kernels, 32 * 4096)
     __vk_params = __alloc_bytes_in(2, 4 * 64)
     __vk_bufs = __alloc_bytes_in(2, 40 * 40)
+    __vk_keep = __alloc_bytes_in(2, 40 * 33)
+    __memzero(__vk_keep, 40 * 33)
     __vk_state = 1
     return true
 }
@@ -220,7 +226,8 @@ fn __vk_begin(spv: string, id: int, a: int, b: int) -> bool {
     __vk_nbufs = 0
     __vk_backs = 0
     # binding 1, the error flag (binding 0, the numbers, is made at the run)
-    __vk_add_buffer(4)
+    e0 = __vk_add_buffer(4)
+    __store64(e0, 0)
     __vk_bytes(a, 4)
     __vk_bytes(n, 4)
     __store64(__vk_tmp + 2048, __str_ptr(spv))
@@ -229,13 +236,45 @@ fn __vk_begin(spv: string, id: int, a: int, b: int) -> bool {
 }
 
 # a list's memory: filled here, copied to the GPU when the loop starts
+# a device buffer of at least `bytes` for place i, kept from the last run
+# when it is big enough: where the CPU sees it (0 if the GPU had no room)
+fn __vk_keep_get(i: int, bytes: int) -> int {
+    e = __vk_keep + i * 40
+    if __load64(e + 16) != 0 and __load64(e + 8) >= bytes {
+        return __load64(e + 32)
+    }
+    __vk_keep_drop(i)
+    if not __vk_make(bytes, e) {
+        __store64(e + 16, 0)
+        return 0
+    }
+    __store64(e + 8, bytes)
+    return __load64(e + 32)
+}
+
+fn __vk_keep_drop(i: int) {
+    e = __vk_keep + i * 40
+    if __load64(e + 16) != 0 {
+        __ccall_ptr(__vk_fn(11), __vk_dev, __load64(e + 16), 0)
+        __ccall_ptr(__vk_fn(12), __vk_dev, __load64(e + 24), 0)
+        __store64(e + 16, 0)
+        __store64(e + 8, 0)
+    }
+}
+
+# a list's buffer: the device memory itself (the CPU writes the numbers
+# straight into it, and reads the results straight out)
 fn __vk_add_buffer(bytes: int) -> int {
     if bytes < 16 {
         bytes = 16
     }
-    p = __os_alloc(bytes)
-    if p == 0 or __vk_nbufs >= 32 {
+    if __vk_nbufs >= 32 {
         __eprint("Slop: out of memory for the GPU")
+        __os_exit(1)
+    }
+    p = __vk_keep_get(__vk_nbufs, bytes)
+    if p == 0 {
+        __eprint("Slop: the GPU is out of memory")
         __os_exit(1)
     }
     e = __vk_bufs + __vk_nbufs * 40
@@ -436,20 +475,14 @@ fn __vk_run() -> bool {
     }
     k = __vk_kernels + __vk_cur * 32
     all = __vk_struct(40 * nb)
-    if not __vk_make(16 + __vk_np * 4, all) {
+    pp = __vk_keep_get(32, 16 + __vk_np * 4)
+    if pp == 0 {
         return false
     }
-    __memcpy(__load64(all + 32), __vk_params, __vk_np * 4)
+    __memcpy(pp, __vk_params, __vk_np * 4)
+    __memcpy(all, __vk_keep + 32 * 40, 40)
     for i in 0..__vk_nbufs {
-        src = __vk_bufs + i * 40
-        e = all + (i + 1) * 40
-        __store64(e, __load64(src))
-        __store64(e + 8, __load64(src + 8))
-        if not __vk_make(__load64(src + 8), e) {
-            __vk_free_all(all, nb)
-            return false
-        }
-        __memcpy(__load64(e + 32), __load64(src), __load64(src + 8))
+        __memcpy(all + (i + 1) * 40, __vk_keep + i * 40, 40)
     }
     # enough groups of 64 threads; past 65,536 a second dimension
     n = __vk_count
@@ -460,13 +493,6 @@ fn __vk_run() -> bool {
         gy = (n + 65535) / 65536
     }
     r = __vk_dispatch(k, all, nb, gx, gy)
-    if r == 1 {
-        for i in 0..__vk_nbufs {
-            e = all + (i + 1) * 40
-            __memcpy(__load64(e), __load64(e + 32), __load64(e + 8))
-        }
-    }
-    __vk_free_all(all, nb)
     if r == 0 {
         return false
     }
@@ -532,9 +558,11 @@ fn __vk_back() -> int {
 }
 
 fn __vk_end() {
+    # buffers are kept for the next run, unless they are very big (64 MB)
     for i in 0..__vk_nbufs {
-        e = __vk_bufs + i * 40
-        __os_release(__load64(e), __load64(e + 8))
+        if __load64(__vk_keep + i * 40 + 8) > 67108864 {
+            __vk_keep_drop(i)
+        }
     }
     __vk_nbufs = 0
 }
