@@ -416,6 +416,7 @@ __gpu_cmd = 0
 __gpu_enc = 0
 __gpu_slot = 0
 __gpu_bufs = 0
+__gpu_keep = 0
 __gpu_nbufs = 0
 __gpu_backs = 0
 __gpu_err = 0
@@ -564,8 +565,28 @@ fn __gpu_new_buffer(bytes: int) -> int {
     if bytes < 16 {
         bytes = 16
     }
-    # MTLResourceStorageModeShared: the CPU and GPU see the same memory
-    buf = __ccall("objc_msgSend", __gpu_dev, __objc("newBufferWithLength:options:"), bytes, 0)
+    if __gpu_keep == 0 {
+        # buffers kept between gpu for runs: for each place, the buffer and its size
+        __gpu_keep = __alloc_bytes_in(2, 16 * 32)
+        __memzero(__gpu_keep, 16 * 32)
+    }
+    buf = 0
+    if __gpu_nbufs < 32 {
+        kp = __gpu_keep + __gpu_nbufs * 16
+        buf = __load64(kp)
+        if buf != 0 and __load64(kp + 8) < bytes {
+            __ccall("objc_msgSend", buf, __objc("release"))
+            buf = 0
+        }
+        if buf == 0 {
+            # MTLResourceStorageModeShared: the CPU and GPU see the same memory
+            buf = __ccall("objc_msgSend", __gpu_dev, __objc("newBufferWithLength:options:"), bytes, 0)
+            __store64(kp, buf)
+            __store64(kp + 8, bytes)
+        }
+    } else {
+        buf = __ccall("objc_msgSend", __gpu_dev, __objc("newBufferWithLength:options:"), bytes, 0)
+    }
     if buf == 0 {
         __eprint("Slop: the GPU is out of memory")
         __os_exit(1)
@@ -638,8 +659,14 @@ fn __gpu_back() -> int {
 }
 
 fn __gpu_end() {
+    # buffers are kept for the next run, unless they are very big (64 MB)
     for i in 0..__gpu_nbufs {
-        __ccall("objc_msgSend", __load64(__gpu_bufs + i * 8), __objc("release"))
+        kp = __gpu_keep + i * 16
+        if __load64(kp + 8) > 67108864 {
+            __ccall("objc_msgSend", __load64(kp), __objc("release"))
+            __store64(kp, 0)
+            __store64(kp + 8, 0)
+        }
     }
     __gpu_nbufs = 0
     __ccall("objc_autoreleasePoolPop", __gpu_pool)

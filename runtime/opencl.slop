@@ -13,6 +13,9 @@ __cl_tmp = 0
 __cl_bufs = 0
 __cl_nbufs = 0
 __cl_backs = 0
+# kept between gpu for runs, for each buffer place (32 bytes each): the
+# memory on this side, its size, the buffer on the device, its size
+__cl_keep = 0
 
 fn __cl_fn(i: int) -> int {
     return __load64(__cl_fns + i * 8)
@@ -27,7 +30,7 @@ fn __cl_init() -> bool {
     if lib == 0 {
         return false
     }
-    names = ["clGetPlatformIDs", "clGetDeviceIDs", "clCreateContext", "clCreateCommandQueue", "clCreateProgramWithSource", "clBuildProgram", "clGetProgramBuildInfo", "clCreateKernel", "clSetKernelArg", "clCreateBuffer", "clEnqueueNDRangeKernel", "clFinish", "clEnqueueReadBuffer", "clReleaseMemObject", "clGetDeviceInfo"]
+    names = ["clGetPlatformIDs", "clGetDeviceIDs", "clCreateContext", "clCreateCommandQueue", "clCreateProgramWithSource", "clBuildProgram", "clGetProgramBuildInfo", "clCreateKernel", "clSetKernelArg", "clCreateBuffer", "clEnqueueNDRangeKernel", "clFinish", "clEnqueueReadBuffer", "clReleaseMemObject", "clGetDeviceInfo", "clEnqueueWriteBuffer"]
     # kept for the whole run (bucket 2 is never given back)
     __cl_fns = __alloc_bytes_in(2, 8 * len(names))
     for i in 0..len(names) {
@@ -78,6 +81,8 @@ fn __cl_init() -> bool {
     __cl_kernels = __alloc_bytes_in(2, 8 * 4096)
     __memzero(__cl_kernels, 8 * 4096)
     __cl_bufs = __alloc_bytes_in(2, 32 * 32)
+    __cl_keep = __alloc_bytes_in(2, 32 * 32)
+    __memzero(__cl_keep, 32 * 32)
     __cl_state = 1
     return true
 }
@@ -148,7 +153,8 @@ fn __cl_begin(src: string, id: int, a: int, b: int) -> bool {
     __cl_backs = 0
     __cl_count = n
     # slot 0: set to 1 when the loop goes outside a list
-    __cl_add_buffer(4)
+    e0 = __cl_add_buffer(4)
+    __store64(e0, 0)
     __cl_bytes(a, 4)
     __cl_bytes(n, 4)
     return true
@@ -159,10 +165,24 @@ fn __cl_add_buffer(bytes: int) -> int {
     if bytes < 16 {
         bytes = 16
     }
-    p = __os_alloc(bytes)
-    if p == 0 or __cl_nbufs >= 32 {
+    if __cl_nbufs >= 32 {
         __eprint("Slop: out of memory for the GPU")
         __os_exit(1)
+    }
+    # this side's memory from the last run, if it is big enough
+    kp = __cl_keep + __cl_nbufs * 32
+    p = __load64(kp)
+    if p == 0 or __load64(kp + 8) < bytes {
+        if p != 0 {
+            __os_release(p, __load64(kp + 8))
+        }
+        p = __os_alloc(bytes)
+        if p == 0 {
+            __eprint("Slop: out of memory for the GPU")
+            __os_exit(1)
+        }
+        __store64(kp, p)
+        __store64(kp + 8, bytes)
     }
     e = __cl_bufs + __cl_nbufs * 32
     __store64(e, p)
@@ -190,12 +210,25 @@ fn __cl_run() {
     t = __cl_tmp
     for i in 0..__cl_nbufs {
         e = __cl_bufs + i * 32
-        # CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR
-        mem = __ccall_ptr(__cl_fn(9), __cl_ctx, 33, __load64(e + 8), __load64(e), t)
-        if mem == 0 {
-            __eprint("Slop: the GPU is out of memory")
-            __os_exit(1)
+        size = __load64(e + 8)
+        # the device buffer from the last run, if it is big enough; else a new one
+        kp = __cl_keep + i * 32
+        mem = __load64(kp + 16)
+        if mem == 0 or __load64(kp + 24) < size {
+            if mem != 0 {
+                __ccall_ptr(__cl_fn(13), mem)
+            }
+            # CL_MEM_READ_WRITE
+            mem = __ccall_ptr(__cl_fn(9), __cl_ctx, 1, size, 0, t)
+            if mem == 0 {
+                __eprint("Slop: the GPU is out of memory")
+                __os_exit(1)
+            }
+            __store64(kp + 16, mem)
+            __store64(kp + 24, size)
         }
+        # copy in without waiting (the queue keeps the order)
+        __ccall_ptr(__cl_fn(15), __cl_queue, mem, 0, 0, size, __load64(e), 0, 0, 0)
         __store64(e + 24, mem)
         __ccall_ptr(__cl_fn(8), __cl_kernel, __load64(e + 16), 8, e + 24)
     }
@@ -226,10 +259,19 @@ fn __cl_back() -> int {
 }
 
 fn __cl_end() {
+    # buffers are kept for the next run, unless they are very big (64 MB)
     for i in 0..__cl_nbufs {
-        e = __cl_bufs + i * 32
-        __ccall_ptr(__cl_fn(13), __load64(e + 24))
-        __os_release(__load64(e), __load64(e + 8))
+        kp = __cl_keep + i * 32
+        if __load64(kp + 8) > 67108864 {
+            __os_release(__load64(kp), __load64(kp + 8))
+            __store64(kp, 0)
+            __store64(kp + 8, 0)
+        }
+        if __load64(kp + 24) > 67108864 {
+            __ccall_ptr(__cl_fn(13), __load64(kp + 16))
+            __store64(kp + 16, 0)
+            __store64(kp + 24, 0)
+        }
     }
     __cl_nbufs = 0
 }

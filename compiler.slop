@@ -1937,6 +1937,38 @@ fn e_memcpy() {
     emit2(243, 164)
 }
 
+# bulk float conversion (for the GPU, which uses 32-bit floats): rdi/x7 =
+# destination, rsi/x6 = source, rcx/x1 = count. Two at a time with SSE2
+# (cvtpd2ps / cvtps2pd) or NEON (fcvtn / fcvtl), then the odd one; each
+# number rounds exactly as one __f64_to_f32 / __f32_to_f64 would.
+fn e_cvt_narrow() {
+    if arm() {
+        let words = [4043311167, 1409286339, 1019282624, 241264640, 4227892448, 3506440225, 402653178, 3019899009, 4248830144, 509755392, 3170894048]
+        for w in words {
+            a32(w)
+        }
+        return
+    }
+    let bytes = [72, 131, 249, 2, 114, 26, 102, 15, 16, 6, 102, 15, 90, 192, 102, 15, 214, 7, 72, 131, 198, 16, 72, 131, 199, 8, 72, 131, 233, 2, 235, 224, 72, 133, 201, 116, 12, 242, 15, 16, 6, 242, 15, 90, 192, 243, 15, 17, 7]
+    for b in bytes {
+        emit(b)
+    }
+}
+
+fn e_cvt_widen() {
+    if arm() {
+        let words = [4043311167, 1409286339, 4232086720, 241268736, 1015088352, 3506440225, 402653178, 3019899009, 3175088320, 505593856, 4244635872]
+        for w in words {
+            a32(w)
+        }
+        return
+    }
+    let bytes = [72, 131, 249, 2, 114, 21, 15, 90, 6, 102, 15, 17, 7, 72, 131, 198, 8, 72, 131, 199, 16, 72, 131, 233, 2, 235, 229, 72, 133, 201, 116, 8, 243, 15, 90, 6, 242, 15, 17, 7]
+    for b in bytes {
+        emit(b)
+    }
+}
+
 # the __axpy loop: rdi/x7 = c, rsi/x6 = b, rdx/x2 = a's bits, rcx/x1 = count
 # (assembled once from a short SSE2 and NEON loop; jumps are relative)
 fn e_axpy() {
@@ -3943,6 +3975,18 @@ fn gen_intrinsic(name: string, n: int) -> string {
         e_memcpy()
         return "void"
     }
+    if name == "__f64s_to_f32s" or name == "__f32s_to_f64s" {
+        # (dst, src, n): n floats, 64-bit to 32-bit or back
+        e_pop(1)
+        e_pop(6)
+        e_pop(7)
+        if name == "__f64s_to_f32s" {
+            e_cvt_narrow()
+        } else {
+            e_cvt_widen()
+        }
+        return "void"
+    }
     if name == "__axpy" {
         # __axpy(c, b, a, n): c[j] += a * b[j] for n floats (a as bits), two
         # at a time with SSE2 / NEON; each sum is done just as plain code would
@@ -4051,7 +4095,7 @@ fn intrinsic_arity(name: string) -> int {
     if name == "__axpy" {
         return 4
     }
-    if name == "__memcpy" or name == "__memeq" or name == "ram_copy" {
+    if name == "__memcpy" or name == "__memeq" or name == "ram_copy" or name == "__f64s_to_f32s" or name == "__f32s_to_f64s" {
         return 3
     }
     if name == "__syscall" {

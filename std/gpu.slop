@@ -63,19 +63,19 @@ fn gpu_error() -> string {
 fn gpu_pack_f32(xs: array[float]) -> string {
     let n = len(xs)
     let p = __alloc_bytes(n * 4 + 4)
-    for i in 0..n {
-        __store32(p + i * 4, __f64_to_f32(float_bits(xs[i])))
-    }
+    # two at a time (SSE2 / NEON)
+    __f64s_to_f32s(p, __load64(addr_of(xs)), n)
     return __str(p, n * 4)
 }
 
 # the 32-bit floats in s (any leftover bytes are not used)
 fn gpu_unpack_f32(s: string) -> array[float] {
     let out: array[float] = []
-    let p = __str_ptr(s)
-    for i in 0..len(s) / 4 {
-        push(out, float_from_bits(__f32_to_f64(__load32(p + i * 4))))
+    let n = len(s) / 4
+    for i in 0..n {
+        push(out, 0.0)
     }
+    __f32s_to_f64s(__load64(addr_of(out)), __str_ptr(s), n)
     return out
 }
 

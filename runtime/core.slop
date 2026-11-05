@@ -1368,9 +1368,8 @@ fn __min_int(x: int, y: int) -> int {
 fn __gpu_floats(x: array[float]) {
     n = len(x)
     p = __gpu_buffer(n * 4, n)
-    for i in 0..n {
-        __store32(p + i * 4, __f64_to_f32(float_bits(x[i])))
-    }
+    # two at a time (SSE2 / NEON), straight from the list's memory
+    __f64s_to_f32s(p, __load64(addr_of(x)), n)
 }
 
 fn __gpu_ints(x: array[int]) {
@@ -1383,9 +1382,7 @@ fn __gpu_ints(x: array[int]) {
 
 fn __gpu_back_floats(x: array[float]) {
     p = __gpu_back()
-    for i in 0..len(x) {
-        x[i] = float_from_bits(__f32_to_f64(__load32(p + i * 4)))
-    }
+    __f32s_to_f64s(__load64(addr_of(x)), p, len(x))
 }
 
 fn __gpu_back_ints(x: array[int]) {
